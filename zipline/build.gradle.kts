@@ -136,7 +136,7 @@ kotlin {
       main.cinterops {
         create("quickjs") {
           header(file("native/quickjs/quickjs.h"))
-          header(file("native/mimalloc/mimalloc-quickjs.h"))
+          header(file("native/quickjs/mimalloc-mf.h"))
           header(file("native/common/context-no-eval.h"))
           header(file("native/common/finalization-registry.h"))
           header(file("native/common/global-gc.h"))
@@ -220,6 +220,10 @@ cklib {
         "-Wno-sign-compare",
         "-Wno-unused-parameter", /* for windows 32 */
         "-D_Float16=short", // KT-69094
+        "-DJS_USE_MIMALLOC",
+        "-DJS_NAN_BOXING",
+        "-DJS_BASE_ADDR=0x20000000",
+        "-DJS_ARENA_SIZE=0x40000000",
       )
     )
   }
@@ -286,20 +290,23 @@ android {
   }
 
   buildTypes {
+    val quickjsFlags = arrayOf("-DJS_USE_MIMALLOC", "-DJS_NAN_BOXING",
+                            "-DJS_BASE_ADDR=0x80000000", "-DJS_ARENA_SIZE=0x80000000")
     val release by getting {
       externalNativeBuild {
         cmake {
           arguments("-DCMAKE_BUILD_TYPE=MinSizeRel")
-          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
-          cppFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden")
+          cFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG",
+                 "-fvisibility=hidden", *quickjsFlags)
+          cppFlags("-g0", "-Os", "-fomit-frame-pointer", "-DNDEBUG", "-fvisibility=hidden", *quickjsFlags)
         }
       }
     }
     val debug by getting {
       externalNativeBuild {
         cmake {
-          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS")
-          cppFlags("-g", "-DDEBUG", "-DDUMP_LEAKS")
+          cFlags("-g", "-DDEBUG", "-DDUMP_LEAKS", *quickjsFlags)
+          cppFlags("-g", "-DDEBUG", "-DDUMP_LEAKS", *quickjsFlags)
         }
       }
     }

@@ -35,6 +35,9 @@ actual class QuickJs private constructor(
   actual companion object {
     init {
       loadNativeLibrary()
+      if (!setupMemory()) {
+        throw OutOfMemoryError()
+      }
     }
 
     /**
@@ -60,6 +63,9 @@ actual class QuickJs private constructor(
 
     @JvmStatic
     external fun createContext(): Long
+
+    @JvmStatic
+    external fun setupMemory(): Boolean
 
     actual val version: String
       get() = quickJsVersion

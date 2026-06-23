@@ -52,6 +52,8 @@ public:
   JSValue toJsString(JNIEnv* env, jstring string) const;
   jstring toJavaString(JNIEnv* env, const JSValueConst& value) const;
 
+  static jboolean setupMemory();
+
   JavaVM* javaVm;
   const jint jniVersion;
   JSRuntime *jsRuntime;

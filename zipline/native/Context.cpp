@@ -24,7 +24,7 @@
 #include "common/finalization-registry.h"
 #include "common/global-gc.h"
 #include "quickjs/quickjs.h"
-#include "mimalloc/mimalloc-quickjs.h"
+#include "quickjs/mimalloc-mf.h"
 
 /**
  * This signature satisfies the JSInterruptHandler typedef. It is always installed but only does
@@ -66,7 +66,7 @@ struct JniThreadDetacher {
 
 } // anonymous namespace
 
-Context::Context(JNIEnv* env)
+Context::Context(JNIEnv *env)
     : jniVersion(env->GetVersion()),
       jsRuntime(JS_NewRuntimeMimalloc()),
       jsContext(JS_NewContextNoEval(jsRuntime)),
@@ -516,4 +516,8 @@ jstring Context::toJavaString(JNIEnv* env, const JSValueConst& value) const {
   jstring result = static_cast<jstring>(env->NewObject(stringClass, stringConstructor, utf8BytesObject, stringUtf8));
   env->DeleteLocalRef(utf8BytesObject);
   return result;
+}
+
+jboolean Context::setupMemory() {
+    return mimalloc_setup();
 }

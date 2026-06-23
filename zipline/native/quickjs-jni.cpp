@@ -29,6 +29,11 @@ Java_app_cash_zipline_QuickJs_createContext(JNIEnv* env, jclass type) {
   return reinterpret_cast<jlong>(c);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_QuickJs_setupMemory(JNIEnv* env, jclass type) {
+    return Context::setupMemory();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_QuickJs_destroyContext(JNIEnv* env, jobject type, jlong context) {
   delete reinterpret_cast<Context*>(context);

@@ -69,7 +69,6 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
   });
   lib.root_module.addCSourceFiles(.{
     .files = &.{
-      "native/mimalloc/mimalloc-quickjs.c",
       "native/common/context-no-eval.c",
       "native/common/finalization-registry.c",
       "native/common/global-gc.c",
@@ -78,9 +77,14 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
       "native/quickjs/libunicode.c",
       "native/quickjs/quickjs.c",
       "native/quickjs/dtoa.c",
+      "native/quickjs/mimalloc-mf.c",
     },
     .flags = &.{
       "-std=gnu99",
+      "-DJS_USE_MIMALLOC",
+      "-DJS_NAN_BOXING",
+      "-DJS_BASE_ADDR=0x10000000",
+      "-DJS_ARENA_SIZE=0xC0000000",
     },
   });
 
@@ -96,6 +100,10 @@ fn setupTarget(b: *std.Build, tag: std.Target.Os.Tag, arch: std.Target.Cpu.Arch,
     },
     .flags = &.{
       "-std=c++11",
+      "-DJS_USE_MIMALLOC",
+      "-DJS_NAN_BOXING",
+      "-DJS_BASE_ADDR=0x10000000",
+      "-DJS_ARENA_SIZE=0xC0000000",
     },
   });
 

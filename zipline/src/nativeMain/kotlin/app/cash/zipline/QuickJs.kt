@@ -91,6 +91,7 @@ import app.cash.zipline.quickjs.JsValueGetInt
 import app.cash.zipline.quickjs.JsValueGetNormTag
 import app.cash.zipline.quickjs.installFinalizationRegistry
 import app.cash.zipline.quickjs.js_free
+import app.cash.zipline.quickjs.mimalloc_setup
 import kotlin.experimental.ExperimentalNativeApi
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.COpaquePointer
@@ -124,6 +125,9 @@ actual class QuickJs private constructor(
 ) : AutoCloseable {
   actual companion object {
     actual fun create(): QuickJs {
+      if (!mimalloc_setup()) {
+          throw OutOfMemoryError()
+      }
       val runtime = JS_NewRuntimeMimalloc() ?: throw OutOfMemoryError()
       val context = JS_NewContextNoEval(runtime)
       if (context == null) {

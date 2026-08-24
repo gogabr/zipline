@@ -45,6 +45,24 @@ abstract class ZiplineExtension {
    */
   abstract val terserOptionsJson: Property<String>
 
+  /**
+   * URL prefix baked into compiled bytecode as each script's URL, e.g. "http://localhost:8080".
+   * When set, the .js sources and .js.map source maps are copied next to the .zipline
+   * files so the development server can serve them to Chrome DevTools, and the bytecode
+   * keeps the debug info needed for CDP debugging (breakpoints, stepping).
+   * Unset by default. Used only with Hermes JS
+   */
+  abstract val debugSourceUrlPrefix: Property<String>
+
+  /**
+   * True to serve raw JavaScript instead of QuickJS bytecode in .zipline slots,
+   * so the engine compiles on device at runtime. This makes CDP frame
+   * evaluation and scope inspection work (they are impossible with precompiled
+   * bytecode because the scoping info table is never serialized). False by default.
+   * Used only with Hermes JS
+   */
+  abstract val serveSourceCode: Property<Boolean>
+
   /** True to forbid the existing Zipline service to be extended with new functions. */
   abstract val forbidServiceExtension: Property<Boolean>
 

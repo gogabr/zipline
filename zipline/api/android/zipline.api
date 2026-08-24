@@ -129,6 +129,7 @@ public final class app/cash/zipline/QuickJs : java/io/Closeable, java/lang/AutoC
 	public final fun compile (Ljava/lang/String;Ljava/lang/String;)[B
 	public static final fun create ()Lapp/cash/zipline/QuickJs;
 	public static final fun createContext ()J
+	public static final fun dumpAllocHeap ()V
 	public final fun evaluate (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
 	public static synthetic fun evaluate$default (Lapp/cash/zipline/QuickJs;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun execute ([B)Ljava/lang/Object;
@@ -138,16 +139,26 @@ public final class app/cash/zipline/QuickJs : java/io/Closeable, java/lang/AutoC
 	public final fun getMaxStackSize ()J
 	public final fun getMemoryLimit ()J
 	public final fun getMemoryUsage ()Lapp/cash/zipline/MemoryUsage;
+	public final fun getRdmaChangeSink ()Lapp/cash/zipline/RdmaChangeSink;
+	public final fun initRdmaChangesChannel ()V
+	public static final fun setAllocTracingSampleRate (I)V
 	public final fun setGcThreshold (J)V
 	public final fun setInterruptHandler (Lapp/cash/zipline/InterruptHandler;)V
 	public final fun setMaxStackSize (J)V
 	public final fun setMemoryLimit (J)V
+	public final fun setRdmaChangeSink (Lapp/cash/zipline/RdmaChangeSink;)V
+	public static final fun startAllocTracing (Ljava/lang/String;)Z
+	public static final fun stopAllocTracing ()V
 }
 
 public final class app/cash/zipline/QuickJs$Companion {
 	public final fun create ()Lapp/cash/zipline/QuickJs;
 	public final fun createContext ()J
+	public final fun dumpAllocHeap ()V
 	public final fun getVersion ()Ljava/lang/String;
+	public final fun setAllocTracingSampleRate (I)V
+	public final fun startAllocTracing (Ljava/lang/String;)Z
+	public final fun stopAllocTracing ()V
 }
 
 public final class app/cash/zipline/QuickJsException : java/lang/RuntimeException {
@@ -155,6 +166,18 @@ public final class app/cash/zipline/QuickJsException : java/lang/RuntimeExceptio
 	public fun <init> (Ljava/lang/String;Ljava/lang/String;)V
 	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public static final synthetic fun addJavaScriptStack (Ljava/lang/Throwable;Ljava/lang/String;)V
+}
+
+public abstract interface class app/cash/zipline/RdmaChangeSink {
+	public abstract fun createAdd (IIII)V
+	public abstract fun createCreate (II)V
+	public abstract fun createModifierChange (ILjava/util/List;)V
+	public abstract fun createMove (IIIII)V
+	public abstract fun createPropertyChange (IIILkotlinx/serialization/json/JsonElement;)V
+	public abstract fun createRemove (IIIZ)V
+	public abstract fun sendBatch ()V
+	public abstract fun sendChanges ()V
+	public abstract fun setRemoveDetach (I)V
 }
 
 public final class app/cash/zipline/SerializersKt {
@@ -170,6 +193,7 @@ public final class app/cash/zipline/Zipline : java/lang/AutoCloseable {
 	public final fun bind (Ljava/lang/String;Lapp/cash/zipline/ZiplineService;)V
 	public final fun bind (Ljava/lang/String;Lapp/cash/zipline/ZiplineService;Lapp/cash/zipline/internal/bridge/ZiplineServiceAdapter;)V
 	public fun close ()V
+	public final fun close (Z)V
 	public final fun getEventListener ()Lapp/cash/zipline/EventListener;
 	public final fun getJson ()Lkotlinx/serialization/json/Json;
 	public final fun getOrPutAttachment (Lkotlin/reflect/KClass;Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;

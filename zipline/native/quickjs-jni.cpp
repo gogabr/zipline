@@ -19,6 +19,33 @@
 #include "InboundCallChannel.h"
 #include "ExceptionThrowers.h"
 #include "bridge_dispatch.h"
+#include "alloc-trace.h"
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_QuickJs_startAllocTracing(JNIEnv* env, jclass type, jstring path) {
+  const char* pathChars = env->GetStringUTFChars(path, nullptr);
+  if (!pathChars) {
+    return JNI_FALSE;
+  }
+  int result = qjs_at_start(pathChars);
+  env->ReleaseStringUTFChars(path, pathChars);
+  return result == 0 ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_QuickJs_setAllocTracingSampleRate(JNIEnv* env, jclass type, jint rate) {
+  qjs_at_set_sample_rate((unsigned int)rate);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_QuickJs_stopAllocTracing(JNIEnv* env, jclass type) {
+  qjs_at_stop();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_QuickJs_dumpAllocHeap(JNIEnv* env, jclass type) {
+  qjs_at_dump_heap();
+}
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_app_cash_zipline_QuickJs_createContext(JNIEnv* env, jclass type) {

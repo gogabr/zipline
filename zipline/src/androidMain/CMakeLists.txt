@@ -9,7 +9,7 @@ set(MI_BUILD_SHARED OFF)
 set(MI_BUILD_OBJECT OFF)
 set(MI_BUILD_TESTS OFF)
 
-file(GLOB_RECURSE sources "../../native/*.c" "../../native/*.cpp")
+file(GLOB_RECURSE sources CONFIGURE_DEPENDS "../../native/*.c" "../../native/*.cpp")
 add_library(quickjs SHARED ${sources})
 target_link_libraries(quickjs PRIVATE log)
 target_link_options(quickjs PRIVATE "-Wl,-z,max-page-size=16384")

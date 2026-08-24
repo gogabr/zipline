@@ -61,6 +61,35 @@ actual class QuickJs private constructor(
     @JvmStatic
     external fun createContext(): Long
 
+    /**
+     * Starts allocation tracing of the QuickJS heap, streaming events (allocation/free/realloc
+     * with native stacks, plus JS stack push/pop markers) to [path] until [stopAllocTracing].
+     * Aggregate the stream offline with alloc_trace_flamegraph.py. Compiled in only when the
+     * native library was built with `-DQJS_ALLOC_TRACE`; otherwise this is a no-op.
+     * Returns false if the file could not be opened.
+     */
+    @JvmStatic
+    external fun startAllocTracing(path: String): Boolean
+
+    /**
+     * Records 1 of every [rate] allocation events (default 10). Use 1 to record everything.
+     * May be changed while tracing is running.
+     */
+    @JvmStatic
+    external fun setAllocTracingSampleRate(rate: Int)
+
+    /** Stops allocation tracing and finalizes the stream file. */
+    @JvmStatic
+    external fun stopAllocTracing()
+
+    /**
+     * Writes a heap-snapshot marker into the trace stream. The live heap at each marker
+     * is computed offline from the stream (alloc_trace_flamegraph.py --metric retained,
+     * optionally --heap-at N).
+     */
+    @JvmStatic
+    external fun dumpAllocHeap()
+
     actual val version: String
       get() = quickJsVersion
   }

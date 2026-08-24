@@ -18,6 +18,9 @@ package app.cash.zipline.profiler
 import app.cash.zipline.EngineApi
 import app.cash.zipline.InterruptHandler
 import app.cash.zipline.QuickJs
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okio.Buffer
 import okio.BufferedSink
 import okio.Closeable
@@ -61,6 +64,9 @@ internal class SamplingProfiler internal constructor(
   InterruptHandler {
   private var nextId = 1
 
+  /** Guards [hprofWriter] and the id allocation against [close] racing an in-flight [poll]. */
+  private val lock = Mutex()
+
   /** Placeholder value for the JavaScript thread. */
   private val javaScriptThreadId: Int = nextId++
 
@@ -91,8 +97,14 @@ internal class SamplingProfiler internal constructor(
   }
 
   override fun poll(): Boolean {
-    val stack = quickJs.evaluate("new Error().stack") as String
-    addStacktraceSample(stack)
+    // Sampling is best-effort: drop the sample rather than block the JS thread.
+    if (!lock.tryLock()) return false
+    try {
+      val stack = quickJs.evaluate("new Error().stack") as String
+      addStacktraceSample(stack)
+    } finally {
+      lock.unlock()
+    }
     return false
   }
 
@@ -130,10 +142,14 @@ internal class SamplingProfiler internal constructor(
     )
   }
 
-  override fun close() {
-    hprofWriter.writeThreadEnd(threadId = javaScriptThreadId)
-    hprofWriter.writeCpuSamples()
-    hprofWriter.close()
+  override fun close() = runBlocking {
+    // The interrupt handler is restored before close() is called, so only an
+    // in-flight poll() can hold the lock, and only briefly.
+    lock.withLock {
+      hprofWriter.writeThreadEnd(threadId = javaScriptThreadId)
+      hprofWriter.writeCpuSamples()
+      hprofWriter.close()
+    }
   }
 
   private companion object {

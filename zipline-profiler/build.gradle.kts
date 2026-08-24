@@ -26,6 +26,7 @@ kotlin {
       dependencies {
         api(projects.zipline)
         api(libs.okio.core)
+        implementation(libs.kotlinx.coroutines.core)
       }
     }
 

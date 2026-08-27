@@ -51,6 +51,7 @@ class ZiplineBridgeIrGenerationExtension(
     // -- C/JNI bridge generation (Android) --
     if (cOutputDir != null) {
       generateCBridges(cOutputDir, annotatedClasses)
+      generateKeepNames(cOutputDir, annotatedClasses)
     }
 
     // -- JS bridge dispatch injection (Kotlin/JS) --

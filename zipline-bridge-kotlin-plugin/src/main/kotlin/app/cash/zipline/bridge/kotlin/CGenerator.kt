@@ -13,6 +13,8 @@ import java.io.File
 
 // -- C file naming and JNI class name helpers --
 
+internal const val KEEP_NAMES_FILE = "bridge-keep-names.txt"
+
 internal fun cFunctionPrefix(fqName: FqName): String =
   fqName.asString().replace(".", "_")
 
@@ -864,6 +866,36 @@ internal fun generateCBridges(outputDir: String, annotatedClasses: List<IrClass>
     if (clazz.kind == ClassKind.INTERFACE) continue
     generateBridgeFile(outputDir, clazz)
   }
+}
+
+/**
+ * Writes the fully-qualified names of the backing FIELDS that the generated C bridge reads
+ * by a `_1`-mangled JS name (private/value-class/override fields). The Kotlin/JS production
+ * compiler minimizes these names, which breaks the bridge; the JS link must pass them via
+ * `-Xir-keep` to keep the non-minified names. Emitted alongside the C files as a plain-text
+ * resource so consumers can aggregate it from published artifacts.
+ */
+internal fun generateKeepNames(outputDir: String, annotatedClasses: List<IrClass>) {
+  val names = linkedSetOf<String>()
+  for (clazz in annotatedClasses) {
+    if (clazz.kind == ClassKind.INTERFACE) continue
+    val fqName = clazz.fqNameWhenAvailable?.asString() ?: continue
+    if (clazz.kind == ClassKind.ENUM_CLASS) {
+      // Enum ordinals are read by the C bridge via a hardcoded `ordinal_1` (not via extractFields).
+      names += "$fqName.ordinal"
+    } else {
+      for (field in extractFields(clazz, includeValBodyFields = true)) {
+        if (field.jsPropertyName.endsWith("_1")) {
+          names += "$fqName.${field.name}"
+        }
+      }
+    }
+  }
+  // stdlib fields read directly by the generated C bridge for Long/List values.
+  names += "kotlin.Long.low"
+  names += "kotlin.Long.high"
+  names += "kotlin.collections.ArrayList.array"
+  File(outputDir, KEEP_NAMES_FILE).writeText(names.joinToString("\n", postfix = "\n"))
 }
 
 // -- field extraction --

@@ -101,7 +101,8 @@ actual class Zipline private constructor(
     )
   }
 
-  fun initRdmaChannel() {
+  fun initRdmaChannel(sink: RdmaChangeSink) {
+    quickJs.rdmaChangeSink = sink
     quickJs.initRdmaChangesChannel()
   }
 

@@ -171,13 +171,14 @@ Java_app_cash_zipline_QuickJs_getJsContext(JNIEnv*, jclass, jlong context_) {
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_QuickJs_initRdmaChangesChannel(JNIEnv* env, jobject, jlong context_) {
+Java_app_cash_zipline_QuickJs_initRdmaChangesChannel(JNIEnv* env, jobject, jlong context_,
+                                                     jobject rdmaChangeSink) {
   Context* context = reinterpret_cast<Context*>(context_);
   if (!context) {
     throwJavaException(env, "java/lang/IllegalStateException", "QuickJs instance was closed");
     return;
   }
-  context->initRdmaChangesChannel(env);
+  context->initRdmaChangesChannel(env, rdmaChangeSink);
 }
 
 extern "C" JNIEXPORT jstring JNICALL

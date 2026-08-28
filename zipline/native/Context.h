@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <mutex>
 #include "quickjs/quickjs.h"
 
 class JSRuntime;
@@ -75,8 +76,65 @@ public:
   JSValue toJsString(JNIEnv* env, jstring string) const;
   jstring toJavaString(JNIEnv* env, const JSValueConst& value) const;
 
-  JavaVM* javaVm;
-  const jint jniVersion;
+  // Process-wide JNI cache: class refs and method IDs are identical for every zipline session.
+  // Initialized once under std::call_once by ensureStatics(); never freed (process lifetime).
+  static JavaVM* javaVm;
+  static jint jniVersion;
+  static jclass booleanClass;
+  static jclass integerClass;
+  static jclass doubleClass;
+  static jclass longClass;
+  static jclass objectClass;
+  static jclass stringClass;
+  static jclass memoryUsageClass;
+  static jclass quickJsExceptionClass;
+  static jclass interruptHandlerClass;
+  static jstring stringUtf8;
+  static jmethodID booleanValueOf;
+  static jmethodID integerValueOf;
+  static jmethodID doubleValueOf;
+  static jmethodID longValueOf;
+  static jmethodID stringGetBytes;
+  static jmethodID stringConstructor;
+  static jmethodID memoryUsageConstructor;
+  static jmethodID quickJsExceptionConstructor;
+  static jmethodID interruptHandlerPoll;
+
+  // JNI cache for RdmaBridge static JsonElement factories
+  static jclass rdmaBridgeClass;
+  static jmethodID rdmaBridgeJsonPrimitiveString;
+  static jmethodID rdmaBridgeJsonPrimitiveInt;
+  static jmethodID rdmaBridgeJsonPrimitiveLong;
+  static jmethodID rdmaBridgeJsonPrimitiveDouble;
+  static jmethodID rdmaBridgeJsonPrimitiveBoolean;
+  static jmethodID rdmaBridgeJsonNull;
+  static jmethodID rdmaBridgeCreateJsonArray;
+  static jmethodID rdmaBridgeCreateJsonObject;
+
+  // JNI cache for ArrayList
+  static jclass arrayListClass;
+  static jmethodID arrayListInit;
+  static jmethodID arrayListInitWithCapacity;
+  static jmethodID arrayListAdd;
+
+  // JNI cache for the RdmaChangeSink interface and kotlin.Pair
+  static jmethodID rdmaSinkCreateCreate;
+  static jmethodID rdmaSinkCreatePropertyChange;
+  static jmethodID rdmaSinkCreateModifierChange;
+  static jmethodID rdmaSinkCreateAdd;
+  static jmethodID rdmaSinkCreateRemove;
+  static jmethodID rdmaSinkCreateMove;
+  static jmethodID rdmaSinkCreateBridgeChange;
+  static jmethodID rdmaSinkSetRemoveDetach;
+  static jmethodID rdmaSinkSendBatch;
+  static jmethodID rdmaSinkSendChanges;
+  static jclass pairClass;
+  static jmethodID pairInit;
+
+  static std::once_flag staticsInitFlag;
+  static void ensureStatics(JNIEnv* env);
+
+  // Per-session state: owned by this Context and freed in the destructor.
   JSRuntime *jsRuntime;
   JSContext *jsContext;
   JSContext *jsContextForCompiling;
@@ -84,67 +142,24 @@ public:
   JSAtom lengthAtom;
   JSAtom callAtom;
   JSAtom disconnectAtom;
-  jclass booleanClass;
-  jclass integerClass;
-  jclass doubleClass;
-  jclass longClass;
-  jclass objectClass;
-  jclass stringClass;
-  jclass memoryUsageClass;
-  jstring stringUtf8;
-  jclass quickJsExceptionClass;
-  jmethodID booleanValueOf;
-  jmethodID integerValueOf;
-  jmethodID doubleValueOf;
-  jmethodID longValueOf;
-  jmethodID stringGetBytes;
-  jmethodID stringConstructor;
-  jmethodID memoryUsageConstructor;
-  jmethodID quickJsExceptionConstructor;
-  jclass interruptHandlerClass;
-  jmethodID interruptHandlerPoll;
   jobject interruptHandler;
   std::vector<InboundCallChannel*> callChannels;
   std::unordered_map<std::string, jclass> globalReferences;
 
-  // JNI cache for RdmaBridge (static factories)
-  jclass rdmaBridgeClass = nullptr;
-  jmethodID rdmaBridgeCreateCreate;
-  jmethodID rdmaBridgeCreateAdd;
-  jmethodID rdmaBridgeCreateRemove;
-  jmethodID rdmaBridgeCreateMove;
-  jmethodID rdmaBridgeCreatePropertyChange;
-  jmethodID rdmaBridgeCreateModifierChange;
-  jmethodID rdmaBridgeCreateModifierElement;
-  jmethodID rdmaBridgeCreateBridgeChange;
-  jmethodID rdmaBridgeJsonPrimitiveString;
-  jmethodID rdmaBridgeJsonPrimitiveInt;
-  jmethodID rdmaBridgeJsonPrimitiveLong;
-  jmethodID rdmaBridgeJsonPrimitiveDouble;
-  jmethodID rdmaBridgeJsonPrimitiveBoolean;
-  jmethodID rdmaBridgeJsonNull;
-  jmethodID rdmaBridgeCreateJsonArray;
-  jmethodID rdmaBridgeCreateJsonObject;
-
-  // JNI cache for ArrayList
-  jclass arrayListClass;
-  jmethodID arrayListInit;
-  jmethodID arrayListInitWithCapacity;
-  jmethodID arrayListAdd;
-
-  jobject rdmaBridgeInstance;
-  jmethodID rdmaBridgeSendChanges;
-  jmethodID rdmaBridgeSendBatch;
+  // Per-QuickJs RdmaChangeSink: all RDMA change delivery is routed through this instance so
+  // that each zipline session gets its own change stream.
+  jobject rdmaChangeSink = nullptr;
 
   std::vector<RdmaChange> pendingChanges;
   jobject jsValueToJsonElement(JNIEnv* env, JSValueConst val);
   jobject jsArrayToJsonElement(JNIEnv* env, JSValueConst val);
   jobject jsObjectToJsonElement(JNIEnv* env, JSValueConst val);
+  void dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch);
   void flushPendingBatch(JNIEnv* env, int count);
   void finishFlushPending(JNIEnv* env);
-  void cacheRdmaBridgeMethods(JNIEnv* env);
+  void cacheRdmaSink(jobject rdmaChangeSink);
   void deleteBridgeRefs(JNIEnv* env);
-  void initRdmaChangesChannel(JNIEnv* env);
+  void initRdmaChangesChannel(JNIEnv* env, jobject rdmaChangeSink);
 };
 
 #endif //QUICKJS_ANDROID_CONTEXT_H

@@ -153,7 +153,7 @@ actual class QuickJs private constructor(
   }
 
   actual fun initRdmaChangesChannel() {
-    initRdmaChangesChannel(context)
+    initRdmaChangesChannel(context, rdmaChangeSink)
   }
 
   internal actual fun getInboundChannel(): CallChannel {
@@ -214,7 +214,7 @@ actual class QuickJs private constructor(
   private external fun gc(context: Long)
   private external fun setMaxStackSize(context: Long, stackSize: Long)
   @JvmName("initRdmaChangesChannel")
-  private external fun initRdmaChangesChannel(context: Long)
+  private external fun initRdmaChangesChannel(context: Long, rdmaChangeSink: RdmaChangeSink?)
 
   internal actual fun bridgeInitAll() {
     bridgeInitAllNative(getJsContext(context))

@@ -786,7 +786,7 @@ class ZiplineBridgeKotlinPluginTest {
   fun `plugin compiles interface with properties and functions`() {
     val result = compile(
       sourceFile = SourceFile.kotlin(
-        "Service.kt",
+        "Calculator.kt",
         """
         package com.example
 
@@ -801,8 +801,84 @@ class ZiplineBridgeKotlinPluginTest {
         }
         """,
       ),
+      plugin = ZiplineBridgeCompilerPluginRegistrar(),
     )
     assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `float list element converter dispatches on JS tag`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Gradient.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Gradient {
+            val stops: List<Float> = listOf(0f, 0.5f, 1f)
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.resolve("com_example_Gradient.c").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+
+      val content = cFile.readText()
+
+      // Element converter boxes Float and dispatches on the JS tag: integral JS numbers
+      // (e.g. 0f/1f) arrive tagged JS_TAG_INT and must be converted, not read through
+      // the float64 slot.
+      assertTrue(content.contains("static jobject conv_stops_element("))
+      assertTrue(content.contains("int tag = JS_VALUE_GET_NORM_TAG(jsVal);"))
+      assertTrue(content.contains("jfloat val = (tag == JS_TAG_INT) ? (jfloat)JS_VALUE_GET_INT(jsVal) : (jfloat)JS_VALUE_GET_FLOAT64(jsVal);"))
+      assertTrue(content.contains("FindClass(env, \"java/lang/Float\")"))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `float array element read dispatches on JS tag`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Report.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Report {
+            val scores: FloatArray = floatArrayOf(0f, 1.5f)
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.resolve("com_example_Report.c").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+
+      val content = cFile.readText()
+
+      assertTrue(content.contains("NewFloatArray"))
+      assertTrue(content.contains("GetFloatArrayElements"))
+      assertTrue(content.contains(
+        "elems[i] = (JS_VALUE_GET_NORM_TAG(elem) == JS_TAG_INT) ? (jfloat)JS_VALUE_GET_INT(elem) : (jfloat)JS_VALUE_GET_FLOAT64(elem);"))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
   }
 }
 
@@ -1179,6 +1255,39 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(content.contains("JsValueGetInt(ordinalRaw)"))
       assertTrue(content.contains(".entries[ordinal]"))
       assertTrue(content.contains("Color.entries[ordinal]"))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `float array elements use tag-aware JsNumberToDouble`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Report.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+          @WithJS2HostBridge
+          class Report(val scores: FloatArray)
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val ktFile = outputDir.resolve("com_example_Report_bridge_native.kt").toFile()
+      assertTrue(ktFile.exists())
+
+      val content = ktFile.readText()
+
+      // Float array elements are read through the tag-aware JsNumberToDouble helper
+      // (JS numbers may be INT-tagged; JsValueGetFloat64 on those reads garbage).
+      assertTrue(content.contains("import app.cash.zipline.JsNumberToDouble"))
+      assertTrue(content.contains("JsNumberToDouble(elem).toFloat()"))
+      assertFalse(content.contains("JsValueGetFloat64(elem)"), "Should not read float64 slot directly")
     } finally {
       outputDir.toFile().deleteRecursively()
     }

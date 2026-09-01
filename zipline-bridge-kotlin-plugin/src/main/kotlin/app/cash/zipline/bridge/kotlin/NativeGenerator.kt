@@ -221,7 +221,7 @@ private fun emitPrimitiveArrayHelper(
     "kotlin.Int" -> "JsValueGetInt(elem)"
     "kotlin.Boolean" -> "JsValueGetBool(elem) != 0"
     "kotlin.Double" -> "JsNumberToDouble(elem)"
-    "kotlin.Float" -> "JsValueGetFloat64(elem).toFloat()"
+    "kotlin.Float" -> "JsNumberToDouble(elem).toFloat()"
     "kotlin.Char" -> "JsValueGetInt(elem).toChar()"
     "kotlin.Short" -> "JsValueGetInt(elem).toShort()"
     "kotlin.Byte" -> "JsValueGetInt(elem).toByte()"
@@ -311,6 +311,8 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
       collectRuntimeImports(field.type, needsBridgeForAny, needsJsNumber, needsJsLong, needsMapHelper)
       if (field.isInline && field.underlyingKtType == "kotlin.Long") needsJsLong.add(Unit)
       if (field.isInline && field.underlyingKtType in setOf("kotlin.Double", "kotlin.Float")) needsJsNumber.add(Unit)
+      // Value classes not detected as inline still read Float/Double via JsNumberToDouble.
+      if (!field.isInline && field.wrapperKtType != null && field.ktType in setOf("kotlin.Double", "kotlin.Float")) needsJsNumber.add(Unit)
     }
     if (needsBridgeForAny.isNotEmpty()) {
       appendLine("import app.cash.zipline.bridgeForAny")
@@ -364,9 +366,9 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
         field.isInline && field.underlyingKtType == "kotlin.Float" -> {
           appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
           if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsValueGetFloat64(${field.name}Raw).toFloat()")}")
+            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsNumberToDouble(${field.name}Raw).toFloat()")}")
           } else {
-            appendLine("    val ${field.name}Val = JsValueGetFloat64(${field.name}Raw).toFloat()")
+            appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
             appendLine("    val ${field.name} = ${inlineWrapExpression(field, "${field.name}Val")}")
           }
           appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
@@ -397,10 +399,10 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
           appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
           when (field.ktType) {
             "kotlin.Double" -> {
-              appendLine("    val ${field.name}Val = JsValueGetFloat64(${field.name}Raw).toFloat()")
+              appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
             }
             "kotlin.Float" -> {
-              appendLine("    val ${field.name}Val = JsValueGetFloat64(${field.name}Raw).toFloat()")
+              appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
             }
             else -> {
               appendLine("    // TODO: unsupported wrapper effective type ${field.ktType}")

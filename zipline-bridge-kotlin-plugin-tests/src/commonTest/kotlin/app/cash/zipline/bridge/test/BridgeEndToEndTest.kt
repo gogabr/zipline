@@ -85,6 +85,12 @@ class BridgeEndToEndTest {
   }
 
   @Test
+  fun bridgedFloatListHolder() {
+    // Integral Float values (0f/1f) are stored as INT-tagged JS numbers and must be
+    // converted to Float, not read through the float64 slot (regression for
+    // RelativeLinearGradient.stops).
+    assertEquals(BridgedTestValues.floatList, evalOne("provideBridgedFloatListHolder"))
+  }
   fun bridgedNested() {
     assertEquals(BridgedTestValues.nested, evalOne("provideBridgedNested"))
   }

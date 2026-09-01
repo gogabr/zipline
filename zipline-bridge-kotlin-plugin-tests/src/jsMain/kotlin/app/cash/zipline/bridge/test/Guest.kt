@@ -34,6 +34,8 @@ fun provideBridgedEnumHolder(): BridgedEnumHolder = BridgedTestValues.enumHolder
 
 @JsExport
 fun provideBridgedListHolder(): BridgedListHolder = BridgedTestValues.listHolder
+@JsExport
+fun provideBridgedFloatListHolder(): BridgedFloatListHolder = BridgedTestValues.floatList
 
 @JsExport
 fun provideBridgedNested(): BridgedNested = BridgedTestValues.nested

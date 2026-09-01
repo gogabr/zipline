@@ -63,6 +63,8 @@ data class BridgedNestedInlineHolder(val nested: BridgedNestedInline?)
 
 @WithJS2HostBridge
 data class BridgedListHolder(val items: List<Int>)
+@WithJS2HostBridge
+data class BridgedFloatListHolder(val items: List<Float>)
 
 @WithJS2HostBridge
 data class BridgedNested(val outer: BridgedData)
@@ -284,6 +286,7 @@ object BridgedTestValues {
   val enumSecond = BridgedEnum.SECOND
   val enumHolder = BridgedEnumHolder(value = enumSecond)
   val listHolder = BridgedListHolder(items = listOf(1, 2, 3))
+  val floatList = BridgedFloatListHolder(items = listOf(0, 1).map { it.toFloat() } + listOf(0.5f))
   val nested = BridgedNested(outer = data)
   val nullableNull = BridgedNullable(text = null, count = null)
   val nullableValue = BridgedNullable(text = "x", count = 1)
@@ -293,8 +296,8 @@ object BridgedTestValues {
     intArray = intArrayOf(1, 2, 3),
     stringArray = arrayOf("a", "b", "c"),
     booleanArray = booleanArrayOf(true, false),
-    doubleArray = doubleArrayOf(1.0, 2.0, 3.0),
-    floatArray = floatArrayOf(1.5f, 2.5f, 3.5f),
+    doubleArray = doubleArrayOf(0.0, 1.0, 2.5),
+    floatArray = floatArrayOf(0f, 1.5f, 1f),
     byteArray = byteArrayOf(1, 2, 3),
     shortArray = shortArrayOf(10, 20, 30),
     charArray = charArrayOf('a', 'b', 'c'),

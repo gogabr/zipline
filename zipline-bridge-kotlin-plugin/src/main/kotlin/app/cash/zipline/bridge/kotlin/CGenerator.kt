@@ -539,6 +539,17 @@ internal fun emitNullablePrimitiveExtraction(
     sb.appendLine("                longVal = (jlong)JS_VALUE_GET_INT(js_${field.name});")
     sb.appendLine("            }")
     sb.appendLine("            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, longVal);")
+  } else if (field.ktType == "kotlin.Float" || field.ktType == "kotlin.Double") {
+    // JS numbers are tagged INT or FLOAT64; read the tag first, then box.
+    val cType = info.cType
+    sb.appendLine("            int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+    sb.appendLine("            $cType numVal_${field.name};")
+    sb.appendLine("            if (tag_${field.name} == JS_TAG_INT) {")
+    sb.appendLine("                numVal_${field.name} = ($cType)JS_VALUE_GET_INT(js_${field.name});")
+    sb.appendLine("            } else {")
+    sb.appendLine("                numVal_${field.name} = ($cType)JS_VALUE_GET_FLOAT64(js_${field.name});")
+    sb.appendLine("            }")
+    sb.appendLine("            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, numVal_${field.name});")
   } else {
     sb.appendLine(
       "            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, ${info.jsCast}${info.jsGetter}(js_${field.name}));"
@@ -601,6 +612,32 @@ private fun emitCBridgeFindMethod(helpers: StringBuilder) {
   helpers.appendLine()
 }
 
+/**
+ * Boxed Float/Double converter. JS numbers are tagged either JS_TAG_INT or JS_TAG_FLOAT64
+ * (QuickJS stores int32-sized integral numbers as JS_TAG_INT), so reading the float64 slot
+ * of an int-tagged value yields garbage. Dispatch on the tag, as the field-level converters do.
+ */
+private fun emitCFloatDoubleBoxedConverter(
+  helpers: StringBuilder,
+  name: String,
+  boxedClass: String,
+  ctorSig: String,
+  cType: String,
+) {
+  helpers.appendLine(
+    """
+    static jobject $name(JNIEnv* env, JSContext* ctx, JSValue jsVal) {
+      int tag = JS_VALUE_GET_NORM_TAG(jsVal);
+      $cType val = (tag == JS_TAG_INT) ? ($cType)JS_VALUE_GET_INT(jsVal) : ($cType)JS_VALUE_GET_FLOAT64(jsVal);
+      jclass c = (*env)->FindClass(env, "$boxedClass");
+      jmethodID m = (*env)->GetMethodID(env, c, "<init>", "$ctorSig");
+      return (*env)->NewObject(env, c, m, val);
+    }
+    """.trimIndent(),
+  )
+  helpers.appendLine()
+}
+
 private fun emitCBoxedConverter(
   helpers: StringBuilder,
   name: String,
@@ -645,8 +682,8 @@ private fun emitCValueConverter(
       helpers.appendLine()
     }
     "kotlin.Int" -> emitCBoxedConverter(helpers, name, "java/lang/Integer", "(I)V", "JS_VALUE_GET_INT(jsVal)")
-    "kotlin.Float" -> emitCBoxedConverter(helpers, name, "java/lang/Float", "(F)V", "JS_VALUE_GET_FLOAT64(jsVal)")
-    "kotlin.Double" -> emitCBoxedConverter(helpers, name, "java/lang/Double", "(D)V", "JS_VALUE_GET_FLOAT64(jsVal)")
+    "kotlin.Float" -> emitCFloatDoubleBoxedConverter(helpers, name, "java/lang/Float", "(F)V", "jfloat")
+    "kotlin.Double" -> emitCFloatDoubleBoxedConverter(helpers, name, "java/lang/Double", "(D)V", "jdouble")
     "kotlin.Boolean" -> emitCBoxedConverter(helpers, name, "java/lang/Boolean", "(Z)V", "JS_VALUE_GET_BOOL(jsVal)")
     "kotlin.Long" -> emitCBoxedConverter(helpers, name, "java/lang/Long", "(J)V", "JS_VALUE_GET_INT(jsVal)")
     "kotlin.Byte" -> emitCBoxedConverter(helpers, name, "java/lang/Byte", "(B)V", "(jbyte)JS_VALUE_GET_INT(jsVal)")
@@ -815,6 +852,13 @@ private fun emitCValueConverter(
     in PRIMITIVE_ARRAY_ELEMENT_TYPE -> {
       val arrayType = kotlinToCType[ktType]!!
       val info = primitiveArrayJniInfo[ktType]!!
+      // Float/Double elements: JS numbers may be INT-tagged (QuickJS stores integral
+      // numbers as JS_TAG_INT); reading the float64 slot then yields garbage.
+      val elemRead = if (info.jsGetterTemplate == "JS_VALUE_GET_FLOAT64") {
+        "elems[i] = (JS_VALUE_GET_NORM_TAG(elem) == JS_TAG_INT) ? ${info.jsGetterCast}JS_VALUE_GET_INT(elem) : ${info.jsGetterCast}JS_VALUE_GET_FLOAT64(elem);"
+      } else {
+        "elems[i] = ${info.jsGetterCast}${info.jsGetterTemplate}(elem);"
+      }
       helpers.appendLine(
         """
         static jobject $name(JNIEnv* env, JSContext* ctx, JSValue jsVal) {
@@ -825,7 +869,7 @@ private fun emitCValueConverter(
           ${info.jniElementType}* elems = (*env)->${info.getElementsFn}(env, arr, NULL);
           for (jint i = 0; i < len; i++) {
             JSValue elem = JS_GetPropertyUint32(ctx, jsVal, i);
-            elems[i] = ${info.jsGetterCast}${info.jsGetterTemplate}(elem);
+            $elemRead
             JS_FreeValue(ctx, elem);
           }
           (*env)->${info.releaseElementsFn}(env, arr, elems, 0);

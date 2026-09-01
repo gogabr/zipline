@@ -142,19 +142,21 @@ public fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> {
     }
 
     is Map<*, *> -> {
-      val pairs = JS_NewArray(ctx)
+      // Two parallel JS arrays: the guest's newLinkedHashMap factory zips them into pairs and
+      // builds a real LinkedHashMap (no internal-layout reliance, matches JS-created maps).
+      val keys = JS_NewArray(ctx)
+      val values = JS_NewArray(ctx)
       value.entries.forEachIndexed { index, entry ->
-        val pair = JS_NewArray(ctx)
-        JS_SetPropertyUint32(ctx, pair, 0u, anyToJs(ctx, entry.key))
-        JS_SetPropertyUint32(ctx, pair, 1u, anyToJs(ctx, entry.value))
-        JS_SetPropertyUint32(ctx, pairs, index.convert(), pair)
+        JS_SetPropertyUint32(ctx, keys, index.convert(), anyToJs(ctx, entry.key))
+        JS_SetPropertyUint32(ctx, values, index.convert(), anyToJs(ctx, entry.value))
       }
       val factory = quickJsFor(ctx).bridgeNewLinkedHashMap
         ?: error("HOST2JS: no registered newLinkedHashMap runtime factory; the guest module did not call __bridgeRegisterRuntime")
       memScoped {
-        val args = allocArrayOf(pairs)
-        val r = JS_Call(ctx, factory, JsUndefined(), 1, args)
-        JS_FreeValue(ctx, pairs)
+        val args = allocArrayOf(keys, values)
+        val r = JS_Call(ctx, factory, JsUndefined(), 2, args)
+        JS_FreeValue(ctx, keys)
+        JS_FreeValue(ctx, values)
         r
       }
     }

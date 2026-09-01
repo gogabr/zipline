@@ -770,25 +770,26 @@ actual class QuickJs private constructor(
   }
 
   /**
-   * Handles the guest's module-load `__bridgeRegisterRuntime(newLong, newArrayList,
-   * newLinkedHashMap)` call, retaining the three factory functions for host2js collection/Long
-   * construction. A guest compiled with the bridge plugin always calls this; a missing call is
-   * a crash at conversion time (see [app.cash.zipline.anyToJs]).
+   * Handles the guest's module-load `__bridgeRegisterRuntime(__BridgeRuntimeFactories)` call,
+   * retaining the three factory methods for host2js collection/Long construction. A guest
+   * compiled with the bridge plugin always calls this; a missing call is a crash at conversion
+   * time (see [app.cash.zipline.anyToJs]).
    */
   internal fun bridgeRegisterRuntimeJsHandler(
     argc: Int,
     argv: CArrayPointer<JSValue>,
   ): CValue<JSValue> {
-    if (argc < 3) {
-      println("BRIDGE: __bridgeRegisterRuntime expected 3 args, got $argc")
+    if (argc < 1) {
+      println("BRIDGE: __bridgeRegisterRuntime expected 1 arg, got $argc")
       return JsUndefined()
     }
+    val factories = JsValueArrayToInstanceRef(argv, 0)
     bridgeNewLong?.let { JS_FreeValue(context, it) }
     bridgeNewArrayList?.let { JS_FreeValue(context, it) }
     bridgeNewLinkedHashMap?.let { JS_FreeValue(context, it) }
-    bridgeNewLong = JS_DupValue(context, JsValueArrayToInstanceRef(argv, 0))
-    bridgeNewArrayList = JS_DupValue(context, JsValueArrayToInstanceRef(argv, 1))
-    bridgeNewLinkedHashMap = JS_DupValue(context, JsValueArrayToInstanceRef(argv, 2))
+    bridgeNewLong = JS_GetPropertyStr(context, factories, "newLong")
+    bridgeNewArrayList = JS_GetPropertyStr(context, factories, "newArrayList")
+    bridgeNewLinkedHashMap = JS_GetPropertyStr(context, factories, "newLinkedHashMap")
     return JsUndefined()
   }
 

@@ -64,11 +64,22 @@ class ZiplineBridgeIrGenerationExtension(
     if (cOutputDir != null) {
       generateCBridges(cOutputDir, annotatedClasses, host2JsClasses)
       generateKeepNames(cOutputDir, annotatedClasses)
+      // JVM member injection: the external convertToJs(J)J native method, implemented by the
+      // generated C. Injected with the C generation so the member and its implementation exist
+      // together.
+      injectJvmConvertToJsMembers(pluginContext, host2JsClasses)
+    }
+
+    // -- Kotlin/Native host2js member injection (override + Host2JsConvertible supertype) --
+    if (pluginContext.platform?.componentPlatforms?.any { it is org.jetbrains.kotlin.platform.NativePlatform } == true) {
+      injectNativeConvertToJsMembers(finder, pluginContext, host2JsClasses)
     }
 
     // -- JS bridge dispatch injection (Kotlin/JS) --
     if (isJsTarget) {
       injectCompanionInitBlocks(finder, moduleFragment, dispatchClasses, pluginContext)
+      // Host2JS module-load registration (prototypes + runtime factories).
+      injectModuleLoadBridgeRegistration(finder, pluginContext, moduleFragment, host2JsClasses)
     }
   }
 

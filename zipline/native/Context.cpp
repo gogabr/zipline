@@ -169,17 +169,17 @@ static JSValue bridge_register_js(JSContext *ctx, JSValueConst this_val,
     return JS_UNDEFINED;
 }
 
-// __bridgeRegisterRuntime — the guest's module-load call registering its kotlin.Long,
-// ArrayList, and LinkedHashMap factory functions. The host retains them per-context and calls
-// them via JS_Call to build real Kotlin/JS collection/Long instances.
+// __bridgeRegisterRuntime — the guest's module-load call registering its __BridgeRuntimeFactories
+// object (methods newLong/newArrayList/newLinkedHashMap). The host retains the three methods
+// per-context and calls them via JS_Call to build real Kotlin/JS collection/Long instances.
 static JSValue bridge_register_runtime_js(JSContext *ctx, JSValueConst this_val,
     int argc, JSValueConst *argv) {
-    if (argc < 3) {
+    if (argc < 1) {
 #if defined(__ANDROID__)
         __android_log_print(ANDROID_LOG_ERROR, "BRIDGE",
-            "bridge_register_runtime_js: expected 3 args, got %d", argc);
+            "bridge_register_runtime_js: expected 1 arg, got %d", argc);
 #else
-        printf("BRIDGE: bridge_register_runtime_js: expected 3 args, got %d\n", argc);
+        printf("BRIDGE: bridge_register_runtime_js: expected 1 arg, got %d\n", argc);
 #endif
         return JS_UNDEFINED;
     }
@@ -187,9 +187,9 @@ static JSValue bridge_register_runtime_js(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, context->bridgeNewLong);
     JS_FreeValue(ctx, context->bridgeNewArrayList);
     JS_FreeValue(ctx, context->bridgeNewLinkedHashMap);
-    context->bridgeNewLong = JS_DupValue(ctx, argv[0]);
-    context->bridgeNewArrayList = JS_DupValue(ctx, argv[1]);
-    context->bridgeNewLinkedHashMap = JS_DupValue(ctx, argv[2]);
+    context->bridgeNewLong = JS_GetPropertyStr(ctx, argv[0], "newLong");
+    context->bridgeNewArrayList = JS_GetPropertyStr(ctx, argv[0], "newArrayList");
+    context->bridgeNewLinkedHashMap = JS_GetPropertyStr(ctx, argv[0], "newLinkedHashMap");
     return JS_UNDEFINED;
 }
 extern "C" __attribute__((used, visibility("default"))) void register_all(JSContext* ctx) {
@@ -786,7 +786,10 @@ __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, 
     env->DeleteLocalRef(entrySet);
     if (env->ExceptionCheck()) return JS_NULL;
     if (iterator == nullptr) return JS_NULL;
-    JSValue pairs = JS_NewArray(ctx);
+    // Two parallel JS arrays: the guest's newLinkedHashMap factory zips them into pairs and
+    // builds a real LinkedHashMap (no internal-layout reliance, matches JS-created maps).
+    JSValue keys = JS_NewArray(ctx);
+    JSValue values = JS_NewArray(ctx);
     jint index = 0;
     while (!env->ExceptionCheck()) {
       jboolean hasNext = env->CallBooleanMethod(iterator, context->iteratorHasNext);
@@ -810,29 +813,32 @@ __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, 
       env->DeleteLocalRef(entry);
       if (env->ExceptionCheck()) {
         JS_FreeValue(ctx, keyJs);
-        JS_FreeValue(ctx, pairs);
+        JS_FreeValue(ctx, keys);
+        JS_FreeValue(ctx, values);
         env->DeleteLocalRef(iterator);
         return JS_NULL;
       }
-      JSValue pair = JS_NewArray(ctx);
-      JS_SetPropertyUint32(ctx, pair, 0, keyJs);
-      JS_SetPropertyUint32(ctx, pair, 1, valueJs);
-      JS_SetPropertyUint32(ctx, pairs, (uint32_t)index++, pair);
+      JS_SetPropertyUint32(ctx, keys, (uint32_t)index, keyJs);
+      JS_SetPropertyUint32(ctx, values, (uint32_t)index, valueJs);
+      index++;
     }
     env->DeleteLocalRef(iterator);
     if (env->ExceptionCheck()) {
-      JS_FreeValue(ctx, pairs);
+      JS_FreeValue(ctx, keys);
+      JS_FreeValue(ctx, values);
       return JS_NULL;
     }
     if (JS_IsUndefined(context->bridgeNewLinkedHashMap)) {
       env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
                     "host2js: no registered newLinkedHashMap runtime factory; the guest module did not call __bridgeRegisterRuntime");
-      JS_FreeValue(ctx, pairs);
+      JS_FreeValue(ctx, keys);
+      JS_FreeValue(ctx, values);
       return JS_NULL;
     }
-    JSValue args[1] = {pairs};
-    JSValue r = JS_Call(ctx, context->bridgeNewLinkedHashMap, JS_UNDEFINED, 1, args);
-    JS_FreeValue(ctx, pairs);
+    JSValue args[2] = {keys, values};
+    JSValue r = JS_Call(ctx, context->bridgeNewLinkedHashMap, JS_UNDEFINED, 2, args);
+    JS_FreeValue(ctx, keys);
+    JS_FreeValue(ctx, values);
     return r;
   }
 

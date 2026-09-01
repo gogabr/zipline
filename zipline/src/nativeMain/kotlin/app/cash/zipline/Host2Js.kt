@@ -28,7 +28,8 @@ import app.cash.zipline.quickjs.JS_NewBool
 import app.cash.zipline.quickjs.JS_NewFloat64
 import app.cash.zipline.quickjs.JS_NewInt32
 import app.cash.zipline.quickjs.JS_NewString
-import app.cash.zipline.quickjs.JS_SetPropertyStr
+import app.cash.zipline.quickjs.JS_DefinePropertyValueStr
+import app.cash.zipline.quickjs.JS_PROP_C_W_E
 import app.cash.zipline.quickjs.JS_SetPropertyUint32
 import app.cash.zipline.quickjs.JsNull
 import app.cash.zipline.quickjs.JsUndefined
@@ -80,8 +81,10 @@ public fun kotlinLongToJs(ctx: CPointer<JSContext>, value: Long): CValue<JSValue
 }
 
 /**
- * Set [name] on [obj] to [value]. Consumes [value] (QuickJS takes ownership), so the caller
- * must not free it afterwards.
+ * Define [name] on [obj] as an own data property with value [value] (configurable, writable,
+ * enumerable). Defining (not plain assignment) shadows any getter-only accessor the class
+ * prototype may carry, which is how the guest's plain-name properties read back. Consumes
+ * [value] (QuickJS takes ownership), so the caller must not free it afterwards.
  */
 public fun setJsProperty(
   ctx: CPointer<JSContext>,
@@ -89,7 +92,7 @@ public fun setJsProperty(
   name: String,
   value: CValue<JSValue>,
 ) {
-  JS_SetPropertyStr(ctx, obj, name, value)
+  JS_DefinePropertyValueStr(ctx, obj, name, value, JS_PROP_C_W_E)
 }
 
 /**

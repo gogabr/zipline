@@ -266,81 +266,6 @@ internal fun addJsNameAnnotation(
  * instances via public stdlib APIs (`Long(low, high)`, `toCollection`, `zip`/`toMap`) — no
  * reliance on internal layout or mangled field names.
  */
-internal fun injectModuleLoadBridgeRegistration(
-  finder: DeclarationFinder,
-  pluginContext: IrPluginContext,
-  moduleFragment: IrModuleFragment,
-  host2JsClasses: List<IrClass>,
-) {
-  if (host2JsClasses.isEmpty()) return
-  val fileForModule = moduleFragment.files.firstOrNull() ?: return
-
-  val kclassJsGetterSymbol = findKClassJsGetter(finder)
-  val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
-  val bridgeRegisterRuntimeSymbol = findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
-
-  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
-
-  // The module-load trigger: a synthetic top-level property whose initializer runs at module
-  // load (top-level property initializers are module init in Kotlin/JS).
-  val property = pluginContext.irFactory.buildProperty {
-    name = Name.identifier("__bridgeHost2JsRegistered")
-    visibility = DescriptorVisibilities.INTERNAL
-    origin = IrDeclarationOrigin.DEFINED
-    isVar = false
-  }
-  property.parent = fileForModule
-  val field = pluginContext.irFactory.buildField {
-    name = Name.identifier("__bridgeHost2JsRegistered")
-    type = pluginContext.irBuiltIns.booleanType
-    visibility = DescriptorVisibilities.INTERNAL
-    origin = IrDeclarationOrigin.DEFINED
-    isFinal = true
-    isStatic = true
-  }
-  field.parent = fileForModule
-  property.backingField = field
-
-  val builder = pluginContext.irBuiltIns.createIrBuilder(property.symbol)
-  field.initializer = builder.irExprBody(
-    builder.irBlock(UNDEFINED_OFFSET, UNDEFINED_OFFSET, null, pluginContext.irBuiltIns.booleanType) {
-      for (clazz in host2JsClasses) {
-        val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
-        val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
-        val classRef = IrClassReferenceImpl(
-          UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-          pluginContext.irBuiltIns.kClassClass.starProjectedType,
-          clazz.symbol, clazz.defaultType,
-        )
-        val jsCtorCall = irCall(kclassJsGetterSymbol).apply {
-          insertExtensionReceiver(classRef)
-        }
-        +irCall(bridgeRegisterSymbol).apply {
-          arguments[0] = irString(targetFqn)
-          arguments[1] = jsCtorCall
-        }
-      }
-      +irCall(bridgeRegisterRuntimeSymbol).apply {
-        arguments[0] = irGetObjectValue(pluginContext.irBuiltIns.anyNType, factoriesClass.symbol)
-      }
-      +irBoolean(true)
-    },
-  )
-
-  val getter = property.addGetter {
-    name = Name.identifier("get-__bridgeHost2JsRegistered")
-    visibility = DescriptorVisibilities.INTERNAL
-    returnType = pluginContext.irBuiltIns.booleanType
-    origin = IrDeclarationOrigin.DEFINED
-  }
-  val getterBuilder = pluginContext.irBuiltIns.createIrBuilder(getter.symbol)
-  getter.body = getterBuilder.irBlockBody {
-    // Top-level backing fields are accessed with a null receiver (static field).
-    +irReturn(getterBuilder.irGetField(getterBuilder.irNull(), field, pluginContext.irBuiltIns.booleanType))
-  }
-
-  fileForModule.declarations += property
-}
 
 /**
  * Build the synthetic internal `object __BridgeRuntimeFactories` with the three factory
@@ -355,12 +280,15 @@ private fun buildRuntimeFactories(
 ): IrClass {
   val factoriesClass = pluginContext.irFactory.buildClass {
     name = Name.identifier("__BridgeRuntimeFactories")
-    kind = ClassKind.OBJECT
+    kind = ClassKind.CLASS
     modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
     visibility = DescriptorVisibilities.INTERNAL
     origin = IrDeclarationOrigin.DEFINED
   }
   factoriesClass.parent = fileForModule
+  // A plain class (not an object): a synthetic object's singleton accessor proved unreliable
+  // in the JS backend, so the registration constructs an instance via the constructor instead.
+  factoriesClass.createThisReceiverParameter()
   factoriesClass.addConstructor {
     visibility = DescriptorVisibilities.PRIVATE
     isPrimary = true
@@ -376,8 +304,13 @@ private fun buildRuntimeFactories(
     .firstOrNull { it.parameters.isEmpty() }
     ?: error("ArrayList() constructor not found")
   val linkedHashMapClass = finder.findClass(ClassId(FqName("kotlin.collections"), Name.identifier("LinkedHashMap")))!!.owner
+  // The (Map) copy constructor specifically — LinkedHashMap also has a one-arg (Int) capacity
+  // constructor, and passing a map to it yields a bogus capacity.
   val linkedHashMapMapCtor = linkedHashMapClass.declarations.filterIsInstance<IrConstructor>()
-    .firstOrNull { it.parameters.size == 1 }
+    .firstOrNull {
+      it.parameters.size == 1 &&
+        it.parameters[0].type.getClass()?.fqNameWhenAvailable?.asString() == "kotlin.collections.Map"
+    }
     ?: error("LinkedHashMap(Map) constructor not found")
   val toCollection = resolveExtensionFun(finder, "kotlin.collections", "toCollection") {
     it.parameters.size == 2 &&
@@ -394,11 +327,12 @@ private fun buildRuntimeFactories(
   }
 
   val anyNType = pluginContext.irBuiltIns.anyNType
-  val anyListType = arrayListClass.defaultType
-  val anyMapType = linkedHashMapClass.defaultType
+  // MARKER_9F3A typeWith, not defaultType: stdlib klib classes have a null thisReceiver, so defaultType NPEs.
+  val anyListType = arrayListClass.typeWith(anyNType)
+  val anyMapType = linkedHashMapClass.typeWith(anyNType, anyNType)
 
   buildObjectMethod(
-    pluginContext, factoriesClass, "newLong", pluginContext.irBuiltIns.longType,
+    finder, pluginContext, factoriesClass, "newLong", pluginContext.irBuiltIns.longType,
     listOf(pluginContext.irBuiltIns.intType, pluginContext.irBuiltIns.intType),
   ) { builder, params ->
     builder.irCall(longCtor).apply {
@@ -408,7 +342,7 @@ private fun buildRuntimeFactories(
   }
 
   buildObjectMethod(
-    pluginContext, factoriesClass, "newArrayList", anyListType,
+    finder, pluginContext, factoriesClass, "newArrayList", anyListType,
     listOf(pluginContext.irBuiltIns.arrayClass.typeWith(anyNType)),
   ) { builder, params ->
     builder.irCall(toCollection).apply {
@@ -422,7 +356,7 @@ private fun buildRuntimeFactories(
   }
 
   buildObjectMethod(
-    pluginContext, factoriesClass, "newLinkedHashMap", anyMapType,
+    finder, pluginContext, factoriesClass, "newLinkedHashMap", anyMapType,
     listOf(
       pluginContext.irBuiltIns.arrayClass.typeWith(anyNType),
       pluginContext.irBuiltIns.arrayClass.typeWith(anyNType),
@@ -450,6 +384,7 @@ private fun buildRuntimeFactories(
 
 /** Build an internal member function on [owner] whose body returns the [body] expression. */
 private fun buildObjectMethod(
+  finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   owner: IrClass,
   name: String,
@@ -471,12 +406,53 @@ private fun buildObjectMethod(
     }
   }
   fn.addDispatchReceiver(owner, pluginContext)
+  // @JsExport keeps the methods from being DCE'd (the host invokes them via the retained
+  // references, the guest never calls them); @JsName pins the JS name, which the host looks up
+  // (internal members would otherwise get mangled JS names).
+  addJsExportAnnotation(fn, finder, pluginContext)
+  addJsNameToFunction(fn, name, finder, pluginContext)
   val builder = pluginContext.irBuiltIns.createIrBuilder(fn.symbol)
   fn.body = builder.irBlockBody {
     +irReturn(body(builder, params))
   }
   owner.declarations += fn
   return fn
+}
+
+/** @JsExport on the generated factory method so the JS DCE keeps it. */
+private fun addJsExportAnnotation(
+  fn: IrSimpleFunction,
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+) {
+  val jsExportClass = finder.findClass(ClassId(FqName("kotlin.js"), Name.identifier("JsExport")))?.owner ?: return
+  val ctor = jsExportClass.declarations.filterIsInstance<IrConstructor>()
+    .firstOrNull { it.isPrimary } ?: return
+  fn.annotations += IrConstructorCallImpl(
+    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+    ctor.returnType, ctor.symbol, 0, 0,
+  )
+}
+
+/** @JsName("<name>") so the host can look the method up by its plain JS name. */
+private fun addJsNameToFunction(
+  fn: IrSimpleFunction,
+  name: String,
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+) {
+  val jsNameClass = finder.findClass(JS_NAME_CLASS_ID)?.owner ?: return
+  val ctor = jsNameClass.declarations.filterIsInstance<IrConstructor>()
+    .firstOrNull { it.isPrimary } ?: return
+  fn.annotations += IrConstructorCallImpl(
+    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+    ctor.returnType, ctor.symbol, 0, 1,
+  ).apply {
+    arguments[0] = IrConstImpl.string(
+      UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType, name,
+    )
+  }
 }
 
 /** Resolve a top-level extension function in [packageName] filtered by [predicate]. */
@@ -599,4 +575,89 @@ private fun IrSimpleFunction.addDispatchReceiver(clazz: IrClass, pluginContext: 
   }
   val receiver = pluginContext.irFactory.buildValueParameter(builder, clazz)
   parameters = listOf(receiver) + parameters
+}
+
+/**
+ * Register every @WithHost2JSBridge class with the host via the class's companion constructor,
+ * plus the synthetic `__BridgeRuntimeFactories` object whose methods the host uses to build
+ * real Kotlin/JS `kotlin.Long`, `ArrayList`, and `LinkedHashMap` instances.
+ *
+ * The companion constructor fires when the guest constructs the class — for classes the guest
+ * never constructs, the tests warm them up guest-side first (see Guest.warmUpHost2Js). This is
+ * the same mechanism the JS2Host bridge uses (companion-injected `__bridgeRegister`), which
+ * the JS backend handles natively; a synthetic module-load top-level property proved fragile
+ * against backend field-indexing internals and was abandoned (see the plan's fallback note).
+ */
+internal fun injectCompanionBridgeRegistration(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  moduleFragment: IrModuleFragment,
+  host2JsClasses: List<IrClass>,
+) {
+  if (host2JsClasses.isEmpty()) return
+  val fileForModule = moduleFragment.files.firstOrNull() ?: return
+
+  val kclassJsGetterSymbol = findKClassJsGetter(finder)
+  val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  val bridgeRegisterRuntimeSymbol = findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
+  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
+
+  for (clazz in host2JsClasses) {
+    val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
+    val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
+
+    if (clazz.isCompanion || clazz.kind == ClassKind.OBJECT) {
+      injectBridgeIntoConstructor(
+        clazz, targetFqn, clazz, kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext,
+      )
+      injectRuntimeRegistrationIntoConstructor(
+        clazz, factoriesClass, bridgeRegisterRuntimeSymbol, pluginContext,
+      )
+      continue
+    }
+
+    var companion = clazz.declarations.filterIsInstance<IrClass>().firstOrNull { it.isCompanion }
+    if (companion == null) {
+      companion = createCompanion(clazz, pluginContext)
+    }
+    injectBridgeIntoConstructor(
+      companion, targetFqn, clazz, kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext,
+    )
+    injectRuntimeRegistrationIntoConstructor(
+      companion, factoriesClass, bridgeRegisterRuntimeSymbol, pluginContext,
+    )
+  }
+}
+
+/** Insert `__bridgeRegisterRuntime(__BridgeRuntimeFactories)` into the companion's primary ctor. */
+private fun injectRuntimeRegistrationIntoConstructor(
+  companion: IrClass,
+  factoriesClass: IrClass,
+  bridgeRegisterRuntimeSymbol: IrSimpleFunctionSymbol,
+  pluginContext: IrPluginContext,
+) {
+  val ctor = companion.declarations.filterIsInstance<IrConstructor>()
+    .firstOrNull { it.isPrimary } ?: return
+  val factoriesCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
+    .firstOrNull { it.isPrimary } ?: return
+  val builder = pluginContext.irBuiltIns.createIrBuilder(ctor.symbol)
+  val registerCall = builder.irCall(bridgeRegisterRuntimeSymbol).apply {
+    arguments[0] = builder.irCall(factoriesCtor)
+  }
+
+  val body = ctor.body
+  if (body is IrBlockBody) {
+    body.statements.add(1, registerCall)
+  } else {
+    val superCall = (body as? IrExpressionBody)?.expression
+      ?: builder.irDelegatingConstructorCall(
+        pluginContext.irBuiltIns.anyClass.owner.declarations
+          .filterIsInstance<IrConstructor>()
+          .first { it.isPrimary },
+      )
+    ctor.body = builder.irBlockBody {
+      +superCall
+      +registerCall
+    }
+  }
 }

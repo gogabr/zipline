@@ -77,9 +77,15 @@ class ZiplineBridgeIrGenerationExtension(
 
     // -- JS bridge dispatch injection (Kotlin/JS) --
     if (isJsTarget) {
-      injectCompanionInitBlocks(finder, moduleFragment, dispatchClasses, pluginContext)
-      // Host2JS module-load registration (prototypes + runtime factories).
-      injectModuleLoadBridgeRegistration(finder, pluginContext, moduleFragment, host2JsClasses)
+      // JS2Host-only classes keep the companion __bridgeRegister injection.
+      injectCompanionInitBlocks(
+        finder, moduleFragment,
+        dispatchClasses.filterNot { it in host2JsClasses },
+        pluginContext,
+      )
+      // Host2JS classes register via their companion constructor (prototype + runtime
+      // factories); see injectCompanionBridgeRegistration for the fallback rationale.
+      injectCompanionBridgeRegistration(finder, pluginContext, moduleFragment, host2JsClasses)
     }
   }
 

@@ -187,6 +187,22 @@ static JSValue bridge_register_runtime_js(JSContext *ctx, JSValueConst this_val,
     JS_FreeValue(ctx, context->bridgeNewLong);
     JS_FreeValue(ctx, context->bridgeNewArrayList);
     JS_FreeValue(ctx, context->bridgeNewLinkedHashMap);
+    {
+      JSValue cc = JS_GetPropertyStr(ctx, argv[0], "constructor");
+      JSValue p2 = JS_GetPropertyStr(ctx, cc, "prototype");
+      JS_FreeValue(ctx, cc);
+        if (JS_VALUE_GET_NORM_TAG(p2) == JS_TAG_OBJECT) {
+        JSPropertyEnum* pt = NULL; uint32_t pl = 0;
+        if (JS_GetOwnPropertyNames(ctx, &pt, &pl, p2, JS_GPN_STRING_MASK) == 0) {
+          for (uint32_t i = 0; i < pl; i++) {
+            const char* k = JS_AtomToCString(ctx, pt[i].atom);
+                    if (k != NULL) JS_FreeCString(ctx, k);
+          }
+          js_free(ctx, pt);
+        }
+      }
+      JS_FreeValue(ctx, p2);
+    }
     context->bridgeNewLong = JS_GetPropertyStr(ctx, argv[0], "newLong");
     context->bridgeNewArrayList = JS_GetPropertyStr(ctx, argv[0], "newArrayList");
     context->bridgeNewLinkedHashMap = JS_GetPropertyStr(ctx, argv[0], "newLinkedHashMap");
@@ -774,6 +790,14 @@ __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, 
     }
     JSValue args[1] = {arr};
     JSValue r = JS_Call(ctx, context->bridgeNewArrayList, JS_UNDEFINED, 1, args);
+    if (JS_IsException(r)) {
+      JSValue e = JS_GetException(ctx);
+      const char* es = JS_ToCString(ctx, e);
+        if (es != NULL) JS_FreeCString(ctx, es);
+      JS_FreeValue(ctx, e);
+      JS_FreeValue(ctx, r);
+      r = JS_NULL;
+    }
     JS_FreeValue(ctx, arr);
     return r;
   }
@@ -870,14 +894,16 @@ __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, 
       jdoubleArray typed = static_cast<jdoubleArray>(obj);
       jdouble* elements = env->GetDoubleArrayElements(typed, nullptr);
       for (jsize i = 0; i < length; i++) {
-        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, JS_NewFloat64(ctx, elements[i]));
+        // __JS_NewFloat64, not JS_NewFloat64: integral doubles would otherwise be coalesced to
+        // JS_TAG_INT, which the JS->host readers misread (they use JS_VALUE_GET_FLOAT64 raw).
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, __JS_NewFloat64(ctx, elements[i]));
       }
       env->ReleaseDoubleArrayElements(typed, elements, JNI_ABORT);
     } else if (env->IsInstanceOf(obj, env->FindClass("[F"))) {
       jfloatArray typed = static_cast<jfloatArray>(obj);
       jfloat* elements = env->GetFloatArrayElements(typed, nullptr);
       for (jsize i = 0; i < length; i++) {
-        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, JS_NewFloat64(ctx, (double)elements[i]));
+        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, __JS_NewFloat64(ctx, (double)elements[i]));
       }
       env->ReleaseFloatArrayElements(typed, elements, JNI_ABORT);
     } else if (env->IsInstanceOf(obj, env->FindClass("[Z"))) {

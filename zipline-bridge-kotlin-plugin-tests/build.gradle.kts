@@ -184,6 +184,7 @@ tasks {
   val compileBridgeC = register<Exec>("compileBridgeC") {
     dependsOn("compileKotlinJvm")
     inputs.dir(bridgeCOutputDir)
+    inputs.file(projectDir.resolve("src/jvmTest/c/host2js_test_jni.c"))
     outputs.dir(bridgeObjDir)
     doFirst {
       // The Gradle daemon may run on a JRE without JNI headers (e.g. Android Studio's JBR),
@@ -193,7 +194,10 @@ tasks {
       val repoNative = rootProject.projectDir.resolve("zipline/native")
       val cFiles = bridgeCOutputDir.get().asFile.listFiles { f -> f.extension == "c" }!!
         .sortedBy { it.name }
-        .map { it.absolutePath }
+        .map { it.absolutePath } +
+        // Handwritten JNI hooks for Host2JsBridgeEndToEndTest (bridgeAnyToJs/bridgeForAny
+        // symbols resolve at dlopen time against the already-loaded libquickjs).
+        listOf(projectDir.resolve("src/jvmTest/c/host2js_test_jni.c").absolutePath)
       val objDir = bridgeObjDir.get().asFile
       objDir.mkdirs()
       workingDir(objDir)

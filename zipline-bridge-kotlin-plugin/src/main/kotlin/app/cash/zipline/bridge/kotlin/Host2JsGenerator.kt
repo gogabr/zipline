@@ -19,13 +19,16 @@ import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.builders.irVararg
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.starProjectedType
 import org.jetbrains.kotlin.ir.util.createDispatchReceiverParameter
+import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.properties
@@ -53,6 +56,9 @@ internal fun injectJvmConvertToJsMembers(
       name = Name.identifier("convertToJs")
       returnType = pluginContext.irBuiltIns.longType
       visibility = DescriptorVisibilities.PUBLIC
+      // Open so annotated subclasses can override with their own member (each annotated class
+      // converts its own fields); external native methods allow this at IR level.
+      modality = org.jetbrains.kotlin.descriptors.Modality.OPEN
       origin = org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin.DEFINED
       isExternal = true
     }
@@ -64,6 +70,37 @@ internal fun injectJvmConvertToJsMembers(
     member.addDispatchReceiver(clazz, pluginContext)
     clazz.declarations += member
   }
+
+  // A subclass of an annotated class redeclares the same JVM signature; the JVM requires it to
+  // be an override of the ancestor's member, so link them (virtual dispatch still routes to
+  // the runtime class's own member).
+  val members = host2JsClasses.associateWith { clazz ->
+    clazz.declarations.filterIsInstance<IrSimpleFunction>()
+      .firstOrNull { it.name.asString() == "convertToJs" }
+  }
+  for (clazz in host2JsClasses) {
+    val member = members[clazz] ?: continue
+    val ancestorMember = findAnnotatedAncestorConvertToJs(clazz, host2JsClasses, members)
+    if (ancestorMember != null) {
+      member.overriddenSymbols += ancestorMember.symbol
+    }
+  }
+}
+
+/** Nearest ancestor (through superTypes) that has an injected convertToJs member. */
+private fun findAnnotatedAncestorConvertToJs(
+  clazz: IrClass,
+  host2JsClasses: List<IrClass>,
+  members: Map<IrClass, IrSimpleFunction?>,
+): IrSimpleFunction? {
+  for (superType in clazz.superTypes) {
+    val superClass = superType.getClass() ?: continue
+    val member = members[superClass]
+    if (member != null) return member
+    val deeper = findAnnotatedAncestorConvertToJs(superClass, host2JsClasses, members)
+    if (deeper != null) return deeper
+  }
+  return null
 }
 
 /**
@@ -124,56 +161,61 @@ internal fun injectNativeConvertToJsMembers(
 
     val builder = pluginContext.irBuiltIns.createIrBuilder(member.symbol)
     member.body = builder.irBlockBody {
-      val obj = irTemporary(
-        irCall(checkNotNullSymbol).apply {
-          typeArguments[0] = jsValueType
-          arguments[0] = irCall(newJsObjectSymbol).apply {
-            arguments[0] = irGet(member.parameters.first())
-            arguments[1] = irString(protoFqn)
-          }
-        },
-      )
+      val obj = {
+        irTemporary(
+          irCall(checkNotNullSymbol).apply {
+            typeArguments[0] = jsValueType
+            arguments[0] = irCall(newJsObjectSymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irString(protoFqn)
+            }
+          },
+        )
+      }
       if (clazz.kind == ClassKind.ENUM_CLASS) {
+        val obj = obj()
         val ordinalGetter = finder.findProperties(
           CallableId(ClassId(FqName("kotlin"), Name.identifier("Enum")), Name.identifier("ordinal")),
         ).mapNotNull { it.owner.getter }.firstOrNull()?.symbol
           ?: error("kotlin.Enum.ordinal getter not found")
         +irCall(setJsPropertySymbol).apply {
-          arguments[0] = irGet(member.parameters.first())
+          arguments[0] = irGet(member.parameters[1])
           arguments[1] = irGet(obj)
           arguments[2] = irString("ordinal_1")
           arguments[3] = irCall(jsNewInt32Symbol).apply {
-            arguments[0] = irGet(member.parameters.first())
+            arguments[0] = irGet(member.parameters[1])
             arguments[1] = irCall(ordinalGetter).apply {
               dispatchReceiver = irGet(member.dispatchReceiverParameter!!)
             }
           }
         }
+        +irReturn(irGet(obj))
       } else if (isInlineClass(clazz)) {
         // Value class: convert the underlying value directly (primitives carry no prototype).
         val underlyingField = clazz.properties.singleOrNull()?.backingField
           ?: error("HOST2JS: value class $fqName has no backing field")
         +irReturn(
           irCall(anyToJsSymbol).apply {
-            arguments[0] = irGet(member.parameters.first())
+            arguments[0] = irGet(member.parameters[1])
             arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), underlyingField)
           },
         )
       } else {
+        val obj = obj()
         for (field in extractFields(clazz, includeValBodyFields = true)) {
-          val backingField = clazz.properties.firstOrNull { it.name.asString() == field.name }?.backingField
+          val backingField = findBackingField(clazz, field.name)
             ?: error("HOST2JS: no backing field for ${clazz.name.asString()}.${field.name}")
           +irCall(setJsPropertySymbol).apply {
-            arguments[0] = irGet(member.parameters.first())
+            arguments[0] = irGet(member.parameters[1])
             arguments[1] = irGet(obj)
             arguments[2] = irString(field.jsPropertyName)
             arguments[3] = irCall(anyToJsSymbol).apply {
-              arguments[0] = irGet(member.parameters.first())
+              arguments[0] = irGet(member.parameters[1])
               arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
             }
           }
         }
-        +irGet(obj)
+        +irReturn(irGet(obj))
       }
     }
     clazz.declarations += member
@@ -184,6 +226,16 @@ private fun resolveTopLevelFun(finder: DeclarationFinder, packageName: String, n
   return finder.findFunctions(CallableId(FqName(packageName), Name.identifier(name)))
     .firstOrNull()
     ?: error("$packageName.$name not found")
+}
+
+/** The backing field for [propertyName], searching [clazz] and its superclasses. */
+private fun findBackingField(clazz: IrClass, propertyName: String): IrField? {
+  clazz.properties.firstOrNull { it.name.asString() == propertyName }?.backingField?.let { return it }
+  for (superType in clazz.superTypes) {
+    val superClass = superType.getClass() ?: continue
+    findBackingField(superClass, propertyName)?.let { return it }
+  }
+  return null
 }
 
 /** Attach a dispatch receiver to an injected member (the parameters list is the single source of truth in 2.3). */

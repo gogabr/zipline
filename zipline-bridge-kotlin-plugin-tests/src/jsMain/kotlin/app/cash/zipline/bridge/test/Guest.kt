@@ -89,3 +89,56 @@ fun provideBridgedBoundedGenericClass(): BridgedBoundedGenericClass<BridgedBound
 
 @JsExport
 fun provideBridgedNestedGeneric(): BridgedNestedGeneric = BridgedTestValues.nestedGeneric
+
+@JsExport
+fun provideBridgedLongHolder(): BridgedLongHolder = BridgedTestValues.longHolder
+
+@JsExport
+fun provideBridgedLongInlineHolder(): BridgedLongInlineHolder = BridgedTestValues.longInlineHolder
+
+@JsExport
+fun provideBridgedLongInline(): BridgedLongInline = BridgedTestValues.longInline
+
+/**
+ * Constructs every @WithHost2JSBridge test value on the guest side. Construction fires each
+ * class's companion-constructor bridge registration (prototype + runtime factories), so the
+ * host can later build JS counterparts of host values without the guest constructing them
+ * mid-test. Returns true on success.
+ */
+@JsExport
+fun warmUpHost2Js(): Boolean {
+  BridgedTestValues.data
+  BridgedTestValues.inline
+  BridgedTestValues.float
+  BridgedTestValues.double
+  BridgedTestValues.nestedInline
+  BridgedTestValues.enumSecond
+  BridgedTestValues.inlineHolder
+  BridgedTestValues.floatHolder
+  BridgedTestValues.doubleHolder
+  BridgedTestValues.nestedInlineHolder
+  BridgedTestValues.nestedInlineHolderNull
+  BridgedTestValues.enumHolder
+  BridgedTestValues.listHolder
+  BridgedTestValues.nested
+  BridgedTestValues.nullableNull
+  BridgedTestValues.nullableValue
+  BridgedTestValues.array
+  BridgedTestValues.nestedStructure
+  BridgedTestValues.emptyCollections
+  BridgedTestValues.baseClass
+  BridgedTestValues.inheritanceChild
+  BridgedTestValues.deepInheritance
+  BridgedTestValues.overrideBase
+  BridgedTestValues.overrideChild
+  BridgedTestValues.interfaceImpl
+  BridgedTestValues.genericInt
+  BridgedTestValues.genericString
+  BridgedTestValues.multiGeneric
+  BridgedTestValues.boundedGeneric
+  BridgedTestValues.nestedGeneric
+  BridgedTestValues.longInline
+  BridgedTestValues.longHolder
+  BridgedTestValues.longInlineHolder
+  return true
+}

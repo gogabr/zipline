@@ -151,6 +151,10 @@ fun registerBridgeInitHook(hook: () -> Unit) {
 
 private val bridgeTable = mutableMapOf<String, StableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>>()
 
+fun registerBridge(fqn: String, fn: (CPointer<JSContext>, CValue<JSValue>) -> Any) {
+  bridgeTable[fqn] = StableRef.create(fn)
+}
+
 /**
  * Create a new JS instance whose prototype is the **existing** retained guest prototype for
  * [fqn] (registered by the guest's module-load `__bridgeRegister`). The prototype is never

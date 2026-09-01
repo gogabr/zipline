@@ -251,10 +251,23 @@ internal fun generateBridgeFile(
           underlying == "kotlin.String" -> "()Ljava/lang/String;"
           else -> "()Ljava/lang/Object;"
         }
-        appendLine("    _h2j_unbox_${f.name} = (*env)->GetMethodID(env, _cls, \"unbox-impl\", \"$unboxSig\");")
-        appendLine("    if ((*env)->ExceptionCheck(env)) {")
-        appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
-        appendLine("        _h2j_unbox_${f.name} = NULL;")
+        // unbox-impl lives on the INLINE class, not the holder (the field's JVM type is the
+        // boxed inline class); the boxed field value is an instance of that inline class.
+        val inlineJni = f.irClass?.let { jniTypeDescriptorForClass(it) }
+          ?: jniFieldDescriptor(f.ktType)
+        appendLine("    {")
+        appendLine("        jclass _inlineCls = (*env)->FindClass(env, \"$inlineJni\");")
+        appendLine("        if ((*env)->ExceptionCheck(env)) {")
+        appendLine("            // Let the pending ClassNotFoundException propagate instead of clearing it.")
+        appendLine("            _h2j_unbox_${f.name} = NULL;")
+        appendLine("        } else {")
+        appendLine("            _h2j_unbox_${f.name} = (*env)->GetMethodID(env, _inlineCls, \"unbox-impl\", \"$unboxSig\");")
+        appendLine("            if ((*env)->ExceptionCheck(env)) {")
+        appendLine("                // Let the pending NoSuchMethodError propagate instead of clearing it.")
+        appendLine("                _h2j_unbox_${f.name} = NULL;")
+        appendLine("            }")
+        appendLine("            (*env)->DeleteLocalRef(env, _inlineCls);")
+        appendLine("        }")
         appendLine("    }")
       }
       if (annotatedClass.kind == ClassKind.ENUM_CLASS) {
@@ -632,7 +645,7 @@ private fun emitHost2JsConvertToJs(
   sb.appendLine("    }")
   if (isEnum) {
     sb.appendLine("    jint ordinal = (*env)->CallIntMethod(env, self, _h2j_ordinal);")
-    sb.appendLine("    JS_SetPropertyStr(ctx, result, \"ordinal_1\", JS_NewInt32(ctx, ordinal));")
+    sb.appendLine("    JS_DefinePropertyValueStr(ctx, result, \"ordinal_1\", JS_NewInt32(ctx, ordinal), JS_PROP_C_W_E);")
   } else {
     for (field in fields) {
       emitHost2JsField(sb, field)
@@ -654,7 +667,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
       sb.appendLine("    {")
       sb.appendLine("        JSValue _v = bridgeLongToJs(env, ctx, (*env)->GetLongField(env, self, _h2j_fld_$fieldName));")
       sb.appendLine("        if ((*env)->ExceptionCheck(env)) { JS_FreeValue(ctx, result); return 0; }")
-      sb.appendLine("        JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+      sb.appendLine("        JS_DefinePropertyValueStr(ctx, result, \"$jsName\", _v, JS_PROP_C_W_E);")
       sb.appendLine("    }")
     } else {
       val getFn = when (effective) {
@@ -672,7 +685,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         "kotlin.Double" -> "JS_NewFloat64(ctx, (*env)->$getFn(env, self, _h2j_fld_$fieldName))"
         else -> "JS_NewInt32(ctx, (jint)(*env)->$getFn(env, self, _h2j_fld_$fieldName))"
       }
-      sb.appendLine("    JS_SetPropertyStr(ctx, result, \"$jsName\", $build);")
+      sb.appendLine("    JS_DefinePropertyValueStr(ctx, result, \"$jsName\", $build, JS_PROP_C_W_E);")
     }
     return
   }
@@ -682,7 +695,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
     sb.appendLine("    {")
     sb.appendLine("        jobject b = (*env)->GetObjectField(env, self, _h2j_fld_$fieldName);")
     sb.appendLine("        if (b == NULL) {")
-    sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", JS_NULL);")
+    sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", JS_NULL, JS_PROP_C_W_E);")
     sb.appendLine("        } else {")
     val underlying = field.underlyingKtType
     when {
@@ -690,7 +703,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            jlong u = (*env)->CallLongMethod(env, b, _h2j_unbox_$fieldName);")
         sb.appendLine("            JSValue _v = bridgeLongToJs(env, ctx, u);")
         sb.appendLine("            if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, b); JS_FreeValue(ctx, result); return 0; }")
-        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+        sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", _v, JS_PROP_C_W_E);")
       }
       underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) -> {
         val call = when (underlying) {
@@ -711,7 +724,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
           else -> "JS_NewInt32(ctx, (jint)u)"
         }
         sb.appendLine("            $cType u = (*env)->$call(env, b, _h2j_unbox_$fieldName);")
-        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", $build);")
+        sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", $build, JS_PROP_C_W_E);")
       }
       else -> {
         // Reference-backed value class: unbox to the underlying reference and convert.
@@ -719,7 +732,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            JSValue _v = bridgeAnyToJs(env, ctx, u);")
         sb.appendLine("            if (u) (*env)->DeleteLocalRef(env, u);")
         sb.appendLine("            if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, b); JS_FreeValue(ctx, result); return 0; }")
-        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+        sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", _v, JS_PROP_C_W_E);")
       }
     }
     sb.appendLine("            (*env)->DeleteLocalRef(env, b);")
@@ -732,12 +745,12 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
   sb.appendLine("    {")
   sb.appendLine("        jobject f = (*env)->GetObjectField(env, self, _h2j_fld_$fieldName);")
   sb.appendLine("        if (f == NULL) {")
-  sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", JS_NULL);")
+  sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", JS_NULL, JS_PROP_C_W_E);")
   sb.appendLine("        } else {")
   sb.appendLine("            JSValue _v = bridgeAnyToJs(env, ctx, f);")
   sb.appendLine("            (*env)->DeleteLocalRef(env, f);")
   sb.appendLine("            if ((*env)->ExceptionCheck(env)) { JS_FreeValue(ctx, result); return 0; }")
-  sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+  sb.appendLine("            JS_DefinePropertyValueStr(ctx, result, \"$jsName\", _v, JS_PROP_C_W_E);")
   sb.appendLine("        }")
   sb.appendLine("    }")
 }

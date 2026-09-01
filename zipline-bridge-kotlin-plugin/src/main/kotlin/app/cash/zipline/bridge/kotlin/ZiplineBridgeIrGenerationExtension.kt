@@ -45,6 +45,13 @@ class ZiplineBridgeIrGenerationExtension(
       it.kind != ClassKind.INTERFACE
     }
 
+    // Host2JS classes (both-annotated included): same abstract/sealed/interface filter.
+    val host2JsClasses = findHost2JsAnnotatedClasses(moduleFragment).filter {
+      it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
+      it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
+      it.kind != ClassKind.INTERFACE
+    }
+
     // -- @JsName annotations (stable JS property names for all bridge backends) --
     annotateJsNames(finder, dispatchClasses, pluginContext)
 
@@ -55,7 +62,7 @@ class ZiplineBridgeIrGenerationExtension(
 
     // -- C/JNI bridge generation (Android) --
     if (cOutputDir != null) {
-      generateCBridges(cOutputDir, annotatedClasses)
+      generateCBridges(cOutputDir, annotatedClasses, host2JsClasses)
       generateKeepNames(cOutputDir, annotatedClasses)
     }
 

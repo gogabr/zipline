@@ -43,7 +43,12 @@ internal fun buildJniClassName(irClass: IrClass): String {
 
 // -- C/JNI bridge code generation (Android .so) --
 
-internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
+internal fun generateBridgeFile(
+  outputDir: String,
+  annotatedClass: IrClass,
+  js2Host: Boolean,
+  host2Js: Boolean,
+) {
   val fqName = annotatedClass.fqNameWhenAvailable ?: return
   val functionPrefix = cFunctionPrefix(fqName)
 
@@ -54,6 +59,19 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
   val targetFqn = resolveTargetFqn(annotatedClass)
   val jniClassName = targetFqn ?: buildJniClassName(annotatedClass)
   val jsClassName = fqName.asString()
+
+  // The host2js JNI impl is emitted for non-value classes only (JVM value classes get no
+  // convertToJs member, matching step 4); classes with kotlin.Function*-typed fields skip
+  // host2js generation entirely (same hasUnsupported rule as generateNativeBridgeFile).
+  val host2JsImpl = host2Js && !isInlineClass(annotatedClass) &&
+    !fields.any { it.isObjectType && it.ktType.startsWith("kotlin.Function") }
+  val host2JsFields = if (host2JsImpl && annotatedClass.kind != ClassKind.ENUM_CLASS) fields else emptyList()
+  val host2JsUnboxFields = if (host2JsImpl) fields.filter { it.isInline && it.isNullable } else emptyList()
+  // Prototype lookup key: identical to the JS-side module-load registration key.
+  val protoFqn = targetFqn ?: fqName.asString()
+  val host2JsJniFunctionName = if (host2JsImpl) {
+    "Java_" + jniClassName.replace("/", "_").replace("$", "_00024") + "_convertToJs"
+  } else null
 
   val nullablePrimitiveFields = fields.filter { it.isNullable && isKnownType(it.ktType) && isJniPrimitive(it.ktType) }
   val hasAnyField = fields.any { it.ktType == "kotlin.Any" }
@@ -76,50 +94,67 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
     appendLine("#endif")
     appendLine()
 
-    // Extern declarations for nullable inline class field helpers.
-    val nullableInlineFields = fields.filter { it.isInline && it.isNullable && !isKnownType(it.ktType) }
-    if (nullableInlineFields.isNotEmpty()) {
-      appendLine("// Inline class _fromValue helpers (used for nullable inline class fields)")
-      for (f in nullableInlineFields.distinctBy { it.ktType }) {
-        val inlinePrefix = cFunctionPrefix(FqName(f.ktType))
-        appendLine("extern void ${inlinePrefix}_init(JNIEnv *env);")
-        appendLine("extern jobject ${inlinePrefix}_fromValue(JNIEnv *env, JSContext *ctx, JSValue jsVal);")
+    if (js2Host) {
+      // Extern declarations for nullable inline class field helpers.
+      val nullableInlineFields = fields.filter { it.isInline && it.isNullable && !isKnownType(it.ktType) }
+      if (nullableInlineFields.isNotEmpty()) {
+        appendLine("// Inline class _fromValue helpers (used for nullable inline class fields)")
+        for (f in nullableInlineFields.distinctBy { it.ktType }) {
+          val inlinePrefix = cFunctionPrefix(FqName(f.ktType))
+          appendLine("extern void ${inlinePrefix}_init(JNIEnv *env);")
+          appendLine("extern jobject ${inlinePrefix}_fromValue(JNIEnv *env, JSContext *ctx, JSValue jsVal);")
+        }
+        appendLine()
       }
-      appendLine()
     }
 
     // -- cached JNI references (initialized once by _init, used by _toJavaObject) --
     appendLine("static jclass _cls = NULL;")
-    if (isEnum) {
-      appendLine("static jmethodID _valuesMethod = NULL;")
-    } else if (!isObject) {
-      appendLine("static jmethodID _ctor = NULL;")
-    }
-    if (isCompanion) {
-      appendLine("static jclass _outerCls = NULL;")
-      appendLine("static jfieldID _companionField = NULL;")
-    } else if (isObject) {
-      appendLine("static jfieldID _instField = NULL;")
-    }
-    for (f in nullablePrimitiveFields) {
-      appendLine("static jclass _boxed_${f.name} = NULL;")
-      appendLine("static jmethodID _boxedCtor_${f.name} = NULL;")
-    }
-    if (!isEnum) {
-      for (f in bodyFields) {
-        appendLine("static jfieldID _fld_${f.name} = NULL;")
+    if (js2Host) {
+      if (isEnum) {
+        appendLine("static jmethodID _valuesMethod = NULL;")
+      } else if (!isObject) {
+        appendLine("static jmethodID _ctor = NULL;")
+      }
+      if (isCompanion) {
+        appendLine("static jclass _outerCls = NULL;")
+        appendLine("static jfieldID _companionField = NULL;")
+      } else if (isObject) {
+        appendLine("static jfieldID _instField = NULL;")
+      }
+      for (f in nullablePrimitiveFields) {
+        appendLine("static jclass _boxed_${f.name} = NULL;")
+        appendLine("static jmethodID _boxedCtor_${f.name} = NULL;")
+      }
+      if (!isEnum) {
+        for (f in bodyFields) {
+          appendLine("static jfieldID _fld_${f.name} = NULL;")
+        }
+      }
+      if (hasAnyField || hasCollectionField) {
+        appendLine("// Boxed type refs for Any? value dispatch")
+        appendLine("static jclass _any_boxed_Integer_cls = NULL;")
+        appendLine("static jmethodID _any_boxed_Integer_ctor = NULL;")
+        appendLine("static jclass _any_boxed_Double_cls = NULL;")
+        appendLine("static jmethodID _any_boxed_Double_ctor = NULL;")
+        appendLine("static jclass _any_boxed_Boolean_cls = NULL;")
+        appendLine("static jmethodID _any_boxed_Boolean_ctor = NULL;")
+        appendLine("static jclass _any_boxed_Float_cls = NULL;")
+        appendLine("static jmethodID _any_boxed_Float_ctor = NULL;")
       }
     }
-    if (hasAnyField || hasCollectionField) {
-      appendLine("// Boxed type refs for Any? value dispatch")
-      appendLine("static jclass _any_boxed_Integer_cls = NULL;")
-      appendLine("static jmethodID _any_boxed_Integer_ctor = NULL;")
-      appendLine("static jclass _any_boxed_Double_cls = NULL;")
-      appendLine("static jmethodID _any_boxed_Double_ctor = NULL;")
-      appendLine("static jclass _any_boxed_Boolean_cls = NULL;")
-      appendLine("static jmethodID _any_boxed_Boolean_ctor = NULL;")
-      appendLine("static jclass _any_boxed_Float_cls = NULL;")
-      appendLine("static jmethodID _any_boxed_Float_ctor = NULL;")
+    if (host2JsImpl) {
+      // Host2JS: cache a field ID for every field (constructor params included), unbox-impl for
+      // nullable inline fields, and the enum ordinal method.
+      for (f in host2JsFields) {
+        appendLine("static jfieldID _h2j_fld_${f.name} = NULL;")
+      }
+      for (f in host2JsUnboxFields) {
+        appendLine("static jmethodID _h2j_unbox_${f.name} = NULL;")
+      }
+      if (annotatedClass.kind == ClassKind.ENUM_CLASS) {
+        appendLine("static jmethodID _h2j_ordinal = NULL;")
+      }
     }
     appendLine()
 
@@ -135,73 +170,105 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
     appendLine("        return;")
     appendLine("    }")
     appendLine("    _cls = (*env)->NewGlobalRef(env, local);")
-    if (isEnum) {
-      appendLine("    _valuesMethod = (*env)->GetStaticMethodID(env, _cls, \"values\", \"()[L$jniClassName;\");")
-      appendLine("    if ((*env)->ExceptionCheck(env)) {")
-      appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
-      appendLine("        _valuesMethod = NULL;")
-      appendLine("    }")
-    } else if (!isObject) {
-      appendLine("    _ctor = (*env)->GetMethodID(env, _cls, \"<init>\", \"$constructorSig\");")
-      appendLine("    if ((*env)->ExceptionCheck(env)) {")
-      appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
-      appendLine("        _ctor = NULL;")
-      appendLine("    }")
+    if (js2Host) {
+      if (isEnum) {
+        appendLine("    _valuesMethod = (*env)->GetStaticMethodID(env, _cls, \"values\", \"()[L$jniClassName;\");")
+        appendLine("    if ((*env)->ExceptionCheck(env)) {")
+        appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
+        appendLine("        _valuesMethod = NULL;")
+        appendLine("    }")
+      } else if (!isObject) {
+        appendLine("    _ctor = (*env)->GetMethodID(env, _cls, \"<init>\", \"$constructorSig\");")
+        appendLine("    if ((*env)->ExceptionCheck(env)) {")
+        appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
+        appendLine("        _ctor = NULL;")
+        appendLine("    }")
+      }
+      if (isCompanion) {
+        val outerJni = buildJniClassName(annotatedClass.parent as IrClass)
+        appendLine("    {")
+        appendLine("        jclass outerLocal = (*env)->FindClass(env, \"$outerJni\");")
+        appendLine("        if ((*env)->ExceptionCheck(env)) { /* pending exception propagates */ return; }")
+        appendLine("        _outerCls = (*env)->NewGlobalRef(env, outerLocal);")
+        appendLine("        _companionField = (*env)->GetStaticFieldID(env, _outerCls, \"Companion\", \"$instanceSig\");")
+        appendLine("    }")
+      } else if (isObject) {
+        appendLine("    _instField = (*env)->GetStaticFieldID(env, _cls, \"INSTANCE\", \"$instanceSig\");")
+      }
+      for (f in nullablePrimitiveFields) {
+        val info = boxedPrimitiveInfo[f.ktType]!!
+        appendLine("    {")
+        appendLine("        jclass boxed = (*env)->FindClass(env, \"${info.wrapperClass}\");")
+        appendLine("        _boxed_${f.name} = (*env)->NewGlobalRef(env, boxed);")
+        appendLine("        _boxedCtor_${f.name} = (*env)->GetMethodID(env, _boxed_${f.name}, \"<init>\", \"${info.ctorSig}\");")
+        appendLine("    }")
+      }
+      if (hasAnyField || hasCollectionField) {
+        appendLine("    // Init boxed type refs for Any? value dispatch")
+        appendLine("    if (_any_boxed_Integer_cls == NULL) {")
+        appendLine("        jclass intLocal = (*env)->FindClass(env, \"java/lang/Integer\");")
+        appendLine("        _any_boxed_Integer_cls = (*env)->NewGlobalRef(env, intLocal);")
+        appendLine("        _any_boxed_Integer_ctor = (*env)->GetMethodID(env, _any_boxed_Integer_cls, \"<init>\", \"(I)V\");")
+        appendLine("    }")
+        appendLine("    if (_any_boxed_Double_cls == NULL) {")
+        appendLine("        jclass dblLocal = (*env)->FindClass(env, \"java/lang/Double\");")
+        appendLine("        _any_boxed_Double_cls = (*env)->NewGlobalRef(env, dblLocal);")
+        appendLine("        _any_boxed_Double_ctor = (*env)->GetMethodID(env, _any_boxed_Double_cls, \"<init>\", \"(D)V\");")
+        appendLine("    }")
+        appendLine("    if (_any_boxed_Boolean_cls == NULL) {")
+        appendLine("        jclass boolLocal = (*env)->FindClass(env, \"java/lang/Boolean\");")
+        appendLine("        _any_boxed_Boolean_cls = (*env)->NewGlobalRef(env, boolLocal);")
+        appendLine("        _any_boxed_Boolean_ctor = (*env)->GetMethodID(env, _any_boxed_Boolean_cls, \"<init>\", \"(Z)V\");")
+        appendLine("    }")
+        appendLine("    if (_any_boxed_Float_cls == NULL) {")
+        appendLine("        jclass fltLocal = (*env)->FindClass(env, \"java/lang/Float\");")
+        appendLine("        _any_boxed_Float_cls = (*env)->NewGlobalRef(env, fltLocal);")
+        appendLine("        _any_boxed_Float_ctor = (*env)->GetMethodID(env, _any_boxed_Float_cls, \"<init>\", \"(F)V\");")
+        appendLine("    }")
+      }
+      if (!isEnum) {
+        for (f in bodyFields) {
+          appendLine("    _fld_${f.name} = (*env)->GetFieldID(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
+          appendLine("    if ((*env)->ExceptionCheck(env)) {")
+          appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
+          appendLine("        _fld_${f.name} = NULL;")
+          appendLine("    }")
+        }
+      }
     }
-    if (isCompanion) {
-      val outerJni = buildJniClassName(annotatedClass.parent as IrClass)
-      appendLine("    {")
-      appendLine("        jclass outerLocal = (*env)->FindClass(env, \"$outerJni\");")
-      appendLine("        if ((*env)->ExceptionCheck(env)) { /* pending exception propagates */ return; }")
-      appendLine("        _outerCls = (*env)->NewGlobalRef(env, outerLocal);")
-      appendLine("        _companionField = (*env)->GetStaticFieldID(env, _outerCls, \"Companion\", \"$instanceSig\");")
-      appendLine("    }")
-    } else if (isObject) {
-      appendLine("    _instField = (*env)->GetStaticFieldID(env, _cls, \"INSTANCE\", \"$instanceSig\");")
-    }
-    for (f in nullablePrimitiveFields) {
-      val info = boxedPrimitiveInfo[f.ktType]!!
-      appendLine("    {")
-      appendLine("        jclass boxed = (*env)->FindClass(env, \"${info.wrapperClass}\");")
-      appendLine("        _boxed_${f.name} = (*env)->NewGlobalRef(env, boxed);")
-      appendLine("        _boxedCtor_${f.name} = (*env)->GetMethodID(env, _boxed_${f.name}, \"<init>\", \"${info.ctorSig}\");")
-      appendLine("    }")
-    }
-    if (hasAnyField || hasCollectionField) {
-      appendLine("    // Init boxed type refs for Any? value dispatch")
-      appendLine("    if (_any_boxed_Integer_cls == NULL) {")
-      appendLine("        jclass intLocal = (*env)->FindClass(env, \"java/lang/Integer\");")
-      appendLine("        _any_boxed_Integer_cls = (*env)->NewGlobalRef(env, intLocal);")
-      appendLine("        _any_boxed_Integer_ctor = (*env)->GetMethodID(env, _any_boxed_Integer_cls, \"<init>\", \"(I)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Double_cls == NULL) {")
-      appendLine("        jclass dblLocal = (*env)->FindClass(env, \"java/lang/Double\");")
-      appendLine("        _any_boxed_Double_cls = (*env)->NewGlobalRef(env, dblLocal);")
-      appendLine("        _any_boxed_Double_ctor = (*env)->GetMethodID(env, _any_boxed_Double_cls, \"<init>\", \"(D)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Boolean_cls == NULL) {")
-      appendLine("        jclass boolLocal = (*env)->FindClass(env, \"java/lang/Boolean\");")
-      appendLine("        _any_boxed_Boolean_cls = (*env)->NewGlobalRef(env, boolLocal);")
-      appendLine("        _any_boxed_Boolean_ctor = (*env)->GetMethodID(env, _any_boxed_Boolean_cls, \"<init>\", \"(Z)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Float_cls == NULL) {")
-      appendLine("        jclass fltLocal = (*env)->FindClass(env, \"java/lang/Float\");")
-      appendLine("        _any_boxed_Float_cls = (*env)->NewGlobalRef(env, fltLocal);")
-      appendLine("        _any_boxed_Float_ctor = (*env)->GetMethodID(env, _any_boxed_Float_cls, \"<init>\", \"(F)V\");")
-      appendLine("    }")
-    }
-    if (!isEnum) {
-      for (f in bodyFields) {
-        appendLine("    _fld_${f.name} = (*env)->GetFieldID(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
+    if (host2JsImpl) {
+      for (f in host2JsFields) {
+        appendLine("    _h2j_fld_${f.name} = (*env)->GetFieldID(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
         appendLine("    if ((*env)->ExceptionCheck(env)) {")
         appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
-        appendLine("        _fld_${f.name} = NULL;")
+        appendLine("        _h2j_fld_${f.name} = NULL;")
+        appendLine("    }")
+      }
+      for (f in host2JsUnboxFields) {
+        val underlying = f.underlyingKtType
+        val unboxSig = when {
+          underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) -> "()" + kotlinToJniFieldType[underlying]
+          underlying == "kotlin.String" -> "()Ljava/lang/String;"
+          else -> "()Ljava/lang/Object;"
+        }
+        appendLine("    _h2j_unbox_${f.name} = (*env)->GetMethodID(env, _cls, \"unbox-impl\", \"$unboxSig\");")
+        appendLine("    if ((*env)->ExceptionCheck(env)) {")
+        appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
+        appendLine("        _h2j_unbox_${f.name} = NULL;")
+        appendLine("    }")
+      }
+      if (annotatedClass.kind == ClassKind.ENUM_CLASS) {
+        appendLine("    _h2j_ordinal = (*env)->GetMethodID(env, _cls, \"ordinal\", \"()I\");")
+        appendLine("    if ((*env)->ExceptionCheck(env)) {")
+        appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
+        appendLine("        _h2j_ordinal = NULL;")
         appendLine("    }")
       }
     }
     appendLine("}")
     appendLine()
 
+    if (js2Host) {
     // -- toJavaObject function --
     // Recursive collection/array/map converters are emitted before the converter that calls them.
     val helpers = StringBuilder()
@@ -508,19 +575,171 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
       appendLine("    return result;")
       appendLine("}")
     }
+    } // end js2Host sections
+
+    if (host2JsImpl) {
+      emitHost2JsConvertToJs(this, host2JsJniFunctionName!!, functionPrefix, annotatedClass, host2JsFields, host2JsUnboxFields, protoFqn, jniClassName)
+    }
 
     appendLine()
     appendLine("// Register this class in the shared bridge dispatch table (Context.cpp).")
     appendLine("__attribute__((used, constructor))")
     appendLine("void ${functionPrefix}_bridge_register(void) {")
     appendLine("    addBridgeInit(${functionPrefix}_init);")
-    appendLine("    addBridgeEntry(\"$jsClassName\", ${functionPrefix}_toJavaObject);")
+    if (js2Host) {
+      appendLine("    addBridgeEntry(\"$jsClassName\", ${functionPrefix}_toJavaObject);")
+    }
     appendLine("}")
   }
 
   val outputFile = File(outputDir, cFileName(fqName))
   outputFile.parentFile.mkdirs()
   outputFile.writeText(cSource)
+}
+
+/**
+ * Emit the JNI implementation of the IR-injected `convertToJs(J)J` member: build a new JS
+ * instance with the retained guest class prototype (via bridgeNewJsObject) and set every field
+ * as a JS property (recursively converting values via bridgeAnyToJs / bridgeLongToJs). Errors
+ * are loud: a pending Java exception is left pending and 0 is returned (crashes at the JNI
+ * boundary); a missing prototype throws IllegalStateException.
+ */
+private fun emitHost2JsConvertToJs(
+  sb: StringBuilder,
+  jniFunctionName: String,
+  functionPrefix: String,
+  annotatedClass: IrClass,
+  fields: List<FieldInfo>,
+  unboxFields: List<FieldInfo>,
+  protoFqn: String,
+  jniClassName: String,
+) {
+  val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
+  sb.appendLine()
+  sb.appendLine("// Host2JS: builds a JS counterpart of this object with the guest class prototype.")
+  sb.appendLine("JNIEXPORT jlong JNICALL $jniFunctionName(JNIEnv *env, jobject self, jlong ctxPtr) {")
+  sb.appendLine("    ${functionPrefix}_init(env);")
+  sb.appendLine("    JSContext *ctx = (JSContext *)ctxPtr;")
+  sb.appendLine("    if (_cls == NULL) {")
+  sb.appendLine("        (*env)->ThrowNew(env, (*env)->FindClass(env, \"java/lang/IllegalStateException\"), \"host2js: _init failed for $jniClassName\");")
+  sb.appendLine("        return 0;")
+  sb.appendLine("    }")
+  sb.appendLine("    // New instance whose prototype is the EXISTING retained guest prototype for \"$protoFqn\".")
+  sb.appendLine("    JSValue result = bridgeNewJsObject(ctx, \"$protoFqn\");")
+  sb.appendLine("    if (JS_IsUndefined(result)) {")
+  sb.appendLine("        (*env)->ThrowNew(env, (*env)->FindClass(env, \"java/lang/IllegalStateException\"), \"host2js: no registered prototype for $protoFqn\");")
+  sb.appendLine("        return 0;")
+  sb.appendLine("    }")
+  if (isEnum) {
+    sb.appendLine("    jint ordinal = (*env)->CallIntMethod(env, self, _h2j_ordinal);")
+    sb.appendLine("    JS_SetPropertyStr(ctx, result, \"ordinal_1\", JS_NewInt32(ctx, ordinal));")
+  } else {
+    for (field in fields) {
+      emitHost2JsField(sb, field)
+    }
+  }
+  sb.appendLine("    return (jlong)(intptr_t)JS_VALUE_GET_PTR(result);")
+  sb.appendLine("}")
+}
+
+/** Emit the field conversion for one field inside a generated convertToJs body. */
+private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
+  val jsName = field.jsPropertyName
+  val fieldName = field.name
+  val effective = field.effectiveKtType
+
+  val nonNullablePrimitive = !field.isNullable && isKnownType(effective) && isJniPrimitive(effective)
+  if (nonNullablePrimitive) {
+    if (effective == "kotlin.Long") {
+      sb.appendLine("    {")
+      sb.appendLine("        JSValue _v = bridgeLongToJs(env, ctx, (*env)->GetLongField(env, self, _h2j_fld_$fieldName));")
+      sb.appendLine("        if ((*env)->ExceptionCheck(env)) { JS_FreeValue(ctx, result); return 0; }")
+      sb.appendLine("        JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+      sb.appendLine("    }")
+    } else {
+      val getFn = when (effective) {
+        "kotlin.Boolean" -> "GetBooleanField"
+        "kotlin.Byte" -> "GetByteField"
+        "kotlin.Char" -> "GetCharField"
+        "kotlin.Short" -> "GetShortField"
+        "kotlin.Float" -> "GetFloatField"
+        "kotlin.Double" -> "GetDoubleField"
+        else -> "GetIntField"
+      }
+      val build = when (effective) {
+        "kotlin.Boolean" -> "JS_NewBool(ctx, (*env)->$getFn(env, self, _h2j_fld_$fieldName))"
+        "kotlin.Float" -> "JS_NewFloat64(ctx, (jdouble)(*env)->$getFn(env, self, _h2j_fld_$fieldName))"
+        "kotlin.Double" -> "JS_NewFloat64(ctx, (*env)->$getFn(env, self, _h2j_fld_$fieldName))"
+        else -> "JS_NewInt32(ctx, (jint)(*env)->$getFn(env, self, _h2j_fld_$fieldName))"
+      }
+      sb.appendLine("    JS_SetPropertyStr(ctx, result, \"$jsName\", $build);")
+    }
+    return
+  }
+
+  if (field.isInline && field.isNullable) {
+    // Nullable inline class: boxed holder field; unbox via the cached unbox-impl.
+    sb.appendLine("    {")
+    sb.appendLine("        jobject b = (*env)->GetObjectField(env, self, _h2j_fld_$fieldName);")
+    sb.appendLine("        if (b == NULL) {")
+    sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", JS_NULL);")
+    sb.appendLine("        } else {")
+    val underlying = field.underlyingKtType
+    when {
+      underlying == "kotlin.Long" -> {
+        sb.appendLine("            jlong u = (*env)->CallLongMethod(env, b, _h2j_unbox_$fieldName);")
+        sb.appendLine("            JSValue _v = bridgeLongToJs(env, ctx, u);")
+        sb.appendLine("            if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, b); JS_FreeValue(ctx, result); return 0; }")
+        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+      }
+      underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) -> {
+        val call = when (underlying) {
+          "kotlin.Boolean" -> "CallBooleanMethod"
+          "kotlin.Float" -> "CallFloatMethod"
+          "kotlin.Double" -> "CallDoubleMethod"
+          else -> "CallIntMethod"
+        }
+        val cType = when (underlying) {
+          "kotlin.Boolean" -> "jboolean"
+          "kotlin.Float" -> "jfloat"
+          "kotlin.Double" -> "jdouble"
+          else -> "jint"
+        }
+        val build = when (underlying) {
+          "kotlin.Boolean" -> "JS_NewBool(ctx, u)"
+          "kotlin.Float", "kotlin.Double" -> "JS_NewFloat64(ctx, (jdouble)u)"
+          else -> "JS_NewInt32(ctx, (jint)u)"
+        }
+        sb.appendLine("            $cType u = (*env)->$call(env, b, _h2j_unbox_$fieldName);")
+        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", $build);")
+      }
+      else -> {
+        // Reference-backed value class: unbox to the underlying reference and convert.
+        sb.appendLine("            jobject u = (*env)->CallObjectMethod(env, b, _h2j_unbox_$fieldName);")
+        sb.appendLine("            JSValue _v = bridgeAnyToJs(env, ctx, u);")
+        sb.appendLine("            if (u) (*env)->DeleteLocalRef(env, u);")
+        sb.appendLine("            if ((*env)->ExceptionCheck(env)) { (*env)->DeleteLocalRef(env, b); JS_FreeValue(ctx, result); return 0; }")
+        sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+      }
+    }
+    sb.appendLine("            (*env)->DeleteLocalRef(env, b);")
+    sb.appendLine("        }")
+    sb.appendLine("    }")
+    return
+  }
+
+  // Everything else: nullable primitives, String, Any, collections, arrays, object fields.
+  sb.appendLine("    {")
+  sb.appendLine("        jobject f = (*env)->GetObjectField(env, self, _h2j_fld_$fieldName);")
+  sb.appendLine("        if (f == NULL) {")
+  sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", JS_NULL);")
+  sb.appendLine("        } else {")
+  sb.appendLine("            JSValue _v = bridgeAnyToJs(env, ctx, f);")
+  sb.appendLine("            (*env)->DeleteLocalRef(env, f);")
+  sb.appendLine("            if ((*env)->ExceptionCheck(env)) { JS_FreeValue(ctx, result); return 0; }")
+  sb.appendLine("            JS_SetPropertyStr(ctx, result, \"$jsName\", _v);")
+  sb.appendLine("        }")
+  sb.appendLine("    }")
 }
 
 // -- FQN-toJavaObject registration via shared bridgeTable (Context.cpp) --
@@ -915,13 +1134,23 @@ private fun emitCValueConverter(
 }
 // -- C bridge orchestration --
 
-/** Generate all per-class C bridge files (each self-registers via constructor). */
-internal fun generateCBridges(outputDir: String, annotatedClasses: List<IrClass>) {
-  for (clazz in annotatedClasses) {
+/**
+ * Generate all per-class C bridge files (each self-registers via constructor) for the union of
+ * @WithJS2HostBridge and @WithHost2JSBridge classes. Value classes get no host2js JNI impl on
+ * JVM (their `convertToJs` member is not injected), so they only contribute when js2Host.
+ */
+internal fun generateCBridges(
+  outputDir: String,
+  js2HostClasses: List<IrClass>,
+  host2JsClasses: List<IrClass>,
+) {
+  val js2HostSet = js2HostClasses.toSet()
+  val host2JsSet = host2JsClasses.filterNot { isInlineClass(it) }.toSet()
+  for (clazz in (js2HostClasses + host2JsClasses).distinct()) {
     // Interfaces can't be instantiated or dispatched (the native generator excludes them too);
     // generating a bridge for one would fail _init with NoSuchMethodError on the constructor.
     if (clazz.kind == ClassKind.INTERFACE) continue
-    generateBridgeFile(outputDir, clazz)
+    generateBridgeFile(outputDir, clazz, js2Host = clazz in js2HostSet, host2Js = clazz in host2JsSet)
   }
 }
 

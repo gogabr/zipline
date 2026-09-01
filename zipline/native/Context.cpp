@@ -678,6 +678,22 @@ __attribute__((used, visibility("default"))) JSValue bridgeNewJsObject(JSContext
   return JS_NewObjectProto(ctx, it->second);
 }
 
+__attribute__((used, visibility("default"))) JSValue bridgeLongToJs(JNIEnv* env, JSContext* ctx, jlong value) {
+  auto* context = reinterpret_cast<Context*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
+  if (JS_IsUndefined(context->bridgeNewLong)) {
+    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
+                  "host2js: no registered newLong runtime factory; the guest module did not call __bridgeRegisterRuntime");
+    return JS_NULL;
+  }
+  JSValue low = JS_NewInt32(ctx, (int32_t)value);
+  JSValue high = JS_NewInt32(ctx, (int32_t)(value >> 32));
+  JSValue args[2] = {low, high};
+  JSValue r = JS_Call(ctx, context->bridgeNewLong, JS_UNDEFINED, 2, args);
+  JS_FreeValue(ctx, low);
+  JS_FreeValue(ctx, high);
+  return r; // JS_EXCEPTION (factory threw) propagates; caller frees.
+}
+
 __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, JSContext* ctx, jobject obj) {
   auto* context = reinterpret_cast<Context*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
   if (obj == nullptr) return JS_NULL;
@@ -691,18 +707,7 @@ __attribute__((used, visibility("default"))) JSValue bridgeAnyToJs(JNIEnv* env, 
     jvalue v;
     v.j = env->CallLongMethod(obj, context->longLongValue);
     if (env->ExceptionCheck()) return JS_NULL;
-    if (JS_IsUndefined(context->bridgeNewLong)) {
-      env->ThrowNew(env->FindClass("java/lang/IllegalStateException"),
-                    "host2js: no registered newLong runtime factory; the guest module did not call __bridgeRegisterRuntime");
-      return JS_NULL;
-    }
-    JSValue low = JS_NewInt32(ctx, (int32_t)v.j);
-    JSValue high = JS_NewInt32(ctx, (int32_t)(v.j >> 32));
-    JSValue args[2] = {low, high};
-    JSValue r = JS_Call(ctx, context->bridgeNewLong, JS_UNDEFINED, 2, args);
-    JS_FreeValue(ctx, low);
-    JS_FreeValue(ctx, high);
-    return r; // JS_EXCEPTION (factory threw) propagates; caller frees.
+    return bridgeLongToJs(env, ctx, v.j);
   }
   if (env->IsInstanceOf(obj, context->doubleClass)) {
     jvalue v;

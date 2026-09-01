@@ -68,13 +68,11 @@ jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val);
 JSValue bridgeNewJsObject(JSContext *ctx, const char *fq);
 
 /**
- * Convert any Java object to its JS counterpart: boxed primitives, String, List (via the
- * guest's newArrayList factory), Map (via the guest's newLinkedHashMap factory), arrays, and
- * @WithHost2JSBridge objects (via virtual convertToJs(J)J dispatch). On failure a Java
- * exception is left pending and JS_NULL is returned; the caller MUST check ExceptionCheck
- * before using the result.
+ * Convert a Java long to a real Kotlin/JS kotlin.Long instance via the guest's retained
+ * newLong factory. On failure (factory not registered) an IllegalStateException is thrown and
+ * JS_NULL is returned with the exception pending; the caller MUST check ExceptionCheck.
  */
-JSValue bridgeAnyToJs(JNIEnv *env, JSContext *ctx, jobject obj);
+JSValue bridgeLongToJs(JNIEnv *env, JSContext *ctx, jlong value);
 #ifdef __cplusplus
 }
 #endif

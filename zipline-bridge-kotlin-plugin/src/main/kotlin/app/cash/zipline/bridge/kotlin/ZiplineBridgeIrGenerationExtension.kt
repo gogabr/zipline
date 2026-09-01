@@ -20,6 +20,11 @@ internal val WITH_JS2HOST_BRIDGE_CLASS_ID = ClassId(
   Name.identifier("WithJS2HostBridge"),
 )
 
+internal val WITH_HOST2JS_BRIDGE_CLASS_ID = ClassId(
+  FqName("app.cash.zipline.bridge.support"),
+  Name.identifier("WithHost2JSBridge"),
+)
+
 class ZiplineBridgeIrGenerationExtension(
   internal val cOutputDir: String?,
   internal val nativeOutputDir: String? = null,

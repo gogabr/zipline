@@ -59,8 +59,22 @@ void register_all(JSContext* ctx);
 /** If val is a Kotlin/JS Long ({low_1, high_1}), return a boxed java.lang.Long, else NULL. */
 jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val);
 
-/** Convert any JS value to a Java object. Returns NULL for null/undefined/unrecognized. */
-jobject bridgeForAny(JNIEnv *env, JSContext *ctx, JSValue val);
+/**
+ * Create a new JS instance whose prototype is the EXISTING retained guest prototype for [fq]
+ * (registered by the guest's module-load __bridgeRegister). The prototype is never created or
+ * cloned; the caller owns the returned value. Returns JS_UNDEFINED when the prototype has not
+ * been registered — callers must treat that as a crash, never a fallback.
+ */
+JSValue bridgeNewJsObject(JSContext *ctx, const char *fq);
+
+/**
+ * Convert any Java object to its JS counterpart: boxed primitives, String, List (via the
+ * guest's newArrayList factory), Map (via the guest's newLinkedHashMap factory), arrays, and
+ * @WithHost2JSBridge objects (via virtual convertToJs(J)J dispatch). On failure a Java
+ * exception is left pending and JS_NULL is returned; the caller MUST check ExceptionCheck
+ * before using the result.
+ */
+JSValue bridgeAnyToJs(JNIEnv *env, JSContext *ctx, jobject obj);
 #ifdef __cplusplus
 }
 #endif

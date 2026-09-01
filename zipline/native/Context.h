@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <mutex>
 #include "quickjs/quickjs.h"
 
@@ -117,6 +118,34 @@ public:
   static jmethodID arrayListInitWithCapacity;
   static jmethodID arrayListAdd;
 
+  // JNI cache for host2js boxed-primitive keys and java.util.List/Map iteration
+  static jclass floatClass;
+  static jclass shortClass;
+  static jclass byteClass;
+  static jclass characterClass;
+  static jclass listClass;
+  static jclass mapClass;
+  static jclass mapEntryClass;
+  static jclass setClass;
+  static jclass iteratorClass;
+  static jmethodID integerIntValue;
+  static jmethodID longLongValue;
+  static jmethodID doubleDoubleValue;
+  static jmethodID floatFloatValue;
+  static jmethodID booleanBooleanValue;
+  static jmethodID shortShortValue;
+  static jmethodID byteByteValue;
+  static jmethodID characterCharValue;
+  static jmethodID objectToString;
+  static jmethodID listSize;
+  static jmethodID listGet;
+  static jmethodID mapEntrySet;
+  static jmethodID setIterator;
+  static jmethodID iteratorHasNext;
+  static jmethodID iteratorNext;
+  static jmethodID entryGetKey;
+  static jmethodID entryGetValue;
+
   // JNI cache for the RdmaChangeSink interface and kotlin.Pair
   static jmethodID rdmaSinkCreateCreate;
   static jmethodID rdmaSinkCreatePropertyChange;
@@ -145,6 +174,15 @@ public:
   jobject interruptHandler;
   std::vector<InboundCallChannel*> callChannels;
   std::unordered_map<std::string, jclass> globalReferences;
+
+  // Host2JS state: retained guest class prototypes (for bridgeNewJsObject instance creation)
+  // and the guest's runtime factory functions (kotlin.Long/ArrayList/LinkedHashMap
+  // construction). JS values are context-local, so these live on the Context and are freed in
+  // the destructor.
+  std::map<std::string, JSValue> bridgeProtos;
+  JSValue bridgeNewLong;
+  JSValue bridgeNewArrayList;
+  JSValue bridgeNewLinkedHashMap;
 
   // Per-QuickJs RdmaChangeSink: all RDMA change delivery is routed through this instance so
   // that each zipline session gets its own change stream.

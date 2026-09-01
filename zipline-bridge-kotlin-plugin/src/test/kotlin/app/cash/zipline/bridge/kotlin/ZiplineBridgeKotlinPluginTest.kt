@@ -880,6 +880,81 @@ class ZiplineBridgeKotlinPluginTest {
       outputDir.toFile().deleteRecursively()
     }
   }
+
+  @Test
+  fun `host2js annotated class generates convertToJs JNI impl`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+            val age: Int = 42
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.resolve("com_example_Bridged.c").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+
+      val content = cFile.readText()
+
+      // JNI implementation of the injected external member, prototype-based object creation.
+      assertTrue(content.contains("JNIEXPORT jlong JNICALL Java_com_example_Bridged_convertToJs(JNIEnv *env, jobject self, jlong ctxPtr)"))
+      assertTrue(content.contains("bridgeNewJsObject(ctx, \"com.example.Bridged\")"))
+
+      // Recursive field conversion and property definition on the new instance.
+      assertTrue(content.contains("bridgeAnyToJs"))
+      assertTrue(content.contains("JS_DefinePropertyValueStr(ctx, result, \"name\""))
+      assertTrue(content.contains("JS_DefinePropertyValueStr(ctx, result, \"age\""))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `host2js annotated class gets convertToJs member on JVM`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val clazz = result.classLoader.loadClass("com.example.Bridged")
+      val convertToJs = clazz.getDeclaredMethod("convertToJs", Long::class.javaPrimitiveType)
+      assertEquals(Long::class.javaPrimitiveType, convertToJs.returnType)
+      assertTrue(
+        convertToJs.modifiers and java.lang.reflect.Modifier.NATIVE != 0,
+        "convertToJs should be native",
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
 
 @ExperimentalCompilerApi

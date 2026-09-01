@@ -36,17 +36,17 @@ class ZiplineBridgeIrGenerationExtension(
     finder.findClass(WITH_JS2HOST_BRIDGE_CLASS_ID) ?: return
 
     val annotatedClasses = findAnnotatedClasses(moduleFragment)
-    if (annotatedClasses.isEmpty()) return
 
-    // Include all annotated classes except abstract/sealed (no JS constructor to export)
-    val dispatchClasses = annotatedClasses.filter {
+    // Host2JS classes (both-annotated included): same abstract/sealed/interface filter.
+    val host2JsClasses = findHost2JsAnnotatedClasses(moduleFragment).filter {
       it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
       it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
       it.kind != ClassKind.INTERFACE
     }
+    if (annotatedClasses.isEmpty() && host2JsClasses.isEmpty()) return
 
-    // Host2JS classes (both-annotated included): same abstract/sealed/interface filter.
-    val host2JsClasses = findHost2JsAnnotatedClasses(moduleFragment).filter {
+    // Include all annotated classes except abstract/sealed (no JS constructor to export)
+    val dispatchClasses = annotatedClasses.filter {
       it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
       it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
       it.kind != ClassKind.INTERFACE

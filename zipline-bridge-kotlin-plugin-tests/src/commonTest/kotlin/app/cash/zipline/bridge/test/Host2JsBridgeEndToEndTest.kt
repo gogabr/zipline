@@ -12,11 +12,14 @@
  */
 package app.cash.zipline.bridge.test
 
+import app.cash.zipline.QuickJsException
+
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /** The guest app module id, as assigned by ZiplineCompiler (./<entry file>.js). */
 private const val GUEST_MODULE = "./zipline-root-zipline-bridge-kotlin-plugin-tests.js"
@@ -28,6 +31,12 @@ expect class TestHost2Js() {
   fun warmUp()
   fun roundTrip(value: Any): Any? // host object -> JS (convertToJs) -> back (bridgeForAny)
   fun toJson(value: Any): String  // host object -> JS -> JSON.stringify (debugging/triage aid)
+  /** True if [name] names a callable function on globalThis. */
+  fun hasGlobalFunction(name: String): Boolean
+  /** Convert [args] host->JS and JS_Call globalThis[name] with them; converts the result back. */
+  fun callGuestFunction(name: String, args: List<Any?>): Any?
+  /** Evaluate [script] in the guest runtime, dispatching any result through the bridge. */
+  fun evaluateForBridge(script: String): Any?
   fun close()
 }
 
@@ -207,5 +216,79 @@ class Host2JsBridgeEndToEndTest {
       v.map { m -> m.mapKeys { (it.key as Number).toDouble() } }
     }
     assertEquals(mapOf("outer" to listOf(mapOf(1.0 to "one", 2.0 to "two"))), complexNested)
+  }
+
+  @Test
+  fun imageStateObjects() {
+    // Sealed interface with `object` children: the singleton must round-trip as the same object.
+    assertEquals(BridgedTestValues.imageEmpty, roundTrip(BridgedTestValues.imageEmpty))
+    assertEquals(BridgedTestValues.imageLoading, roundTrip(BridgedTestValues.imageLoading))
+    assertEquals(BridgedTestValues.imageSuccess, roundTrip(BridgedTestValues.imageSuccess))
+  }
+
+  @Test
+  fun imageStateError() {
+    // Data class child of the sealed interface, with nullable String payload.
+    assertEquals(BridgedTestValues.imageError, roundTrip(BridgedTestValues.imageError))
+    assertEquals(BridgedTestValues.imageErrorNull, roundTrip(BridgedTestValues.imageErrorNull))
+  }
+
+  @Test
+  fun lottieStateDataObjects() {
+    // `data object` children (mirrors wb LottieAnimationLoadState).
+    assertEquals(BridgedTestValues.lottieLoading, roundTrip(BridgedTestValues.lottieLoading))
+    assertEquals(BridgedTestValues.lottieError, roundTrip(BridgedTestValues.lottieError))
+  }
+
+  @Test
+  fun stringAnnotationNested() {
+    // Data class child of a sealed interface whose payload holds another bridged data class
+    // (Long, inline, enum, nullable-structured fields) — the AnnotatedStringRange shape.
+    assertEquals(BridgedTestValues.annotationRange, roundTrip(BridgedTestValues.annotationRange))
+    assertEquals(BridgedTestValues.annotationLinkNullStyle, roundTrip(BridgedTestValues.annotationLinkNullStyle))
+  }
+
+  @Test
+  fun stringAnnotationStyle() {
+    assertEquals(BridgedTestValues.annotationStyle, roundTrip(BridgedTestValues.annotationStyle))
+  }
+
+  // -- Phase 1: host->guest JS-call API (hasGlobalFunction / callGuestFunction) --
+
+  /** An unannotated host class: converting it must throw QuickJsException, never fall back. */
+  class NotBridged(val payload: String)
+
+  @Test
+  fun hasGlobalFunctionProbe() {
+    host.evaluateForBridge("globalThis.__testSink = function (a, b, c) { return a.name + '|' + b + '|' + c; }; 0")
+    assertEquals(true, host.hasGlobalFunction("__testSink"))
+    assertEquals(false, host.hasGlobalFunction("__no_such_sink"))
+  }
+
+  @Test
+  fun callGuestFunctionRoundTrip() {
+    host.evaluateForBridge("globalThis.__testSink = function (a, b, c) { return a.name + '|' + b + '|' + c; }; 0")
+    val result = host.callGuestFunction(
+      "__testSink",
+      listOf(BridgedTestValues.data, 42, "x"),
+    )
+    assertEquals("seven|42|x", result)
+  }
+
+  @Test
+  fun callGuestFunctionUnknownFunctionThrows() {
+    assertFailsWith<QuickJsException> {
+      host.callGuestFunction("__no_such_sink", emptyList())
+    }
+  }
+
+  @Test
+  fun callGuestFunctionUnbridgedArgThrows() {
+    host.evaluateForBridge("globalThis.__testSink = function (a) { return 'unreachable'; }; 0")
+    val e = assertFailsWith<QuickJsException> {
+      host.callGuestFunction("__testSink", listOf(NotBridged("nope")))
+    }
+    // Message names the offending argument class (loud, no silent fallback).
+    assertEquals(true, e.message!!.contains("NotBridged"), "message was: " + e.message)
   }
 }

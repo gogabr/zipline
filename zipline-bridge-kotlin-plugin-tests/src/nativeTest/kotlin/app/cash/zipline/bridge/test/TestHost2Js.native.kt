@@ -41,6 +41,12 @@ actual class TestHost2Js actual constructor() {
     )
   }
 
+  actual fun hasGlobalFunction(name: String): Boolean = quickJs.hasGlobalFunction(name)
+
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? = quickJs.callGuestFunction(name, args)
+
+  actual fun evaluateForBridge(script: String): Any? = quickJs.evaluateForBridge(script, "sink.js")
+
   actual fun roundTrip(value: Any): Any? {
     val js = anyToJs(quickJs.jsContext, value)
     val back = bridgeForAny(quickJs.jsContext, js)

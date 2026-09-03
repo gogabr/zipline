@@ -273,7 +273,10 @@ private fun emitMapHelper(
 
 internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
-  val functionName = "${clazz.name.asString()}_toKotlin"
+  // Full-FQN function name: sealed children (e.g. two nested `Error` classes under different
+  // sealed parents) share the shared `generated_bridges` package, so the short class name would
+  // collide across files. The dotted FQN is unique per class, like the output file name below.
+  val functionName = "${fqn.replace(".", "_")}_toKotlin"
   val fields = extractFields(clazz)
 
   // The generated code constructs the bridged class (and, for nested classes, its enclosing

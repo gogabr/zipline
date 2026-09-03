@@ -1084,7 +1084,8 @@ class ZiplineBridgeNativePluginTest {
       val content = ktFile.readText()
 
       // Function signature returns Any (not COpaquePointer?)
-      assertTrue(content.contains("public fun Simple_toKotlin("))
+      // Function name derives from the full dotted FQN (unique across nested/sealed classes).
+      assertTrue(content.contains("public fun com_example_Simple_toKotlin("))
       assertTrue(content.contains("): Any {"))
 
       // Imports
@@ -1290,7 +1291,7 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(bridgeFile.exists(), "Expected per-class bridge file")
       val bridgeContent = bridgeFile.readText()
       assertTrue(bridgeContent.contains("@kotlin.native.EagerInitialization"))
-      assertTrue(bridgeContent.contains("registerBridge(\"com.example.Foo\", ::Foo_toKotlin)"))
+      assertTrue(bridgeContent.contains("registerBridge(\"com.example.Foo\", ::com_example_Foo_toKotlin)"))
       assertFalse(bridgeContent.contains("staticCFunction"), "Should not use staticCFunction")
 
 

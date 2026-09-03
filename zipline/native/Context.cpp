@@ -1502,7 +1502,7 @@ void Context::dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch) {
             dbgName ? dbgName : "(null)");
         abort();
 #endif
-        if (dbgName && dbgName != "(unknown)") JS_FreeCString(jsContext, dbgName);
+        if (dbgName && strcmp(dbgName, "(unknown)") != 0) JS_FreeCString(jsContext, dbgName);
         JS_FreeValue(jsContext, dbgCtor);
       }
       JS_FreeValue(jsContext, ch.jsValue);
@@ -1755,4 +1755,94 @@ void Context::initRdmaChangesChannel(JNIEnv* env, jobject rdmaChangeSink) {
       "app_cash_redwood_rdmaSendChanges", rdmaObj);
 
   JS_FreeValue(jsContext, global);
+}
+
+// -- Host→guest bridge call (direct events) --
+
+/** The offending argument's JVM class name for the QuickJsException message; error path only. */
+static std::string jniClassNameOf(JNIEnv* env, jobject obj) {
+  if (obj == nullptr) return "null";
+  jclass objClass = env->GetObjectClass(obj);
+  jclass classClass = env->FindClass("java/lang/Class");
+  jmethodID getName = env->GetMethodID(classClass, "getName", "()Ljava/lang/String;");
+  jstring nameStr = static_cast<jstring>(env->CallObjectMethod(objClass, getName));
+  const char* chars = nameStr ? env->GetStringUTFChars(nameStr, nullptr) : nullptr;
+  std::string result = chars ? chars : "<unknown>";
+  if (chars) env->ReleaseStringUTFChars(nameStr, chars);
+  if (nameStr) env->DeleteLocalRef(nameStr);
+  env->DeleteLocalRef(classClass);
+  env->DeleteLocalRef(objClass);
+  return result;
+}
+
+jboolean Context::hasGlobalFunction(JNIEnv* env, jstring name) {
+  std::string nameStr = toCppString(env, name);
+  JSValue global = JS_GetGlobalObject(jsContext);
+  JSValue fn = JS_GetPropertyStr(jsContext, global, nameStr.c_str());
+  jboolean result = JS_IsFunction(jsContext, fn) ? JNI_TRUE : JNI_FALSE;
+  JS_FreeValue(jsContext, fn);
+  JS_FreeValue(jsContext, global);
+  return result;
+}
+
+jobject Context::callGuestFunction(JNIEnv* env, jstring name, jobject argsList) {
+  std::string nameStr = toCppString(env, name);
+
+  // Resolve globalThis[name]; anything other than a callable is a loud error.
+  JSValue global = JS_GetGlobalObject(jsContext);
+  JSValue fn = JS_GetPropertyStr(jsContext, global, nameStr.c_str());
+  JS_FreeValue(jsContext, global);
+  if (!JS_IsFunction(jsContext, fn)) {
+    JS_FreeValue(jsContext, fn);
+    throwJavaException(env, "app/cash/zipline/QuickJsException",
+        "callGuestFunction: no callable function '%s' on globalThis", nameStr.c_str());
+    return nullptr;
+  }
+
+  const jint argc = env->CallIntMethod(argsList, listSize);
+  if (env->ExceptionCheck()) {
+    JS_FreeValue(jsContext, fn);
+    return nullptr;
+  }
+
+  // Convert each argument host→JS via the @WithHost2JSBridge machinery. A failing conversion
+  // (unregistered/unannotated class) throws loudly with the offending class; no fallback.
+  std::vector<JSValue> argv;
+  argv.reserve(static_cast<size_t>(argc));
+  for (jint i = 0; i < argc; i++) {
+    jobject element = env->CallObjectMethod(argsList, listGet, i);
+    if (env->ExceptionCheck()) {
+      for (auto& v : argv) JS_FreeValue(jsContext, v);
+      JS_FreeValue(jsContext, fn);
+      return nullptr;
+    }
+    JSValue elementJs = bridgeAnyToJs(env, jsContext, element);
+    if (env->ExceptionCheck()) {
+      // bridgeAnyToJs leaves the raw pending exception; clear it and rethrow a
+      // QuickJsException naming the offending argument class. (ExceptionClear must come
+      // before any further JNI calls.)
+      env->ExceptionClear();
+      std::string cls = jniClassNameOf(env, element);
+      if (element) env->DeleteLocalRef(element);
+      for (auto& v : argv) JS_FreeValue(jsContext, v);
+      JS_FreeValue(jsContext, fn);
+      throwJavaException(env, "app/cash/zipline/QuickJsException",
+          "callGuestFunction: cannot convert argument %d of class %s to JS", i, cls.c_str());
+      return nullptr;
+    }
+    if (element) env->DeleteLocalRef(element);
+    argv.push_back(elementJs);
+  }
+
+  JSValue result = JS_Call(jsContext, fn, JS_UNDEFINED, argc, argv.empty() ? nullptr : argv.data());
+  for (auto& v : argv) JS_FreeValue(jsContext, v);
+  JS_FreeValue(jsContext, fn);
+  if (JS_IsException(result)) {
+    throwJsException(env, result);
+    JS_FreeValue(jsContext, result);
+    return nullptr;
+  }
+  jobject javaResult = bridgeForAny(env, jsContext, result);
+  JS_FreeValue(jsContext, result);
+  return javaResult;
 }

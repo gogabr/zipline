@@ -140,5 +140,17 @@ fun warmUpHost2Js(): Boolean {
   BridgedTestValues.longInline
   BridgedTestValues.longHolder
   BridgedTestValues.longInlineHolder
+  BridgedTestValues.imageEmpty
+  BridgedTestValues.imageLoading
+  BridgedTestValues.imageSuccess
+  BridgedTestValues.imageError
+  BridgedTestValues.imageErrorNull
+  BridgedTestValues.lottieLoading
+  BridgedTestValues.lottieError
+  BridgedTestValues.textStyle
+  BridgedTestValues.annotationLink
+  BridgedTestValues.annotationLinkNullStyle
+  BridgedTestValues.annotationStyle
+  BridgedTestValues.annotationRange
   return true
 }

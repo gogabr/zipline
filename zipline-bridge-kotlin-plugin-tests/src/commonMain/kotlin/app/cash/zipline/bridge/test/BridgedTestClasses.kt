@@ -317,6 +317,83 @@ data class BridgedLongHolder(val v: Long)
 @WithHost2JSBridge
 data class BridgedLongInlineHolder(val inline: BridgedLongInline)
 
+/**
+ * Phase 0 spike types: sealed payloads shaped exactly like the compose-live event args that
+ * need direct host→guest transport (BridgedImageState mirrors io.composelive AsyncImageState;
+ * BridgedLottieState mirrors wb LottieAnimationLoadState, whose children are `data object`s;
+ * the BridgedAnnotation* family mirrors AnnotatedStringRange/StringAnnotation/TextStyle
+ * nesting: a data class child of a sealed interface whose payload contains another bridged
+ * data class). Proves the plugin host2js path handles object-kind declarations, sealed-interface
+ * children, and data classes nested inside sealed children.
+ */
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedImageState {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Empty : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Loading : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Success : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Error(val message: String?) : BridgedImageState
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedLottieState {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data object Loading : BridgedLottieState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data object Success : BridgedLottieState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Error(val message: String?) : BridgedLottieState
+}
+
+/** Data class with structured (non-primitive) fields, mirroring compose-live TextStyle reachable from StringAnnotation children. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedTextStyle(
+  val bold: Boolean,
+  val fontSize: BridgedFloat,
+  val raw: Long,
+  val align: BridgedEnum?,
+)
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedStringAnnotation {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Link(val url: String, val style: BridgedTextStyle?) : BridgedStringAnnotation
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Style(val style: BridgedTextStyle) : BridgedStringAnnotation
+}
+
+/** Mirrors compose-live AnnotatedStringRange: top-level data class whose payload is a sealed-interface child value. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedAnnotationRange(
+  val start: Int,
+  val end: Int,
+  val annotation: BridgedStringAnnotation,
+)
+
 /** Canonical values used both by the guest providers and the host assertions. */
 
 object BridgedTestValues {
@@ -387,4 +464,18 @@ object BridgedTestValues {
   val longInline = BridgedLongInline(raw = 1234567890123L)
   val longHolder = BridgedLongHolder(v = -5L)
   val longInlineHolder = BridgedLongInlineHolder(inline = longInline)
+
+  // Phase 0 spike values: sealed payloads with object/data-object/data-class children.
+  val imageEmpty = BridgedImageState.Empty
+  val imageLoading = BridgedImageState.Loading
+  val imageSuccess = BridgedImageState.Success
+  val imageError = BridgedImageState.Error(message = "load failed")
+  val imageErrorNull = BridgedImageState.Error(message = null)
+  val lottieLoading = BridgedLottieState.Loading
+  val lottieError = BridgedLottieState.Error(message = "nope")
+  val textStyle = BridgedTextStyle(bold = true, fontSize = BridgedFloat(raw = 16f), raw = 0x0F00L, align = BridgedEnum.THIRD)
+  val annotationLink = BridgedStringAnnotation.Link(url = "https://example.com", style = textStyle)
+  val annotationLinkNullStyle = BridgedStringAnnotation.Link(url = "https://example.com", style = null)
+  val annotationStyle = BridgedStringAnnotation.Style(style = textStyle)
+  val annotationRange = BridgedAnnotationRange(start = 1, end = 5, annotation = annotationLink)
 }

@@ -47,6 +47,8 @@ import app.cash.zipline.quickjs.JS_GetRuntime
 import app.cash.zipline.quickjs.JS_GetRuntimeOpaque
 import app.cash.zipline.quickjs.JS_HasProperty
 import app.cash.zipline.quickjs.JS_IsArray
+import app.cash.zipline.quickjs.JS_IsFunction
+import app.cash.zipline.quickjs.JS_Call
 import app.cash.zipline.quickjs.JS_IsException
 import app.cash.zipline.quickjs.JS_IsNull
 import app.cash.zipline.quickjs.JS_IsUndefined
@@ -117,6 +119,7 @@ import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArrayOf
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.CFunction
 import kotlinx.cinterop.convert
@@ -546,6 +549,78 @@ actual class QuickJs private constructor(
 
     JS_SetPropertyStr(context, globalThis, "app_cash_redwood_rdmaSendChanges", rdmaObj)
     JS_FreeValue(context, globalThis)
+  }
+
+  /**
+   * True if [name] names a callable function property on the runtime's globalThis.
+   */
+  actual fun hasGlobalFunction(name: String): Boolean {
+    checkNotClosed()
+
+    val globalThis = JS_GetGlobalObject(context)
+    val fn = JS_GetPropertyStr(context, globalThis, name)
+    JS_FreeValue(context, globalThis)
+    val isFunction = JS_IsFunction(context, fn) != 0
+    JS_FreeValue(context, fn)
+    return isFunction
+  }
+
+  /**
+   * Convert each [args] element host→JS (via the @WithHost2JSBridge machinery, primitives,
+   * collections, Long) and JS_Call globalThis[name] with them. Converts the JS return value
+   * back JS→host via the existing bridge readers.
+   *
+   * @throws QuickJsException if [name] is missing/not callable or any conversion fails
+   *   (message includes the offending class).
+   */
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? {
+    checkNotClosed()
+
+    // Resolve the callable; a missing global is a loud error.
+    val globalThis = JS_GetGlobalObject(context)
+    val fn = JS_GetPropertyStr(context, globalThis, name)
+    JS_FreeValue(context, globalThis)
+    if (JS_IsFunction(context, fn) == 0) {
+      JS_FreeValue(context, fn)
+      throw QuickJsException("callGuestFunction: no callable function '$name' on globalThis")
+    }
+
+    // Convert each argument host→JS; an unbridgeable value throws with the offending class.
+    val converted = mutableListOf<CValue<JSValue>>()
+    try {
+      for ((index, element) in args.withIndex()) {
+        try {
+          converted += anyToJs(context, element)
+        } catch (t: Throwable) {
+          val cls = element?.let { it::class.qualifiedName } ?: "null"
+          throw QuickJsException(
+            "callGuestFunction: cannot convert argument $index of class $cls to JS: ${t.message}",
+          )
+        }
+      }
+
+      val result = memScoped {
+        val argv = if (converted.isEmpty()) {
+          allocArrayOf(JsUndefined())
+        } else {
+          allocArrayOf(*converted.toTypedArray())
+        }
+        JS_Call(context, fn, JsUndefined(), args.size, argv)
+      }
+      if (JS_IsException(result) != 0) {
+        JS_FreeValue(context, result)
+        // Reads and throws the pending JS exception as a QuickJsException.
+        throwJsException()
+      }
+      try {
+        return bridgeForAny(context, result)
+      } finally {
+        JS_FreeValue(context, result)
+      }
+    } finally {
+      converted.forEach { JS_FreeValue(context, it) }
+      JS_FreeValue(context, fn)
+    }
   }
 
   internal actual fun bridgeInitAll() {

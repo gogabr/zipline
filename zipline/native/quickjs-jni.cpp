@@ -217,6 +217,28 @@ Java_app_cash_zipline_JniCallChannel_disconnect(JNIEnv* env, jobject thiz, jlong
   return channel->disconnect(context, env, instanceName);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_QuickJs_hasGlobalFunction(JNIEnv* env, jobject, jlong context_,
+                                                jstring name) {
+  Context* context = reinterpret_cast<Context*>(context_);
+  if (!context) {
+    throwJavaException(env, "java/lang/IllegalStateException", "QuickJs instance was closed");
+    return JNI_FALSE;
+  }
+  return context->hasGlobalFunction(env, name);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_app_cash_zipline_QuickJs_callGuestFunction(JNIEnv* env, jobject, jlong context_,
+                                                jstring name, jobject args) {
+  Context* context = reinterpret_cast<Context*>(context_);
+  if (!context) {
+    throwJavaException(env, "java/lang/IllegalStateException", "QuickJs instance was closed");
+    return nullptr;
+  }
+  return context->callGuestFunction(env, name, args);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_app_cash_zipline_QuickJs_bridgeInitAllNative(JNIEnv* env, jclass, jlong jsContext) {
   init_all(env);

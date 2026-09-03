@@ -39,6 +39,12 @@ actual class TestHost2Js actual constructor() {
     )
   }
 
+  actual fun hasGlobalFunction(name: String): Boolean = quickJs.hasGlobalFunction(name)
+
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? = quickJs.callGuestFunction(name, args)
+
+  actual fun evaluateForBridge(script: String): Any? = quickJs.evaluateForBridge(script, "sink.js")
+
   actual fun roundTrip(value: Any): Any? = roundTripNative(quickJs, value)
 
   actual fun toJson(value: Any): String {

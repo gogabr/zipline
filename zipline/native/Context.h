@@ -71,6 +71,11 @@ public:
   void throwJsException(JNIEnv*, const JSValue& value) const;
   JSValue throwJavaExceptionFromJs(JNIEnv*) const;
 
+  // Host→guest bridge call (direct events): probe and call a callable on globalThis,
+  // converting each argument host→JS via bridgeAnyToJs and the result JS→host via bridgeForAny.
+  jboolean hasGlobalFunction(JNIEnv* env, jstring name);
+  jobject callGuestFunction(JNIEnv* env, jstring name, jobject argsList);
+
   JNIEnv* getEnv() const;
 
   std::string toCppString(JNIEnv* env, jstring string) const;

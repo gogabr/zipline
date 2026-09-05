@@ -253,8 +253,10 @@ internal fun generateBridgeFile(
         }
         // unbox-impl lives on the INLINE class, not the holder (the field's JVM type is the
         // boxed inline class); the boxed field value is an instance of that inline class.
-        val inlineJni = f.irClass?.let { jniTypeDescriptorForClass(it) }
-          ?: jniFieldDescriptor(f.ktType)
+        // FindClass takes the INTERNAL name (package/Class), never a JNI descriptor (L...;);
+        // descriptor-form names abort on Android ART ('illegal class name').
+        val inlineJni = f.irClass?.let { buildJniClassName(it) }
+          ?: f.ktType.replace('.', '/')
         appendLine("    {")
         appendLine("        jclass _inlineCls = (*env)->FindClass(env, \"$inlineJni\");")
         appendLine("        if ((*env)->ExceptionCheck(env)) {")

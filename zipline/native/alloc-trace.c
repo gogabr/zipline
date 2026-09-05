@@ -20,6 +20,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define QJS_ALLOC_TRACE 1
+
 #if QJS_ALLOC_TRACE
 #if defined(_WIN32)
 #define QJS_AT_HAVE_UNWIND 0
@@ -245,6 +247,7 @@ int qjs_at_start(const char *path) {
   }
   qjs_at_stream.base = qjs_at_library_base();
   qjs_at_stream.out = fopen(path, "w");
+  /**/ fprintf(stderr, "path %s, fopen result %p\n", path, qjs_at_stream.out);
   if (qjs_at_stream.out) {
     /* 1 MB stream buffer: events are small and hot-path, so a large buffer
        keeps flush/syscall frequency low. */
@@ -380,7 +383,11 @@ void qjs_at_event(int kind, const void *ptr, const void *ptr2, size_t size,
 #else  /* !QJS_ALLOC_TRACE */
 
 /* Profiling disabled: no-op stubs so the JNI surface links and inits stay 0. */
-int qjs_at_start(const char *path) { return -1; }
+int qjs_at_start(const char *path) { 
+  fprintf(stderr, "NO-OP PATH\n");
+  abort(); 
+  return -1; 
+}
 void qjs_at_stop(void) {}
 void qjs_at_dump_heap(void) {}
 void qjs_at_stack_push(const QjsAtJsFrame *frame) {}

@@ -45,6 +45,8 @@ extern "C" {
 #define __js_printf_like(a, b)
 #endif
 
+#define QJS_ALLOC_TRACE	1
+
 #define JS_BOOL int
 
 typedef struct JSRuntime JSRuntime;

@@ -497,6 +497,30 @@ __attribute__((used, visibility("default"))) jobject bridgeForAny(JNIEnv *env, J
 
     case JS_TAG_OBJECT: {
       jobject result = nullptr;
+      // 0) JS arrays (Any-typed property values that are Kotlin Lists): decode into a
+      // java.util.ArrayList, converting each element through this same converter.
+      if (JS_IsArray(ctx, val)) {
+        JSValue lenVal = JS_GetPropertyStr(ctx, val, "length");
+        jint length = JS_VALUE_GET_INT(lenVal);
+        JS_FreeValue(ctx, lenVal);
+        jobject list = env->NewObject(context->arrayListClass, context->arrayListInit);
+        if (env->ExceptionCheck()) {
+          env->DeleteLocalRef(list);
+          return nullptr;
+        }
+        for (int i = 0; i < length && !env->ExceptionCheck(); i++) {
+          JSValue element = JS_GetPropertyUint32(ctx, val, (uint32_t)i);
+          jobject jElement = bridgeForAny(env, ctx, element);
+          JS_FreeValue(ctx, element);
+          env->CallBooleanMethod(list, context->arrayListAdd, jElement);
+          if (jElement) env->DeleteLocalRef(jElement);
+        }
+        if (env->ExceptionCheck()) {
+          env->DeleteLocalRef(list);
+          return nullptr;
+        }
+        return list;
+      }
       // 1) Try bridge_dispatch
       JSValue disp = JS_GetPropertyStr(ctx, val, "bridge_dispatch");
       BridgeConverterFn d = bridgeConverterFromJSValue(disp);

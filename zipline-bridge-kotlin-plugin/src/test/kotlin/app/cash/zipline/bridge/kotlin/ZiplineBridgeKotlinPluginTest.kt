@@ -614,7 +614,7 @@ class ZiplineBridgeKotlinPluginTest {
       assertTrue(content.contains("JS_IsNull(js_age)"))
 
       // Boxing via NewObject
-      assertTrue(content.contains("NewObject(env, _boxed_age, _boxedCtor_age, (jint)JS_VALUE_GET_INT(js_age))"))
+      assertTrue(content.contains("NewObject(env, _boxed_age, _boxedCtor_age, (jint)(tag_age == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_age) : JS_VALUE_GET_INT(js_age)))"))
 
       // Null branch
       assertTrue(content.contains("java_age = NULL;"))
@@ -1025,7 +1025,7 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(content.contains("toKStringFromUtf8"))
 
       // Int extraction
-      assertTrue(content.contains("JsValueGetInt(ageRaw)"))
+      assertTrue(content.contains("JsNumberToInt(ageRaw)"))
 
       // JS value cleanup
       assertTrue(content.contains("JS_FreeValue(ctx,"))
@@ -1252,7 +1252,7 @@ class ZiplineBridgeNativePluginTest {
 
       // Enum ordinal extraction
       assertTrue(content.contains("ordinal_1"))
-      assertTrue(content.contains("JsValueGetInt(ordinalRaw)"))
+      assertTrue(content.contains("JsNumberToInt(ordinalRaw)"))
       assertTrue(content.contains(".entries[ordinal]"))
       assertTrue(content.contains("Color.entries[ordinal]"))
     } finally {

@@ -193,10 +193,10 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
     if (!isEnum) {
       for (f in bodyFields) {
         appendLine("    _fld_${f.name} = (*env)->GetFieldID(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
-      appendLine("    if ((*env)->ExceptionCheck(env)) {")
-      appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
-      appendLine("        _fld_${f.name} = NULL;")
-      appendLine("    }")
+        appendLine("    if ((*env)->ExceptionCheck(env)) {")
+        appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
+        appendLine("        _fld_${f.name} = NULL;")
+        appendLine("    }")
       }
     }
     appendLine("}")
@@ -254,7 +254,7 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
     if (isEnum) {
       // Enum — read the JS ordinal and return values()[ordinal].
       appendLine("    JSValue ordinalRaw = JS_GetPropertyStr(ctx, jsObj, \"ordinal_1\");")
-      appendLine("    jint ordinal = (jint)JS_VALUE_GET_INT(ordinalRaw);")
+      appendLine("    jint ordinal = (jint)(JS_VALUE_GET_NORM_TAG(ordinalRaw) == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(ordinalRaw) : JS_VALUE_GET_INT(ordinalRaw));")
       appendLine("    JS_FreeValue(ctx, ordinalRaw);")
       appendLine("    jobjectArray values = (*env)->CallStaticObjectMethod(env, _cls, _valuesMethod);")
       appendLine("    if ((*env)->ExceptionCheck(env)) return NULL;")
@@ -314,13 +314,16 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
           appendLine("        $javaVar = (jboolean)JS_VALUE_GET_BOOL(js_${field.name});")
         }
         field.effectiveKtType == "kotlin.Byte" -> {
-          appendLine("        $javaVar = (jbyte)JS_VALUE_GET_INT(js_${field.name});")
+          appendLine("        int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+          appendLine("        $javaVar = (jbyte)(tag_${field.name} == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_${field.name}) : JS_VALUE_GET_INT(js_${field.name}));")
         }
         field.effectiveKtType == "kotlin.Short" -> {
-          appendLine("        $javaVar = (jshort)JS_VALUE_GET_INT(js_${field.name});")
+          appendLine("        int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+          appendLine("        $javaVar = (jshort)(tag_${field.name} == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_${field.name}) : JS_VALUE_GET_INT(js_${field.name}));")
         }
         field.effectiveKtType == "kotlin.Int" -> {
-          appendLine("        $javaVar = (jint)JS_VALUE_GET_INT(js_${field.name});")
+          appendLine("        int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+          appendLine("        $javaVar = (jint)(tag_${field.name} == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_${field.name}) : JS_VALUE_GET_INT(js_${field.name}));")
         }
         field.effectiveKtType == "kotlin.Long" -> {
           appendLine("        int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
@@ -332,8 +335,8 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
           appendLine("            /* Kotlin/JS Long: {low_1, high_1} packed representation */")
           appendLine("            JSValue lowVal = JS_GetPropertyStr(ctx, js_${field.name}, \"low_1\");")
           appendLine("            JSValue highVal = JS_GetPropertyStr(ctx, js_${field.name}, \"high_1\");")
-          appendLine("            jint low = JS_VALUE_GET_INT(lowVal);")
-          appendLine("            jint high = JS_VALUE_GET_INT(highVal);")
+          appendLine("            jint low = (JS_VALUE_GET_NORM_TAG(lowVal) == JS_TAG_FLOAT64) ? (jint)JS_VALUE_GET_FLOAT64(lowVal) : (jint)JS_VALUE_GET_INT(lowVal);")
+          appendLine("            jint high = (JS_VALUE_GET_NORM_TAG(highVal) == JS_TAG_FLOAT64) ? (jint)JS_VALUE_GET_FLOAT64(highVal) : (jint)JS_VALUE_GET_INT(highVal);")
           appendLine("            $javaVar = ((jlong)high << 32) | ((jlong)low & 0xFFFFFFFF);")
           appendLine("            JS_FreeValue(ctx, lowVal);")
           appendLine("            JS_FreeValue(ctx, highVal);")
@@ -360,7 +363,8 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
           appendLine("        }")
         }
         field.effectiveKtType == "kotlin.Char" -> {
-          appendLine("        $javaVar = (jchar)JS_VALUE_GET_INT(js_${field.name});")
+          appendLine("        int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+          appendLine("        $javaVar = (jchar)(tag_${field.name} == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_${field.name}) : JS_VALUE_GET_INT(js_${field.name}));")
         }
         field.effectiveKtType == "kotlin.String" -> {
           appendLine("        const char *str_${field.name} = JS_ToCString(ctx, js_${field.name});")
@@ -551,9 +555,18 @@ internal fun emitNullablePrimitiveExtraction(
     sb.appendLine("            }")
     sb.appendLine("            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, numVal_${field.name});")
   } else {
-    sb.appendLine(
-      "            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, ${info.jsCast}${info.jsGetter}(js_${field.name}));"
-    )
+    val getter = info.jsGetter
+    val cast = info.jsCast
+    if (getter == "JS_VALUE_GET_INT") {
+      // JS numbers may be FLOAT64-tagged even for integral values; a raw int read
+      // would return the double's low 32 bits (0). Read the tag first.
+      sb.appendLine("            int tag_${field.name} = JS_VALUE_GET_NORM_TAG(js_${field.name});")
+      sb.appendLine("            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, ${cast}(tag_${field.name} == JS_TAG_FLOAT64 ? JS_VALUE_GET_FLOAT64(js_${field.name}) : JS_VALUE_GET_INT(js_${field.name})));")
+    } else {
+      sb.appendLine(
+        "            $javaVar = (*env)->NewObject(env, _boxed_${field.name}, _boxedCtor_${field.name}, ${cast}${getter}(js_${field.name}));"
+      )
+    }
   }
 }
 

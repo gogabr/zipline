@@ -14,29 +14,32 @@
  * limitations under the License.
  */
 @file:OptIn(ExperimentalForeignApi::class)
-
 package app.cash.zipline
 
 import kotlinx.cinterop.CArrayPointer
 import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.CValue
 import kotlinx.cinterop.CValues
 import kotlinx.cinterop.CVariable
 import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.NativePlacement
+import kotlinx.cinterop.UByteVar
+import kotlinx.cinterop.alloc
 import kotlinx.cinterop.allocArray
-import kotlinx.cinterop.interpretCPointer
-import kotlinx.cinterop.sizeOf
-import kotlinx.cinterop.CValue
 import kotlinx.cinterop.asStableRef
-import kotlinx.cinterop.toCPointer
+import kotlinx.cinterop.interpretCPointer
+import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.toKStringFromUtf8
+import kotlinx.cinterop.value
 import app.cash.zipline.quickjs.JSContext
 import app.cash.zipline.quickjs.JSValue
 import app.cash.zipline.quickjs.JS_Call
 import app.cash.zipline.quickjs.JS_FreeValue
 import app.cash.zipline.quickjs.JS_GetPropertyStr
+import app.cash.zipline.quickjs.JS_GetPropertyUint32
+import app.cash.zipline.quickjs.JS_IsArray
 import app.cash.zipline.quickjs.JS_IsBool
 import app.cash.zipline.quickjs.JS_IsException
 import app.cash.zipline.quickjs.JS_IsNull
@@ -45,6 +48,7 @@ import app.cash.zipline.quickjs.JS_IsString
 import app.cash.zipline.quickjs.JS_IsUndefined
 import app.cash.zipline.quickjs.JS_TAG_FLOAT64
 import app.cash.zipline.quickjs.JS_TAG_INT
+import app.cash.zipline.quickjs.JS_TAG_OBJECT
 import app.cash.zipline.quickjs.JS_ToCString
 import app.cash.zipline.quickjs.JS_FreeCString
 import app.cash.zipline.quickjs.JsValueGetBool
@@ -52,12 +56,14 @@ import app.cash.zipline.quickjs.JsValueGetFloat64
 import app.cash.zipline.quickjs.JsValueGetInt
 import app.cash.zipline.quickjs.JsValueGetNormTag
 import app.cash.zipline.quickjs.JsGetOwnPropertyNames
+import app.cash.zipline.quickjs.JsGetPropertyAt
 import app.cash.zipline.quickjs.JsGetPropertyName
+import kotlinx.cinterop.sizeOf
+import kotlinx.cinterop.allocArrayOf
+import kotlinx.cinterop.toCPointer
+import kotlinx.cinterop.rawValue
 import app.cash.zipline.quickjs.JsFreePropertyEnum
-import kotlinx.cinterop.IntVar
-import kotlinx.cinterop.value
-import kotlinx.cinterop.alloc
-import kotlinx.cinterop.memScoped
+
 
 /** Copy the data of [item] to the [index] of [this] as if it were an array of [T] structs. */
 internal inline operator fun <reified T : CVariable> CPointer<T>.set(index: Int, item: CValues<T>) {
@@ -88,6 +94,102 @@ fun JsNumberToDouble(jsVal: CValue<JSValue>): Double = when (JsValueGetNormTag(j
 }
 
 /**
+ * Read a JS number as Int, handling both JS_TAG_INT and JS_TAG_FLOAT64.
+ * JS numbers may be encoded as either tag — JsValueGetInt on a float64-tagged
+ * value reads the double's low 32 bits (0 for any small integral double),
+ * mirroring the JVM-side lesson documented in Context.cpp (raw readers misread
+ * values whose numeric tag differs from the reader).
+ *
+ * Non-numeric tags (undefined/null/object) read as 0, preserving the previous
+ * silent behavior of the raw getter on those tags.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun JsNumberToInt(jsVal: CValue<JSValue>): Int = when (JsValueGetNormTag(jsVal)) {
+  JS_TAG_INT -> JsValueGetInt(jsVal)
+  JS_TAG_FLOAT64 -> JsValueGetFloat64(jsVal).toInt()
+  else -> 0
+}
+
+/**
+ * Reads the numeric payload of a BOXED Kotlin value class instance as Double.
+ * See [JsBoxedNumberToLong]; this variant covers Int/Float/Double wrappers
+ * whose backing payload is a plain JS number.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun JsBoxedNumberToDouble(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Double? {
+  if (JsValueGetNormTag(jsVal) != JS_TAG_OBJECT) return null
+  return memScoped {
+    val count = alloc<IntVar>()
+    val ptab = JsGetOwnPropertyNames(ctx, jsVal, count.ptr) ?: return@memScoped null
+    try {
+      for (i in 0 until count.value) {
+        val prop = JsGetPropertyAt(ctx, jsVal, ptab, i)
+        try {
+          if (JS_IsNumber(prop) != 0) {
+            val tag = JsValueGetNormTag(prop)
+            return@memScoped if (tag == JS_TAG_INT) JsValueGetInt(prop).toDouble()
+            else JsValueGetFloat64(prop)
+          }
+        } finally {
+          JS_FreeValue(ctx, prop)
+        }
+      }
+      null
+    } finally {
+      JsFreePropertyEnum(ctx, ptab)
+    }
+  }
+}
+
+/**
+ * Reads the numeric payload of a BOXED Kotlin value class instance (e.g. Color
+ * over Long). Kotlin/JS boxes value-class fields with custom members into plain
+ * JS objects whose single backing field is hash-mangled ('uoul_1'-style) and
+ * exposes no accessor, so neither a named read nor a bridge converter can reach
+ * it. Scan the instance's OWN enumerable properties and take the first numeric
+ * value (number or Kotlin/JS Long {low_1, high_1} object). Returns null when the
+ * object has no numeric payload.
+ */
+@OptIn(ExperimentalForeignApi::class)
+fun JsBoxedNumberToLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long? {
+  if (JsValueGetNormTag(jsVal) != JS_TAG_OBJECT) return null
+  return memScoped {
+    val count = alloc<IntVar>()
+    val ptab = JsGetOwnPropertyNames(ctx, jsVal, count.ptr) ?: return@memScoped null
+    try {
+      for (i in 0 until count.value) {
+        val prop = JsGetPropertyAt(ctx, jsVal, ptab, i)
+        try {
+          if (JS_IsNumber(prop) != 0) {
+            val tag = JsValueGetNormTag(prop)
+            return@memScoped if (tag == JS_TAG_INT) JsValueGetInt(prop).toLong()
+            else JsValueGetFloat64(prop).toLong()
+          }
+          if (JsValueGetNormTag(prop) == JS_TAG_OBJECT) {
+            val lo = JS_GetPropertyStr(ctx, prop, "low_1")
+            val hi = JS_GetPropertyStr(ctx, prop, "high_1")
+            val isLong = JS_IsUndefined(lo) == 0 && JS_IsUndefined(hi) == 0
+            if (isLong) {
+              val result = (JsNumberToInt(hi).toLong() shl 32) or (JsNumberToInt(lo).toLong() and 0xFFFFFFFF)
+              JS_FreeValue(ctx, hi)
+              JS_FreeValue(ctx, lo)
+              return@memScoped result
+            }
+            JS_FreeValue(ctx, hi)
+            JS_FreeValue(ctx, lo)
+          }
+        } finally {
+          JS_FreeValue(ctx, prop)
+        }
+      }
+      null
+    } finally {
+      JsFreePropertyEnum(ctx, ptab)
+    }
+  }
+}
+
+/**
  * Read a JS number as Long, handling JS_TAG_INT, JS_TAG_FLOAT64,
  * and Kotlin/JS Long objects {low_1, high_1}.
  */
@@ -98,8 +200,8 @@ fun JsNumberToLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long = whe
   else -> {
     val lowVal = JS_GetPropertyStr(ctx, jsVal, "low_1")
     val highVal = JS_GetPropertyStr(ctx, jsVal, "high_1")
-    val low = JsValueGetInt(lowVal)
-    val high = JsValueGetInt(highVal)
+    val low = JsNumberToInt(lowVal)
+    val high = JsNumberToInt(highVal)
     val result = (high.toLong() shl 32) or (low.toLong() and 0xFFFFFFFF)
     JS_FreeValue(ctx, lowVal)
     JS_FreeValue(ctx, highVal)
@@ -113,6 +215,21 @@ fun JsNumberToLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long = whe
  */
 @OptIn(ExperimentalForeignApi::class)
 fun bridgeForAny(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? = when {
+  JS_IsArray(ctx, jsVal) != 0 -> {
+    // Any-typed property values that are Kotlin Lists arrive as JS arrays (guest adapter
+    // pins the raw JS value); decode elements recursively through their converters.
+    val lengthProp = JS_GetPropertyStr(ctx, jsVal, "length")
+    val length = JsValueGetInt(lengthProp)
+    JS_FreeValue(ctx, lengthProp)
+    (0 until length).map { index ->
+      val element = JS_GetPropertyUint32(ctx, jsVal, index.toUInt())
+      try {
+        bridgeForAny(ctx, element)
+      } finally {
+        JS_FreeValue(ctx, element)
+      }
+    }
+  }
   JS_IsNumber(jsVal) != 0 -> JsNumberToDouble(jsVal)
   JS_IsBool(jsVal) != 0 -> (JsValueGetBool(jsVal) != 0)
   JS_IsString(jsVal) != 0 -> {
@@ -148,8 +265,8 @@ fun bridgeForAny(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? = when 
         JS_FreeValue(ctx, ctor)
         if (isLong) {
           val hi = JS_GetPropertyStr(ctx, jsVal, "high_1")
-          val loVal = JsValueGetInt(lo).toLong() and 0xFFFFFFFFL
-          val hiVal = JsValueGetInt(hi).toLong() shl 32
+          val loVal = JsNumberToInt(lo).toLong() and 0xFFFFFFFFL
+          val hiVal = JsNumberToInt(hi).toLong() shl 32
           val lv = hiVal or loVal
           JS_FreeValue(ctx, hi)
           JS_FreeValue(ctx, lo)

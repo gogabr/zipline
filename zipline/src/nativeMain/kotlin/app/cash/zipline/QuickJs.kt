@@ -614,16 +614,16 @@ actual class QuickJs private constructor(
   private var removeCounter = 0
 
   internal fun rdmaAppendCreate(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
-    val tag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 1))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
+    val tag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 1))
     rdmaChangeSink?.createCreate(id, tag)
     return JsUndefined()
   }
 
   internal fun rdmaAppendPropertyChange(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
-    val widgetTag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 1))
-    val propertyTag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 2))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
+    val widgetTag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 1))
+    val propertyTag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 2))
     val jsValue = JsValueArrayToInstanceRef(argv, 3)
     val value = jsValueToJsonElement(jsValue)
     rdmaChangeSink?.createPropertyChange(id, widgetTag, propertyTag, value)
@@ -631,7 +631,7 @@ actual class QuickJs private constructor(
   }
 
   internal fun rdmaAppendModifierChange(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
     val jsValue = JsValueArrayToInstanceRef(argv, 1)
     val elements = jsArrayToModifierElements(jsValue)
     rdmaChangeSink?.createModifierChange(id, elements)
@@ -639,18 +639,18 @@ actual class QuickJs private constructor(
   }
 
   internal fun rdmaAppendAdd(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
-    val childrenTag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 1))
-    val childId = JsValueGetInt(JsValueArrayToInstanceRef(argv, 2))
-    val index = JsValueGetInt(JsValueArrayToInstanceRef(argv, 3))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
+    val childrenTag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 1))
+    val childId = JsNumberToInt(JsValueArrayToInstanceRef(argv, 2))
+    val index = JsNumberToInt(JsValueArrayToInstanceRef(argv, 3))
     rdmaChangeSink?.createAdd(id, childrenTag, childId, index)
     return JsUndefined()
   }
 
   internal fun rdmaAppendRemove(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
-    val childrenTag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 1))
-    val index = JsValueGetInt(JsValueArrayToInstanceRef(argv, 2))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
+    val childrenTag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 1))
+    val index = JsNumberToInt(JsValueArrayToInstanceRef(argv, 2))
     rdmaChangeSink?.createRemove(id, childrenTag, index, false)
     val currentIndex = removeCounter
     removeCounter++
@@ -658,23 +658,23 @@ actual class QuickJs private constructor(
   }
 
   internal fun rdmaSetRemoveDetach(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val idx = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
+    val idx = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
     rdmaChangeSink?.setRemoveDetach(idx)
     return JsUndefined()
   }
 
   internal fun rdmaAppendMove(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
-    val childrenTag = JsValueGetInt(JsValueArrayToInstanceRef(argv, 1))
-    val fromIndex = JsValueGetInt(JsValueArrayToInstanceRef(argv, 2))
-    val toIndex = JsValueGetInt(JsValueArrayToInstanceRef(argv, 3))
-    val count = JsValueGetInt(JsValueArrayToInstanceRef(argv, 4))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
+    val childrenTag = JsNumberToInt(JsValueArrayToInstanceRef(argv, 1))
+    val fromIndex = JsNumberToInt(JsValueArrayToInstanceRef(argv, 2))
+    val toIndex = JsNumberToInt(JsValueArrayToInstanceRef(argv, 3))
+    val count = JsNumberToInt(JsValueArrayToInstanceRef(argv, 4))
     rdmaChangeSink?.createMove(id, childrenTag, fromIndex, toIndex, count)
     return JsUndefined()
   }
 
   internal fun rdmaAppendBridgeChange(argc: Int, argv: CArrayPointer<JSValue>): CValue<JSValue> {
-    val id = JsValueGetInt(JsValueArrayToInstanceRef(argv, 0))
+    val id = JsNumberToInt(JsValueArrayToInstanceRef(argv, 0))
     val jsToWrap = JsValueArrayToInstanceRef(argv, 1)
     val bridgeDispatchVal = JS_GetPropertyStr(context, jsToWrap, "bridge_dispatch")
     if (JS_IsUndefined(bridgeDispatchVal) != 0) {
@@ -807,7 +807,7 @@ actual class QuickJs private constructor(
     for (j in 0 until length) {
       val elem = JS_GetPropertyUint32(context, jsValue, j.convert())
       val modTagVal = JS_GetPropertyUint32(context, elem, 0u)
-      val modTag = JsValueGetInt(modTagVal)
+      val modTag = JsNumberToInt(modTagVal)
       JS_FreeValue(context, modTagVal)
       val modVal = JS_GetPropertyUint32(context, elem, 1u)
       val jsonVal = if (JS_IsUndefined(modVal) != 0) {

@@ -218,13 +218,13 @@ private fun emitPrimitiveArrayHelper(
   val kotlinArrayType = arrayKtType.substringAfterLast(".")
   val elementType = PRIMITIVE_ARRAY_ELEMENT_TYPE[arrayKtType]!!
   val elemConv = when (elementType) {
-    "kotlin.Int" -> "JsValueGetInt(elem)"
+    "kotlin.Int" -> "JsNumberToInt(elem)"
     "kotlin.Boolean" -> "JsValueGetBool(elem) != 0"
     "kotlin.Double" -> "JsNumberToDouble(elem)"
     "kotlin.Float" -> "JsNumberToDouble(elem).toFloat()"
-    "kotlin.Char" -> "JsValueGetInt(elem).toChar()"
-    "kotlin.Short" -> "JsValueGetInt(elem).toShort()"
-    "kotlin.Byte" -> "JsValueGetInt(elem).toByte()"
+    "kotlin.Char" -> "JsNumberToInt(elem).toChar()"
+    "kotlin.Short" -> "JsNumberToInt(elem).toShort()"
+    "kotlin.Byte" -> "JsNumberToInt(elem).toByte()"
     "kotlin.Long" -> "JsNumberToLong(ctx, elem)"
     else -> error("unexpected primitive array element: $elementType")
   }
@@ -316,6 +316,8 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     }
     if (needsBridgeForAny.isNotEmpty()) {
       appendLine("import app.cash.zipline.bridgeForAny")
+    appendLine("import app.cash.zipline.JsBoxedNumberToLong")
+    appendLine("import app.cash.zipline.JsBoxedNumberToDouble")
     }
     if (needsJsNumber.isNotEmpty()) {
       appendLine("import app.cash.zipline.JsNumberToDouble")
@@ -326,6 +328,10 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     if (needsMapHelper.isNotEmpty()) {
       appendLine("import app.cash.zipline.jsMapToKotlin")
     }
+    // Used for Int/Char/Short/Byte field and element reads below; JsValueGetInt is
+    // tag-blind (reads the raw low int32, which is 0 for float64-tagged numbers),
+    // so every decode goes through the tag-aware JsNumberToInt.
+    appendLine("import app.cash.zipline.JsNumberToInt")
     // Import the target class and any inline wrapper types + object types
     // Import parent class for nested classes (e.g., Modifier for Modifier.Companion)
     val parentFqn = (clazz.parent as? IrClass)?.fqNameWhenAvailable?.asString()
@@ -347,79 +353,171 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     appendLine("  ctx: CPointer<JSContext>,")
     appendLine("  jsVal: CValue<JSValue>,")
     appendLine("): Any {")
-    // Generate field reads
+      fun StringBuilder.emitIntFieldRead(
+    field: FieldInfo,
+    propName: String,
+    valueExpr: String,
+    isNullable: Boolean,
+  ) {
+    // Kotlin/JS production mangles private backing fields to short identifiers, so a
+    // private ctor param ('_tag' -> backing '_tag_1') cannot be read by its unmangled
+    // name in production bundles. Public computed accessors ('tag') survive production
+    // (prototype getters) and return inline value-class/Int values, so fall back to the
+    // accessor (property name minus a leading '_') when the backing read is undefined.
+    // Unused/absent accessor reads yield undefined and keep the historical 0/null result.
+    val rawVar = field.name + "Raw"
+    val fallbackVar = field.name + "FallbackRaw"
+    val fallbackProp = if (propName.endsWith("_1") && propName.startsWith("_")) propName.dropLast(2).removePrefix("_") else null
+    appendLine("    val $rawVar = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
+    val selection = if (fallbackProp != null) {
+      appendLine("    val $fallbackVar = if (JS_IsUndefined($rawVar) != 0 || JS_IsNull($rawVar) != 0) JS_GetPropertyStr(ctx, jsVal, \"$fallbackProp\") else $rawVar")
+      "$fallbackVar"
+    } else {
+      "$rawVar"
+    }
+    if (isNullable) {
+      appendLine("    val ${field.name} = if (JS_IsUndefined($rawVar) != 0 || JS_IsNull($rawVar) != 0) null else ${valueExpr.replace(field.name + "Read", selection)}")
+    } else {
+      val readExpr = valueExpr.replace(field.name + "Read", selection)
+      appendLine("    val ${field.name} = $readExpr")
+    }
+    appendLine("    JS_FreeValue(ctx, $rawVar)")
+    if (fallbackProp != null) {
+      appendLine("    if ($fallbackVar !== $rawVar) JS_FreeValue(ctx, $fallbackVar)")
+    }
+  }
+
+
+  fun StringBuilder.emitValueClassFieldRead(
+    field: FieldInfo,
+    propName: String,
+    numericExpr: String,
+    wrapperShort: String,
+    isNullable: Boolean,
+    boxedScan: Boolean = false,
+    boxedKind: String = "Long",
+  ) {
+    // Value-class fields store UNBOXED underlying values when inlined (numbers -> numeric
+    // read); classes with custom equals/toString (e.g. Color over Long) arrive BOXED with a
+    // hash-mangled backing field ('uoul_1') unreadable by name. Dispatch those through the
+    // registered JS2Host converter of the wrapper class.
+    val rawVar = field.name + "Raw"
+    val numVar = field.name + "Num"
+    appendLine("    val $rawVar = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
+    // Numeric values are the unboxed underlying: wrap into the value class so both branches
+    // share the wrapper type (the raw Long/Float would widen the expression to Any).
+    appendLine("    val $numVar = " + inlineWrapExpression(field, numericExpr.replace("@RAW@", rawVar)))
+    val boxedVar = field.name + "Boxed"
+    val boxedPart = if (boxedScan) {
+      val scanExpr = when (boxedKind) {
+        "Long" -> "JsBoxedNumberToLong(ctx, $rawVar)"
+        "Float" -> "JsBoxedNumberToDouble(ctx, $rawVar)?.toFloat()"
+        "Int" -> "JsBoxedNumberToDouble(ctx, $rawVar)?.toInt()"
+        else -> "JsBoxedNumberToDouble(ctx, $rawVar)"
+      }
+      appendLine("    val $boxedVar = $scanExpr")
+      appendLine("    val ${field.name}BoxedWrap = $boxedVar?.let { " + inlineWrapExpression(field, "it") + " }")
+      "${field.name}BoxedWrap"
+    } else {
+      null
+    }
+    if (isNullable) {
+      appendLine("    val ${field.name} = if (JS_IsUndefined($rawVar) != 0 || JS_IsNull($rawVar) != 0) null")
+      appendLine("        else if (JS_IsNumber($rawVar) != 0) $numVar")
+      if (boxedPart != null) {
+        appendLine("        else bridgeForAny(ctx, $rawVar) as? $wrapperShort ?: $boxedPart ?: $numVar")
+      } else {
+        appendLine("        else bridgeForAny(ctx, $rawVar) as? $wrapperShort ?: $numVar")
+      }
+    } else {
+      if (boxedPart != null) {
+        appendLine("    val ${field.name} = if (JS_IsNumber($rawVar) != 0) $numVar else bridgeForAny(ctx, $rawVar) as? $wrapperShort ?: $boxedPart ?: $numVar")
+      } else {
+        appendLine("    val ${field.name} = if (JS_IsNumber($rawVar) != 0) $numVar else bridgeForAny(ctx, $rawVar) as? $wrapperShort ?: $numVar")
+      }
+    }
+    appendLine("    JS_FreeValue(ctx, $rawVar)")
+  }
+
+// Generate field reads
     val helpers = StringBuilder()
     for (field in fields) {
       val propName = field.jsPropertyName
 
       when {
         field.isInline && field.underlyingKtType == "kotlin.Int" -> {
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsValueGetInt(${field.name}Raw)")}")
-          } else {
-            appendLine("    val ${field.name}Val = JsValueGetInt(${field.name}Raw)")
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "${field.name}Val")}")
-          }
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          emitValueClassFieldRead(
+            field,
+            "$propName",
+            "JsNumberToInt(@RAW@)",
+            (field.wrapperKtType ?: field.inlineWrapperChain.lastOrNull())!!.substringAfterLast("."),
+            field.isNullable,
+            boxedScan = true,
+            boxedKind = "Int",
+          )
         }
         field.isInline && field.underlyingKtType == "kotlin.Float" -> {
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsNumberToDouble(${field.name}Raw).toFloat()")}")
-          } else {
-            appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "${field.name}Val")}")
-          }
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          emitValueClassFieldRead(
+            field,
+            "$propName",
+            "JsNumberToDouble(@RAW@).toFloat()",
+            (field.wrapperKtType ?: field.inlineWrapperChain.lastOrNull())!!.substringAfterLast("."),
+            field.isNullable,
+            boxedScan = true,
+            boxedKind = "Float",
+          )
         }
         field.isInline && field.underlyingKtType == "kotlin.Double" -> {
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsNumberToDouble(${field.name}Raw)")}")
-          } else {
-            appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw)")
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "${field.name}Val")}")
-          }
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          emitValueClassFieldRead(
+            field,
+            "$propName",
+            "JsNumberToDouble(@RAW@)",
+            (field.wrapperKtType ?: field.inlineWrapperChain.lastOrNull())!!.substringAfterLast("."),
+            field.isNullable,
+            boxedScan = true,
+            boxedKind = "Double",
+          )
         }
         field.isInline && field.underlyingKtType == "kotlin.Long" -> {
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else ${inlineWrapExpression(field, "JsNumberToLong(ctx, ${field.name}Raw)")}")
-          } else {
-            appendLine("    val ${field.name}Val = JsNumberToLong(ctx, ${field.name}Raw)")
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "${field.name}Val")}")
-          }
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          emitValueClassFieldRead(
+            field,
+            "$propName",
+            "JsNumberToLong(ctx, @RAW@)",
+            (field.wrapperKtType ?: field.inlineWrapperChain.lastOrNull())!!.substringAfterLast("."),
+            field.isNullable,
+            boxedScan = true,
+            boxedKind = "Long",
+          )
         }
         !field.isInline && field.wrapperKtType.let { it != null } -> {
           val wrapperName = field.wrapperKtType!!.substringAfterLast(".")
-          // Value class not detected as inline — treat as effectiveKtType + wrap
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          when (field.ktType) {
-            "kotlin.Double" -> {
-              appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
-            }
-            "kotlin.Float" -> {
-              appendLine("    val ${field.name}Val = JsNumberToDouble(${field.name}Raw).toFloat()")
-            }
-            else -> {
-              appendLine("    // TODO: unsupported wrapper effective type ${field.ktType}")
-              appendLine("    val ${field.name}Val = ${field.name}Raw  // stub")
-            }
+          // Value class not detected as inline - numeric (unboxed) or converter dispatch (boxed).
+          val numExpr = when (field.ktType) {
+            "kotlin.Long" -> "JsNumberToLong(ctx, @RAW@)"
+            "kotlin.Int" -> "JsNumberToInt(@RAW@)"
+            "kotlin.Double" -> "JsNumberToDouble(@RAW@)"
+            "kotlin.Float" -> "JsNumberToDouble(@RAW@).toFloat()"
+            else -> null
           }
-          appendLine("    val ${field.name} = $wrapperName(${field.name}Val)")
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          if (numExpr != null) {
+            emitValueClassFieldRead(
+              field,
+              "$propName",
+              numExpr,
+              wrapperName,
+              field.isNullable,
+              boxedScan = numExpr != null,
+              boxedKind = field.ktType.removePrefix("kotlin."),
+            )
+          } else {
+            appendLine("    // TODO: unsupported wrapper effective type ${field.ktType}")
+            appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
+            appendLine("    val ${field.name} = ${field.name}Raw as $wrapperName  // stub")
+            appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          }
         }
         field.ktType == "kotlin.Int" -> {
-          appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          if (field.isNullable) {
-            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else JsValueGetInt(${field.name}Raw)")
-          } else {
-            appendLine("    val ${field.name} = JsValueGetInt(${field.name}Raw)")
-          }
-          appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
+          emitIntFieldRead(field, "$propName", "JsNumberToInt(${field.name}Read)", field.isNullable)
         }
         field.ktType == "kotlin.Boolean" -> {
           appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
@@ -582,7 +680,7 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     if (clazz.kind == ClassKind.ENUM_CLASS) {
       // Enum — read ordinal, return entries[ordinal]
       appendLine("    val ordinalRaw = JS_GetPropertyStr(ctx, jsVal, \"ordinal_1\")")
-      appendLine("    val ordinal = JsValueGetInt(ordinalRaw)")
+      appendLine("    val ordinal = JsNumberToInt(ordinalRaw)")
       appendLine("    JS_FreeValue(ctx, ordinalRaw)")
       appendLine("    val _obj = $qualifier$className.entries[ordinal]")
     } else if (ctorFields.isNotEmpty()) {

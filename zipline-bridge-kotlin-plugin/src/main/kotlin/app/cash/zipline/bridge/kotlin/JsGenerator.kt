@@ -62,6 +62,13 @@ internal fun injectCompanionInitBlocks(
     CallableId(FqName("app.cash.zipline"), Name.identifier("registerBridge")),
   ).firstOrNull()
 
+  // Publish the guest's value ops (collections, Longs, enums) as soon as a bridged class registers:
+  // the host reads every one of those values through them, and it needs them before the application
+  // produces any. See app.cash.zipline.BridgeValueOps.
+  val valueOpsSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("publishValueOps")),
+  ).firstOrNull()
+
   // Generate @JsName("__bridgeRegister") external fun __bridgeRegister(fqn: String, ctor: Any?)
   // once in the module. Companion constructors call this directly — no bridgeSelfRegister wrapper.
   var bridgeRegisterFn = fileForModule.declarations
@@ -102,14 +109,16 @@ internal fun injectCompanionInitBlocks(
   }
   val bridgeRegisterSymbol = tolerantRegisterSymbol ?: bridgeRegisterFn.symbol
 
-  for (clazz in dispatchClasses) {
+  for ((index, clazz) in dispatchClasses.withIndex()) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
     val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
+    // Once per module is enough; the ops live on globalThis for the runtime's whole lifetime.
+    val opsCall = if (index == 0) valueOpsSymbol else null
 
     if (clazz.isCompanion || clazz.kind == ClassKind.OBJECT) {
       injectBridgeIntoConstructor(
         clazz, targetFqn, clazz,
-        kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext,
+        kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext, opsCall,
       )
       continue
     }
@@ -122,7 +131,7 @@ internal fun injectCompanionInitBlocks(
 
     injectBridgeIntoConstructor(
       companion, targetFqn, clazz,
-      kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext,
+      kclassJsGetterSymbol, bridgeRegisterSymbol, pluginContext, opsCall,
     )
   }
 }
@@ -141,6 +150,7 @@ internal fun injectBridgeIntoConstructor(
   kclassJsGetterSymbol: IrSimpleFunctionSymbol,
   bridgeRegisterSymbol: IrSimpleFunctionSymbol,
   pluginContext: IrPluginContext,
+  extraCallSymbol: IrSimpleFunctionSymbol? = null,
 ) {
   val ctor = companion.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary } ?: return
@@ -164,9 +174,12 @@ internal fun injectBridgeIntoConstructor(
     arguments[1] = jsCtorCall
   }
 
+  val extraCall = extraCallSymbol?.let { builder.irCall(it) }
+
   val body = ctor.body
   if (body is IrBlockBody) {
     body.statements.add(1, bridgeCall)
+    if (extraCall != null) body.statements.add(2, extraCall)
   } else {
     val superCall = (body as? IrExpressionBody)?.expression
       ?: builder.irDelegatingConstructorCall(
@@ -177,6 +190,7 @@ internal fun injectBridgeIntoConstructor(
     ctor.body = builder.irBlockBody {
       +superCall
       +bridgeCall
+      if (extraCall != null) +extraCall
     }
   }
 }

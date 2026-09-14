@@ -1,5 +1,7 @@
 package app.cash.zipline.bridge.kotlin
 
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrTypeParameter
@@ -271,7 +273,11 @@ private fun emitMapHelper(
   return "$name(ctx, $expr)"
 }
 
-internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
+internal fun generateNativeBridgeFile(
+  outputDir: String,
+  clazz: IrClass,
+  messageCollector: MessageCollector? = null,
+) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
   val functionName = "${clazz.name.asString()}_toKotlin"
   val fields = extractFields(clazz)
@@ -283,11 +289,14 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     clazz.hasAnnotation(REDWOOD_CODEGEN_API_FQN) ||
       (clazz.parent as? IrClass)?.hasAnnotation(REDWOOD_CODEGEN_API_FQN) == true
 
-  // Skip classes with unsupported field types (Function* object types).
-  val hasUnsupported = fields.any {
-    (it.isObjectType && it.ktType.startsWith("kotlin.Function"))
+  // A function-typed field cannot cross the bridge: a guest lambda has no host representation, so
+  // it decodes to null, exactly as the C generator does (`bridgeForAny` returns null for
+  // functions). Only a NON-nullable one makes the class impossible to construct — that is a real
+  // gap, so report it instead of dropping the class silently, which otherwise surfaces much later
+  // as the host failing to find a converter for a class the author annotated.
+  val nonNullableFunctionField = fields.firstOrNull {
+    it.isObjectType && it.ktType.startsWith("kotlin.Function") && !it.isNullable
   }
-  if (hasUnsupported) return
 
   val source = buildString {
     appendLine("// GENERATED FILE. DO NOT MODIFY MANUALLY.")
@@ -565,6 +574,15 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
           }
           appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
         }
+        field.isObjectType && field.ktType.startsWith("kotlin.Function") -> {
+          // A guest lambda cannot cross the bridge: there is no host representation for it, so the
+          // field decodes to null — the same result the C generator produces (see bridgeForAny,
+          // which also treats a raw JS function as "not a payload").
+          appendLine("    val ${field.name}Ref = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
+          appendLine("    JS_FreeValue(ctx, ${field.name}Ref)")
+          appendLine("    val ${field.name} = null")
+        }
+
         field.isObjectType && field.ktType != "kotlin.collections.List" &&
           field.effectiveKtType !in MAP_KOTLIN_TYPES -> {
           val typeName = field.ktType.substringAfterLast(".")
@@ -719,8 +737,12 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
 }
 
 /** Generate per-class native bridge files. Each file self-registers via @EagerInitialization. */
-internal fun generateNativeBridges(outputDir: String, dispatchClasses: List<IrClass>) {
+internal fun generateNativeBridges(
+  outputDir: String,
+  dispatchClasses: List<IrClass>,
+  messageCollector: MessageCollector? = null,
+) {
   for (clazz in dispatchClasses) {
-    generateNativeBridgeFile(outputDir, clazz)
+    generateNativeBridgeFile(outputDir, clazz, messageCollector)
   }
 }

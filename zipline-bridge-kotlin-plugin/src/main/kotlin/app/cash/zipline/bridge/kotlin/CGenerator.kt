@@ -753,25 +753,9 @@ private fun emitCValueConverter(
       helpers.appendLine(
         """
         static jobject $name(JNIEnv* env, JSContext* ctx, JSValue jsVal) {
-          jclass alc = (*env)->FindClass(env, "java/util/ArrayList");
-          jmethodID alc_init = (*env)->GetMethodID(env, alc, "<init>", "()V");
-          jmethodID alc_add = (*env)->GetMethodID(env, alc, "add", "(Ljava/lang/Object;)Z");
-          jobject result = (*env)->NewObject(env, alc, alc_init);
-          JSValue arr = jsVal;
-          JSValue wrap = JS_GetPropertyStr(ctx, jsVal, "array_1");
-          if (!JS_IsUndefined(wrap)) { arr = wrap; }
-          JSValue lenVal = JS_GetPropertyStr(ctx, arr, "length");
-          jint len = JS_VALUE_GET_INT(lenVal);
-          JS_FreeValue(ctx, lenVal);
-          for (jint i = 0; i < len; i++) {
-            JSValue elem = JS_GetPropertyUint32(ctx, arr, i);
-            jobject je = $elementName(env, ctx, elem);
-            (*env)->CallBooleanMethod(env, result, alc_add, je);
-            (*env)->DeleteLocalRef(env, je);
-            JS_FreeValue(ctx, elem);
-          }
-          JS_FreeValue(ctx, wrap);
-          return result;
+          // JS arrays are indexed directly; other Kotlin/JS lists (EmptyList, Singletons) go
+          // through the guest's accessors.
+          return bridgeCollectionToJava(env, ctx, jsVal, COLLECTION_KIND_LIST, NULL, $elementName);
         }
         """.trimIndent(),
       )
@@ -813,50 +797,10 @@ private fun emitCValueConverter(
       helpers.appendLine(
         """
         static jobject $name(JNIEnv* env, JSContext* ctx, JSValue jsVal) {
-          jclass hc = (*env)->FindClass(env, "java/util/HashMap");
-          jmethodID hc_init = (*env)->GetMethodID(env, hc, "<init>", "()V");
-          jmethodID hc_put = (*env)->GetMethodID(env, hc, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
-          jobject result = (*env)->NewObject(env, hc, hc_init);
-          JSValue entriesFn = bridgeFindMethod(ctx, jsVal, "get_entries_");
-          if (JS_IsUndefined(entriesFn)) { JS_FreeValue(ctx, entriesFn); return result; }
-          JSValue entries = JS_Call(ctx, entriesFn, jsVal, 0, NULL);
-          JS_FreeValue(ctx, entriesFn);
-          JSValue iterFn = bridgeFindMethod(ctx, entries, "iterator_");
-          if (JS_IsUndefined(iterFn)) { JS_FreeValue(ctx, iterFn); JS_FreeValue(ctx, entries); return result; }
-          JSValue iterator = JS_Call(ctx, iterFn, entries, 0, NULL);
-          JS_FreeValue(ctx, iterFn);
-          JS_FreeValue(ctx, entries);
-          JSValue hasNextFn = bridgeFindMethod(ctx, iterator, "hasNext_");
-          JSValue nextFn = bridgeFindMethod(ctx, iterator, "next_");
-          if (JS_IsUndefined(hasNextFn) || JS_IsUndefined(nextFn)) {
-            JS_FreeValue(ctx, nextFn); JS_FreeValue(ctx, hasNextFn); JS_FreeValue(ctx, iterator);
-            return result;
-          }
-          while (1) {
-            JSValue hn = JS_Call(ctx, hasNextFn, iterator, 0, NULL);
-            int h = JS_VALUE_GET_BOOL(hn);
-            JS_FreeValue(ctx, hn);
-            if (!h) break;
-            JSValue entry = JS_Call(ctx, nextFn, iterator, 0, NULL);
-            JSValue keyFn = bridgeFindMethod(ctx, entry, "get_key_");
-            JSValue valueFn = bridgeFindMethod(ctx, entry, "get_value_");
-            JSValue keyVal = JS_Call(ctx, keyFn, entry, 0, NULL);
-            JSValue valueVal = JS_Call(ctx, valueFn, entry, 0, NULL);
-            JS_FreeValue(ctx, keyFn);
-            JS_FreeValue(ctx, valueFn);
-            jobject jk = $keyName(env, ctx, keyVal);
-            jobject jv = $valueName(env, ctx, valueVal);
-            (*env)->CallObjectMethod(env, result, hc_put, jk, jv);
-            (*env)->DeleteLocalRef(env, jk);
-            (*env)->DeleteLocalRef(env, jv);
-            JS_FreeValue(ctx, valueVal);
-            JS_FreeValue(ctx, keyVal);
-            JS_FreeValue(ctx, entry);
-          }
-          JS_FreeValue(ctx, nextFn);
-          JS_FreeValue(ctx, hasNextFn);
-          JS_FreeValue(ctx, iterator);
-          return result;
+          // The guest identifies the collection and drives the iteration (app.cash.zipline
+          // .BridgeCollectionOps): Kotlin/JS mangles the stdlib member names, so a host-side walk
+          // of a Kotlin/JS Map works in development and fails in production.
+          return bridgeCollectionToJava(env, ctx, jsVal, COLLECTION_KIND_MAP, $keyName, $valueName);
         }
         """.trimIndent(),
       )

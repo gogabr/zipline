@@ -39,6 +39,8 @@ typedef enum CollectionKind {
   COLLECTION_KIND_LIST = 3,
 } CollectionKind;
 
+
+
 /** Pack a bridge converter pointer into a JSValue (as float64, bit-preserving). */
 static inline JSValue bridgeConverterToJSValue(JSContext* ctx, BridgeConverterFn fn) {
     union {
@@ -76,5 +78,19 @@ jobject bridgeForAny(JNIEnv *env, JSContext *ctx, JSValue val);
 #ifdef __cplusplus
 }
 #endif
+
+/**
+ * Decode a Kotlin/JS collection into a JVM collection ([kind]: which one it is, see CollectionKind),
+ * driving the iteration through the guest's collection accessors (see
+ * app.cash.zipline.BridgeCollectionOps — Kotlin/JS mangles the stdlib member names, so the host
+ * cannot walk a Kotlin/JS collection itself) and converting keys/elements with [keyConverter] and
+ * [valueConverter] (use bridgeForAny when the element types are unknown, as for property values).
+ * Returns a java.util.LinkedHashMap, LinkedHashSet or ArrayList.
+ */
+#ifdef __cplusplus
+extern "C"
+#endif
+jobject bridgeCollectionToJava(JNIEnv *env, JSContext *ctx, JSValue val, CollectionKind kind,
+                               BridgeConverterFn keyConverter, BridgeConverterFn valueConverter);
 
 #endif

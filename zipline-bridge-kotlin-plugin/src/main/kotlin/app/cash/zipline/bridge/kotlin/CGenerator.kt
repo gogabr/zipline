@@ -52,7 +52,9 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
   val bodyFields = fields.filter { !it.isConstructorParam }
 
   val targetFqn = resolveTargetFqn(annotatedClass)
-  val jniClassName = targetFqn ?: buildJniClassName(annotatedClass)
+  // The JNI class name uses the internal form; bridge keys stay dotted and go through
+  // resolveTargetFqn, so a renamed class registers under one key everywhere.
+  val jniClassName = targetFqn?.replace('.', '/') ?: buildJniClassName(annotatedClass)
   val jsClassName = fqName.asString()
 
   val nullablePrimitiveFields = fields.filter { it.isNullable && isKnownType(it.ktType) && isJniPrimitive(it.ktType) }
@@ -63,7 +65,7 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
   val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
   val constructorSig = if (isObject || constructorFields.isEmpty()) "()V"
     else "(" + constructorFields.joinToString("") { it.jniTypeChar } + ")V"
-  val instanceSig = if (isObject) "L${jniClassName.replace(".", "/")};" else ""
+  val instanceSig = if (isObject) "L$jniClassName;" else ""
 
   val cSource = buildString {
     appendLine("// GENERATED FILE. DO NOT MODIFY MANUALLY.")

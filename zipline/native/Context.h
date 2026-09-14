@@ -90,6 +90,9 @@ public:
   static jclass quickJsExceptionClass;
   static jclass interruptHandlerClass;
   static jstring stringUtf8;
+  /** The guest's collection accessors (`globalThis.__zipline_bridgeValueOps`), fetched lazily. */
+  JSValue bridgeValueOps = JS_UNDEFINED;
+
   static jmethodID booleanValueOf;
   static jmethodID integerValueOf;
   static jmethodID doubleValueOf;

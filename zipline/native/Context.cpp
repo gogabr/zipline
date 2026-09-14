@@ -435,32 +435,108 @@ void Context::setOutboundCallChannel(JNIEnv* env, jstring name, jobject callChan
 }
 
 
-__attribute__((used, visibility("default"))) jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val) {
-  JSValue lo = JS_GetPropertyStr(ctx, val, "low_1");
-  if (JS_IsUndefined(lo)) return nullptr;
+static JSValue valueOps(JSContext* ctx);
+static JSValue callValueOp(JSContext* ctx, JSValue ops, const char* name, JSValue argument);
 
-  JSValue ctor = JS_GetPropertyStr(ctx, val, "constructor");
-  int isLong = 0;
-  if (!JS_IsUndefined(ctor)) {
-    JSValue ctorName = JS_GetPropertyStr(ctx, ctor, "name");
-    const char* ctorNameStr = JS_ToCString(ctx, ctorName);
-    isLong = (ctorNameStr != nullptr && strcmp(ctorNameStr, "Long") == 0);
-    JS_FreeCString(ctx, ctorNameStr);
-    JS_FreeValue(ctx, ctorName);
+/**
+ * The 32-bit halves of the boxed `kotlin.Long` in [val], as reported by the guest (the fields of a
+ * Kotlin/JS Long are mangled and disappear in production builds). Returns 0 for other values.
+ */
+__attribute__((used, visibility("default")))
+jlong bridgeJsLongValue(JNIEnv* env, JSContext* ctx, JSValue val) {
+  if (JS_VALUE_GET_NORM_TAG(val) != JS_TAG_OBJECT) return 0;
+  JSValue ops = valueOps(ctx);
+  if (JS_IsUndefined(ops)) {
+    JS_FreeValue(ctx, ops);
+    return 0;
   }
-  JS_FreeValue(ctx, ctor);
+  JSValue low = callValueOp(ctx, ops, "longLow", val);
+  JSValue high = callValueOp(ctx, ops, "longHigh", val);
+  jlong result = 0;
+  if (JS_VALUE_GET_NORM_TAG(low) == JS_TAG_INT && JS_VALUE_GET_NORM_TAG(high) == JS_TAG_INT) {
+    result = ((jlong)JS_VALUE_GET_INT(high) << 32) | ((jlong)JS_VALUE_GET_INT(low) & 0xFFFFFFFFLL);
+  }
+  JS_FreeValue(ctx, high);
+  JS_FreeValue(ctx, low);
+  JS_FreeValue(ctx, ops);
+  return result;
+}
 
-  if (!isLong) {
-    JS_FreeValue(ctx, lo);
+/** Ordinal of the enum instance in [val], or -1 when it isn't an enum. */
+__attribute__((used, visibility("default")))
+jint bridgeJsEnumOrdinal(JNIEnv* env, JSContext* ctx, JSValue val) {
+  JSValue ops = valueOps(ctx);
+  if (JS_IsUndefined(ops)) {
+    JS_FreeValue(ctx, ops);
+    return -1;
+  }
+  JSValue ordinal = callValueOp(ctx, ops, "enumOrdinal", val);
+  jint result = JS_VALUE_GET_NORM_TAG(ordinal) == JS_TAG_INT ? JS_VALUE_GET_INT(ordinal) : -1;
+  JS_FreeValue(ctx, ordinal);
+  JS_FreeValue(ctx, ops);
+  if (result >= 0) return result;
+
+  // An object the host itself built for a host->JS conversion carries the ordinal under this name
+  // (the host chooses it, so it is stable — only Kotlin/JS's own member names get mangled).
+  JSValue hostOrdinal = JS_GetPropertyStr(ctx, val, "ordinal_1");
+  result = JS_VALUE_GET_NORM_TAG(hostOrdinal) == JS_TAG_INT ? JS_VALUE_GET_INT(hostOrdinal) : -1;
+  JS_FreeValue(ctx, hostOrdinal);
+  return result;
+}
+
+/**
+ * The guest's collection accessors, installed by `app.cash.zipline.publishValueOps()` from the
+ * bridge plugin's module-load hook, fetched once per runtime. Kotlin/JS mangles the member names of
+ * the stdlib collections (production builds drop the original names entirely) and there is no
+ * single collection prototype to mark, so the guest answers the type question with the compiler's
+ * own `is` check and drives the iteration. Every call here is O(1); nothing is copied guest-side.
+ */
+static JSValue valueOps(JSContext* ctx) {
+  auto* context = reinterpret_cast<Context*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
+  if (JS_IsUndefined(context->bridgeValueOps)) {
+    JSValue global = JS_GetGlobalObject(ctx);
+    context->bridgeValueOps =
+        JS_GetPropertyStr(ctx, global, "__zipline_bridgeValueOps");
+    JS_FreeValue(ctx, global);
+  }
+  return JS_DupValue(ctx, context->bridgeValueOps);
+}
+
+/** Calls `ops.<name>(argument)`; returns the raw result (caller frees). */
+static JSValue callValueOp(JSContext* ctx, JSValue ops, const char* name, JSValue argument) {
+  JSValue fn = JS_GetPropertyStr(ctx, ops, name);
+  if (!JS_IsFunction(ctx, fn)) {
+    JS_FreeValue(ctx, fn);
+    return JS_DupValue(ctx, JS_UNDEFINED);
+  }
+  JSValue result = JS_Call(ctx, fn, JS_UNDEFINED, 1, &argument);
+  JS_FreeValue(ctx, fn);
+  if (JS_IsException(result)) {
+    JS_FreeValue(ctx, result);
+    return JS_DupValue(ctx, JS_UNDEFINED);
+  }
+  return result;
+}
+
+__attribute__((used, visibility("default"))) jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val) {
+  if (JS_VALUE_GET_NORM_TAG(val) != JS_TAG_OBJECT) return nullptr;
+  // The guest reports whether this is a Long (and its halves): Kotlin/JS mangles the fields.
+  JSValue ops = valueOps(ctx);
+  if (JS_IsUndefined(ops)) {
+    JS_FreeValue(ctx, ops);
     return nullptr;
   }
-
-  JSValue hi = JS_GetPropertyStr(ctx, val, "high_1");
-  jint loVal = JS_VALUE_GET_INT(lo);
-  jint hiVal = JS_VALUE_GET_INT(hi);
-  jlong lv = ((jlong)hiVal << 32) | ((jlong)loVal & 0xFFFFFFFF);
-  JS_FreeValue(ctx, hi);
-  JS_FreeValue(ctx, lo);
+  JSValue low = callValueOp(ctx, ops, "longLow", val);
+  if (JS_VALUE_GET_NORM_TAG(low) != JS_TAG_INT) {
+    JS_FreeValue(ctx, low);
+    JS_FreeValue(ctx, ops);
+    return nullptr;
+  }
+  JSValue high = callValueOp(ctx, ops, "longHigh", val);
+  jlong lv = ((jlong)JS_VALUE_GET_INT(high) << 32) | ((jlong)JS_VALUE_GET_INT(low) & 0xFFFFFFFFLL);
+  JS_FreeValue(ctx, high);
+  JS_FreeValue(ctx, low);
+  JS_FreeValue(ctx, ops);
 
   auto* context = reinterpret_cast<Context*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
   jvalue v;

@@ -453,7 +453,7 @@ static JSValue callValueOp(JSContext* ctx, JSValue ops, const char* name, JSValu
  * Kotlin/JS Long are mangled and disappear in production builds). Returns 0 for other values.
  */
 __attribute__((used, visibility("default")))
-extern "C" jlong bridgeJsLongValue(JNIEnv* env, JSContext* ctx, JSValue val) {
+extern "C" __attribute__((used, visibility("default"))) jlong bridgeJsLongValue(JNIEnv* env, JSContext* ctx, JSValue val) {
   if (JS_VALUE_GET_NORM_TAG(val) != JS_TAG_OBJECT) return 0;
   JSValue ops = valueOps(ctx);
   if (JS_IsUndefined(ops)) {
@@ -474,7 +474,7 @@ extern "C" jlong bridgeJsLongValue(JNIEnv* env, JSContext* ctx, JSValue val) {
 
 /** Ordinal of the enum instance in [val], or -1 when it isn't an enum. */
 __attribute__((used, visibility("default")))
-extern "C" jint bridgeJsEnumOrdinal(JNIEnv* env, JSContext* ctx, JSValue val) {
+extern "C" __attribute__((used, visibility("default"))) jint bridgeJsEnumOrdinal(JNIEnv* env, JSContext* ctx, JSValue val) {
   JSValue ops = valueOps(ctx);
   if (JS_IsUndefined(ops)) {
     JS_FreeValue(ctx, ops);
@@ -617,7 +617,7 @@ static CollectionKind bridgeCollectionKind(JSContext* ctx, JSValue val) {
   return result;
 }
 
-extern "C" jobject bridgeCollectionToJava(JNIEnv* env, JSContext* ctx, JSValue val, CollectionKind kind,
+extern "C" __attribute__((used, visibility("default"))) jobject bridgeCollectionToJava(JNIEnv* env, JSContext* ctx, JSValue val, CollectionKind kind,
                                BridgeConverterFn keyConverter, BridgeConverterFn valueConverter) {
   auto* context = reinterpret_cast<Context*>(JS_GetRuntimeOpaque(JS_GetRuntime(ctx)));
   jobject result;

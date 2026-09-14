@@ -707,17 +707,23 @@ extern "C" __attribute__((used, visibility("default"))) jobject bridgeForAny(JNI
     case JS_TAG_INT: {
       jvalue v;
       v.j = static_cast<jint>(JS_VALUE_GET_INT(val));
-      return env->CallStaticObjectMethodA(context->integerClass, context->integerValueOf, &v);
+      jobject boxed = env->CallStaticObjectMethodA(context->integerClass, context->integerValueOf, &v);
+      if (env->ExceptionCheck()) return nullptr;
+      return boxed;
     }
     case JS_TAG_FLOAT64: {
       jvalue v;
       v.d = static_cast<jdouble>(JS_VALUE_GET_FLOAT64(val));
-      return env->CallStaticObjectMethodA(context->doubleClass, context->doubleValueOf, &v);
+      jobject boxed = env->CallStaticObjectMethodA(context->doubleClass, context->doubleValueOf, &v);
+      if (env->ExceptionCheck()) return nullptr;
+      return boxed;
     }
     case JS_TAG_BOOL: {
       jvalue v;
       v.z = static_cast<jboolean>(JS_VALUE_GET_BOOL(val));
-      return env->CallStaticObjectMethodA(context->booleanClass, context->booleanValueOf, &v);
+      jobject boxed = env->CallStaticObjectMethodA(context->booleanClass, context->booleanValueOf, &v);
+      if (env->ExceptionCheck()) return nullptr;
+      return boxed;
     }
     case JS_TAG_STRING:
       return context->toJavaString(env, val);
@@ -799,6 +805,7 @@ Context::toJavaObject(JNIEnv* env, const JSValueConst& value, bool throwOnUnsupp
       jvalue v;
       v.z = static_cast<jboolean>(JS_VALUE_GET_BOOL(value));
       result = env->CallStaticObjectMethodA(booleanClass, booleanValueOf, &v);
+      if (env->ExceptionCheck()) result = nullptr;
       break;
     }
 
@@ -806,6 +813,7 @@ Context::toJavaObject(JNIEnv* env, const JSValueConst& value, bool throwOnUnsupp
       jvalue v;
       v.j = static_cast<jint>(JS_VALUE_GET_INT(value));
       result = env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
+      if (env->ExceptionCheck()) result = nullptr;
       break;
     }
 
@@ -813,6 +821,7 @@ Context::toJavaObject(JNIEnv* env, const JSValueConst& value, bool throwOnUnsupp
       jvalue v;
       v.d = static_cast<jdouble>(JS_VALUE_GET_FLOAT64(value));
       result = env->CallStaticObjectMethodA(doubleClass, doubleValueOf, &v);
+      if (env->ExceptionCheck()) result = nullptr;
       break;
     }
 

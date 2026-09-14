@@ -1034,22 +1034,27 @@ void Context::ensureStatics(JNIEnv* env) {
     interruptHandlerClass = static_cast<jclass>(env->NewGlobalRef(env->FindClass("app/cash/zipline/InterruptHandler")));
     interruptHandlerPoll = env->GetMethodID(interruptHandlerClass, "poll", "()Z");
 
-    memoryUsageClass = static_cast<jclass>(env->NewGlobalRef(env->FindClass("app/cash/zipline/MemoryUsage")));
-    if (memoryUsageClass) {
+    jclass memoryUsageCls = env->FindClass("app/cash/zipline/MemoryUsage");
+    if (memoryUsageCls == nullptr) {
+      // MemoryUsage absent (e.g. R8-stripped): leave the cache null; memoryUsage() returns
+      // nullptr. The failed FindClass left a pending exception, and the JVM treats any JNI call
+      // made while one is pending as a fatal error: clear it before making another.
+      env->ExceptionClear();
+    } else {
+      memoryUsageClass = static_cast<jclass>(env->NewGlobalRef(memoryUsageCls));
       memoryUsageConstructor = env->GetMethodID(
           memoryUsageClass, "<init>", "(JJJJJJJJJJJJJJJJJJJJJJJJJJ)V");
-    } else {
-      // MemoryUsage absent (e.g. R8-stripped): leave the cache null; memoryUsage() returns
-      // nullptr. The failed FindClass left a pending exception — clear it so that session
-      // creation still succeeds.
-      env->ExceptionClear();
     }
 
     // RdmaBridge static JsonElement factories. A missing class means RDMA is unused: leave the
     // cache null and skip the factory lookups, matching the old per-session failure behavior.
     jclass bridgeCls = env->FindClass("app/cash/redwood/treehouse/RdmaBridge");
-    rdmaBridgeClass = static_cast<jclass>(env->NewGlobalRef(bridgeCls));
-    if (rdmaBridgeClass) {
+    if (bridgeCls == nullptr) {
+      // RdmaBridge absent (RDMA unused, e.g. a JVM host without the redwood dependency): the
+      // factory cache stays null. As above, clear the pending exception before the next JNI call.
+      env->ExceptionClear();
+    } else {
+      rdmaBridgeClass = static_cast<jclass>(env->NewGlobalRef(bridgeCls));
       rdmaBridgeJsonPrimitiveString = env->GetStaticMethodID(
           bridgeCls, "jsonPrimitiveString",
           "(Ljava/lang/String;)Lkotlinx/serialization/json/JsonPrimitive;");
@@ -1069,18 +1074,6 @@ void Context::ensureStatics(JNIEnv* env) {
       rdmaBridgeCreateJsonObject = env->GetStaticMethodID(
           bridgeCls, "createJsonObject",
           "(Ljava/util/List;Ljava/util/List;)Lkotlinx/serialization/json/JsonObject;");
-
-      // ArrayList
-      jclass alCls = env->FindClass("java/util/ArrayList");
-      arrayListClass = static_cast<jclass>(env->NewGlobalRef(alCls));
-      arrayListInit = env->GetMethodID(alCls, "<init>", "()V");
-      arrayListInitWithCapacity = env->GetMethodID(alCls, "<init>", "(I)V");
-      arrayListAdd = env->GetMethodID(alCls, "add", "(Ljava/lang/Object;)Z");
-    } else {
-      // RdmaBridge absent (RDMA unused, e.g. a JVM host without the redwood dependency): the
-      // factory cache stays null. The failed FindClass left a pending exception — clear it so
-      // that session creation proceeds normally.
-      env->ExceptionClear();
     }
 
     // RdmaChangeSink interface method IDs

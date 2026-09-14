@@ -1117,7 +1117,7 @@ void Context::dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch) {
             dbgName ? dbgName : "(null)");
         abort();
 #endif
-        if (dbgName && dbgName != "(unknown)") JS_FreeCString(jsContext, dbgName);
+        if (dbgName && strcmp(dbgName, "(unknown)") != 0) JS_FreeCString(jsContext, dbgName);
         JS_FreeValue(jsContext, dbgCtor);
       }
       JS_FreeValue(jsContext, ch.jsValue);

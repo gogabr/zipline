@@ -89,3 +89,21 @@ fun provideBridgedBoundedGenericClass(): BridgedBoundedGenericClass<BridgedBound
 
 @JsExport
 fun provideBridgedNestedGeneric(): BridgedNestedGeneric = BridgedTestValues.nestedGeneric
+
+@JsExport
+fun provideGuestList(): List<String> = listOf("a", "b")
+
+/** A Kotlin/JS Map sent through the untyped channel (decoded host-side by bridgeForAny). */
+@JsExport
+fun provideGuestMap(): Map<String, String> = mapOf("a" to "1", "b" to "2")
+
+/** Kotlin/JS Lists in the guest's own shapes: array-backed, singleton and empty. */
+@JsExport
+fun provideGuestSingletonList(): List<String> = listOf("only")
+
+@JsExport
+fun provideGuestEmptyList(): List<String> = emptyList()
+
+/** Returns kotlin.Unit, the shape a Unit-returning guest function produces. */
+@JsExport
+fun provideUnit(): Unit = Unit

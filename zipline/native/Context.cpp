@@ -838,6 +838,17 @@ Context::toJavaObject(JNIEnv* env, const JSValueConst& value, bool throwOnUnsupp
         }
         break;
       }
+      // Kotlin/JS collections (map/set/list) are objects, not JS arrays. The guest identifies them
+      // and drives iteration through the value ops: the same decode the untyped property path
+      // (bridgeForAny) uses. Without this a guest-authored collection decodes to null.
+      {
+        CollectionKind kind = bridgeCollectionKind(jsContext, value);
+        if (kind != COLLECTION_KIND_NONE) {
+          result = bridgeCollectionToJava(env, jsContext, value, kind, bridgeForAny, bridgeForAny);
+          if (env->ExceptionCheck()) return nullptr;
+          if (result != nullptr) return result;
+        }
+      }
       // Try bridge_dispatch
       {
         JSValue disp = JS_GetPropertyStr(jsContext, value, "bridge_dispatch");

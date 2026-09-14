@@ -17,8 +17,6 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 /** The guest app module id, as assigned by ZiplineCompiler (./<entry file>.js). */
 private const val GUEST_MODULE = "./zipline-root-zipline-bridge-kotlin-plugin-tests.js"
@@ -49,6 +47,23 @@ class BridgeEndToEndTest {
 
   private fun evalOne(provider: String): Any? {
     return host.evaluateOne("require('$GUEST_MODULE').app.cash.zipline.bridge.test.$provider()")
+  }
+
+  @Test
+  fun guestListsDecode() {
+    assertEquals(listOf("a", "b"), evalOne("provideGuestList"))
+    assertEquals(listOf("only"), evalOne("provideGuestSingletonList"))
+    assertEquals(emptyList<String>(), evalOne("provideGuestEmptyList"))
+  }
+
+  @Test
+  fun guestMapDecodes() {
+    assertEquals(mapOf("a" to "1", "b" to "2"), evalOne("provideGuestMap"))
+  }
+
+  @Test
+  fun guestUnitDoesNotTripTheLoudGuard() {
+    evalOne("provideUnit")
   }
 
   @Test

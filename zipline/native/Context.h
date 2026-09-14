@@ -119,6 +119,12 @@ public:
   static jmethodID arrayListInit;
   static jmethodID arrayListInitWithCapacity;
   static jmethodID arrayListAdd;
+  static jclass linkedHashMapClass;
+  static jmethodID linkedHashMapInit;
+  static jmethodID mapPut;
+  static jclass linkedHashSetClass;
+  static jmethodID linkedHashSetInit;
+  static jmethodID setAdd;
 
   // JNI cache for the RdmaChangeSink interface and kotlin.Pair
   static jmethodID rdmaSinkCreateCreate;

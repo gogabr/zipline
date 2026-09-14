@@ -27,6 +27,18 @@ extern "C" {
 
 typedef jobject (*BridgeConverterFn)(JNIEnv *env, JSContext *ctx, JSValue jsObj);
 
+/**
+ * How the guest classified a Kotlin/JS collection, from the value-ops `kind` call. The codes are the
+ * guest's own (`BridgeValueOps` on the JS side). Plain C, not an `enum class`: the generated bridge
+ * sources are compiled as C (clang -std=gnu99) and name these constants too.
+ */
+typedef enum CollectionKind {
+  COLLECTION_KIND_NONE = 0,
+  COLLECTION_KIND_MAP = 1,
+  COLLECTION_KIND_SET = 2,
+  COLLECTION_KIND_LIST = 3,
+} CollectionKind;
+
 /** Pack a bridge converter pointer into a JSValue (as float64, bit-preserving). */
 static inline JSValue bridgeConverterToJSValue(JSContext* ctx, BridgeConverterFn fn) {
     union {

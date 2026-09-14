@@ -259,8 +259,12 @@ jobject Context::execute(JNIEnv* env, jbyteArray byteCode) {
   }
 
   auto val = JS_EvalFunction(jsContext, obj);
-  jobject result;
-  if (!JS_IsException(val)) {
+  jobject result = nullptr;
+  if (env->ExceptionCheck()) {
+    // A Java exception the host bridge threw while the module ran (its load hook calls the host)
+    // is already pending. Calling into JNI again here aborts the VM, so let it propagate.
+    result = nullptr;
+  } else if (!JS_IsException(val)) {
     result = toJavaObject(env, val, false);
   } else {
     result = nullptr;

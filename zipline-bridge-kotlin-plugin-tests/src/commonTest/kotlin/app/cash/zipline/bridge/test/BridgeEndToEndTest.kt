@@ -17,6 +17,8 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /** The guest app module id, as assigned by ZiplineCompiler (./<entry file>.js). */
 private const val GUEST_MODULE = "./zipline-root-zipline-bridge-kotlin-plugin-tests.js"

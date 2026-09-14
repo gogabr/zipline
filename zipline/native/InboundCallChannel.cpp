@@ -37,9 +37,14 @@ jstring InboundCallChannel::call(Context *context, JNIEnv* env,
   arguments[0] = context->toJsString(env, callJson);
 
   JSValue jsResult = JS_Invoke(jsContext, thisPointer, context->callAtom, 1, arguments);
-  jstring javaResult;
+  jstring javaResult = nullptr;
   auto tag = JS_VALUE_GET_NORM_TAG(jsResult);
-  if (tag == JS_TAG_EXCEPTION) {
+  if (env->ExceptionCheck()) {
+    // A Java exception the host bridge threw while the guest ran is already pending. Calling into
+    // JNI again here aborts the VM ("NewStringUTF called with pending exception"), so leave it be
+    // and let it propagate to the caller.
+    javaResult = nullptr;
+  } else if (tag == JS_TAG_EXCEPTION) {
     context->throwJsException(env, jsResult);
     javaResult = nullptr;
   } else if (tag == JS_TAG_STRING) {
@@ -57,6 +62,11 @@ jstring InboundCallChannel::call(Context *context, JNIEnv* env,
 }
 
 jboolean InboundCallChannel::disconnect(Context *context, JNIEnv* env, jstring instanceName) const {
+  if (env->ExceptionCheck()) {
+    // A Java exception the host bridge threw while the guest ran is already pending; calling into
+    // JNI again aborts the VM.
+    return JNI_FALSE;
+  }
   JSContext *jsContext = context->jsContext;
   JSValue global = JS_GetGlobalObject(jsContext);
   JSValue thisPointer = JS_GetProperty(jsContext, global, nameAtom);

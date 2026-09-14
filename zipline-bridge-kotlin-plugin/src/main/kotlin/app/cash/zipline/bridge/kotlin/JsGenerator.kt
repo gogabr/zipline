@@ -30,6 +30,25 @@ import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.backend.common.extensions.DeclarationFinder
+import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
+import org.jetbrains.kotlin.ir.builders.declarations.IrValueParameterBuilder
+import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
+import org.jetbrains.kotlin.ir.builders.irBlock
+import org.jetbrains.kotlin.ir.builders.irBoolean
+import org.jetbrains.kotlin.ir.builders.irExprBody
+import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irGetObjectValue
+import org.jetbrains.kotlin.ir.builders.irNull
+import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrFunctionReferenceImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrGetFieldImpl
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.typeWith
+import org.jetbrains.kotlin.ir.util.createDispatchReceiverParameter
+import org.jetbrains.kotlin.name.ClassId
 
 // -- JS IR transformations (bridge_dispatch injection) --
 
@@ -247,3 +266,45 @@ internal fun addJsNameAnnotation(
   property.annotations += annotation
 }
 
+
+
+/** Name of the `@JsExport` hook the host calls after defining a guest module. */
+private const val BRIDGE_WARM_UP_FUNCTION_NAME = "__bridgeWarmUpHost2Js"
+
+/**
+ * Emits `@JsExport fun __bridgeWarmUpHost2Js(): Boolean` calling `publishValueOps()`, so the guest's
+ * value accessors exist before the host decodes anything. A bridged class's companion initializer
+ * also publishes them, but only once that class is first touched — later than the first conversion,
+ * since a generated converter can run before any class is touched at all.
+ */
+internal fun injectModuleLoadValueOpsPublication(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  moduleFragment: IrModuleFragment,
+) {
+  val fileForModule = moduleFragment.files.firstOrNull() ?: return
+  val valueOpsSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("publishValueOps")),
+  ).firstOrNull() ?: return
+
+  val warmUpFn = pluginContext.irFactory.buildFun {
+    name = Name.identifier(BRIDGE_WARM_UP_FUNCTION_NAME)
+    returnType = pluginContext.irBuiltIns.booleanType
+    visibility = DescriptorVisibilities.PUBLIC
+    origin = IrDeclarationOrigin.DEFINED
+  }
+  warmUpFn.parent = fileForModule
+  val jsExportCtor = finder.findClass(ClassId(FqName("kotlin.js"), Name.identifier("JsExport")))
+    ?.owner?.declarations?.filterIsInstance<IrConstructor>()?.firstOrNull { it.isPrimary }
+  if (jsExportCtor != null) {
+    warmUpFn.annotations += IrConstructorCallImpl(
+      UNDEFINED_OFFSET, UNDEFINED_OFFSET, jsExportCtor.returnType, jsExportCtor.symbol, 0, 0,
+    )
+  }
+  val builder = pluginContext.irBuiltIns.createIrBuilder(warmUpFn.symbol)
+  warmUpFn.body = builder.irBlockBody {
+    +irCall(valueOpsSymbol)
+    +irReturn(irBoolean(true))
+  }
+  fileForModule.declarations += warmUpFn
+}

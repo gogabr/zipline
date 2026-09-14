@@ -56,6 +56,7 @@ class ZiplineBridgeIrGenerationExtension(
 
     // -- JS bridge dispatch injection (Kotlin/JS) --
     if (isJsTarget) {
+      injectModuleLoadValueOpsPublication(finder, pluginContext, moduleFragment)
       injectCompanionInitBlocks(finder, moduleFragment, dispatchClasses, pluginContext)
     }
   }

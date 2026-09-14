@@ -158,6 +158,8 @@ actual class QuickJs private constructor(
   internal val context: CPointer<JSContext>,
   internal val contextForCompiling: CPointer<JSContext>,
 ) : AutoCloseable {
+  /** The guest's collection accessors (`globalThis.__zipline_bridgeValueOps`), fetched lazily. */
+  internal var bridgeValueOps: CValue<JSValue>? = null
   actual companion object {
     actual fun create(): QuickJs {
       // Use the default system allocator (mimalloc was removed: its thread-exit

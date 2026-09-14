@@ -63,7 +63,21 @@ import kotlinx.cinterop.allocArrayOf
 import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.rawValue
 import app.cash.zipline.quickjs.JsFreePropertyEnum
-
+import kotlinx.cinterop.value
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import app.cash.zipline.quickjs.JS_GetGlobalObject
+import app.cash.zipline.quickjs.JS_GetPropertyUint32
+import app.cash.zipline.quickjs.JS_IsArray
+import app.cash.zipline.quickjs.JS_IsFunction
+import app.cash.zipline.quickjs.JS_TAG_BOOL
+import app.cash.zipline.quickjs.JsUndefined
+import app.cash.zipline.quickjs.JS_TAG_OBJECT
+import app.cash.zipline.quickjs.JsGetPropertyAt
+import kotlinx.cinterop.allocArrayOf
+import kotlinx.cinterop.rawValue
+import app.cash.zipline.quickjs.JS_GetRuntime
+import app.cash.zipline.quickjs.JS_GetRuntimeOpaque
 
 /** Copy the data of [item] to the [index] of [this] as if it were an array of [T] structs. */
 internal inline operator fun <reified T : CVariable> CPointer<T>.set(index: Int, item: CValues<T>) {
@@ -189,24 +203,96 @@ fun JsBoxedNumberToLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long?
   }
 }
 
+
 /**
- * Read a JS number as Long, handling JS_TAG_INT, JS_TAG_FLOAT64,
- * and Kotlin/JS Long objects {low_1, high_1}.
+ * The guest's value accessors, installed by `app.cash.zipline.publishValueOps()` from the
+ * bridge plugin's module-load hook and fetched once per runtime. Kotlin/JS mangles the member names
+ * of the stdlib collections (production builds drop the original names entirely) and there is no
+ * single collection prototype to mark, so the guest answers the type question with the compiler's
+ * own `is` check and drives the iteration. Every call here is O(1); nothing is copied guest-side.
+ */
+private fun valueOps(ctx: CPointer<JSContext>): CValue<JSValue>? {
+  val quickJs = JS_GetRuntimeOpaque(JS_GetRuntime(ctx))!!.asStableRef<QuickJs>().get()
+  quickJs.bridgeValueOps?.let { return it }
+  val global = JS_GetGlobalObject(ctx)
+  val ops = JS_GetPropertyStr(ctx, global, "__zipline_bridgeValueOps")
+  JS_FreeValue(ctx, global)
+  if (JS_IsUndefined(ops) != 0) {
+    JS_FreeValue(ctx, ops)
+    return null
+  }
+  quickJs.bridgeValueOps = ops
+  return ops
+}
+
+/** Calls `ops.<name>(argument)`; returns the result (caller frees), or null when unavailable. */
+private fun callValueOp(
+  ctx: CPointer<JSContext>,
+  name: String,
+  argument: CValue<JSValue>,
+): CValue<JSValue>? {
+  val ops = valueOps(ctx) ?: return null
+  val fn = JS_GetPropertyStr(ctx, ops, name)
+  if (JS_IsFunction(ctx, fn) == 0) {
+    JS_FreeValue(ctx, fn)
+    return null
+  }
+  val result = memScoped {
+    val args = allocArrayOf(argument)
+    JS_Call(ctx, fn, JsUndefined(), 1, args)
+  }
+  JS_FreeValue(ctx, fn)
+  if (JS_IsException(result) != 0) {
+    JS_FreeValue(ctx, result)
+    return null
+  }
+  return result
+}
+
+/** True when [jsVal] is a boxed kotlin.Long, as the guest's value ops report it. */
+private fun jsIsLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Boolean {
+  val low = callValueOp(ctx, "longLow", jsVal) ?: return false
+  val isInt = JsValueGetNormTag(low) == JS_TAG_INT
+  JS_FreeValue(ctx, low)
+  return isInt
+}
+
+/** The value of the boxed kotlin.Long in [jsVal]; fails loudly when it is not one. */
+private fun jsLongValue(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long {
+  val low = callValueOp(ctx, "longLow", jsVal)
+  if (low != null && JsValueGetNormTag(low) == JS_TAG_INT) {
+    val high = callValueOp(ctx, "longHigh", jsVal)
+    val highInt = if (high != null && JsValueGetNormTag(high) == JS_TAG_INT) JsValueGetInt(high) else 0
+    if (high != null) JS_FreeValue(ctx, high)
+    val result = (highInt.toLong() shl 32) or (JsValueGetInt(low).toLong() and 0xFFFFFFFFL)
+    JS_FreeValue(ctx, low)
+    return result
+  }
+  if (low != null) JS_FreeValue(ctx, low)
+  error("not a kotlin.Long: the guest value ops reported no low/high halves for this value")
+}
+
+/** Ordinal of the enum instance in [jsVal], or -1 when it isn't an enum. */
+public fun jsEnumOrdinal(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Int {
+  val ordinal = callValueOp(ctx, "enumOrdinal", jsVal)
+  if (ordinal != null) {
+    val result = if (JsValueGetNormTag(ordinal) == JS_TAG_INT) JsValueGetInt(ordinal) else -1
+    JS_FreeValue(ctx, ordinal)
+    if (result >= 0) return result
+  }
+  return -1
+}
+
+/**
+ * Read a JS number as Long, handling JS_TAG_INT, JS_TAG_FLOAT64 and boxed kotlin.Long values
+ * (whose halves the guest reports: Kotlin/JS mangles `low`/`high`).
  */
 @OptIn(ExperimentalForeignApi::class)
 fun JsNumberToLong(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Long = when (JsValueGetNormTag(jsVal)) {
   JS_TAG_INT -> JsValueGetInt(jsVal).toLong()
   JS_TAG_FLOAT64 -> JsValueGetFloat64(jsVal).toLong()
-  else -> {
-    val lowVal = JS_GetPropertyStr(ctx, jsVal, "low_1")
-    val highVal = JS_GetPropertyStr(ctx, jsVal, "high_1")
-    val low = JsNumberToInt(lowVal)
-    val high = JsNumberToInt(highVal)
-    val result = (high.toLong() shl 32) or (low.toLong() and 0xFFFFFFFF)
-    JS_FreeValue(ctx, lowVal)
-    JS_FreeValue(ctx, highVal)
-    result
-  }
+  // A boxed kotlin.Long: the guest reports its halves, its fields are mangled in Kotlin/JS.
+  else -> jsLongValue(ctx, jsVal)
 }
 
 /**

@@ -102,6 +102,105 @@ internal inline fun <reified T : CVariable> NativePlacement.allocArrayOf(
  * value reads garbage.
  */
 @OptIn(ExperimentalForeignApi::class)
+/**
+ * Throws when [jsVal] looks like a Kotlin class instance that no bridge converter was registered
+ * for, naming the class; returns null for plain data shapes (JS objects, Kotlin collections),
+ * which is how they decoded before. See the call site in [bridgeForAny].
+ */
+private fun throwUnbridgedJsObject(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? {
+  // A function value is not a data payload (it decoded to null before, and zipline has no
+  // function bridge), so leave it alone.
+  if (JS_IsFunction(ctx, jsVal) != 0) return null
+  val ctor = JS_GetPropertyStr(ctx, jsVal, "constructor")
+  if (JS_IsUndefined(ctor) != 0 || JS_IsNull(ctor) != 0 || JS_IsFunction(ctx, ctor) == 0) {
+    JS_FreeValue(ctx, ctor)
+    return null
+  }
+  val ctorName = JS_GetPropertyStr(ctx, ctor, "name")
+  val ctorCString = JS_ToCString(ctx, ctorName)
+  val className = ctorCString?.toKStringFromUtf8().orEmpty()
+  if (ctorCString != null) JS_FreeCString(ctx, ctorCString)
+  JS_FreeValue(ctx, ctorName)
+  JS_FreeValue(ctx, ctor)
+  if (className.isEmpty() || className in UNBRIDGED_DECODE_EXEMPT_CLASSES) return null
+  throw IllegalStateException(
+    "host bridge: no converter registered for JS class '$className'; " +
+      "annotate the class with @WithJS2HostBridge to send it to the host",
+  )
+}
+
+/**
+ * JS built-ins (plain objects, arrays, dates, …) and Kotlin's collection/long wrappers decode
+ * without a bridge converter; everything else that arrives as a class instance must have one.
+ */
+private val UNBRIDGED_DECODE_EXEMPT_CLASSES = setOf(
+  "Object", "Array", "Function", "Date", "RegExp", "Error", "Promise", "Symbol",
+  "Number", "String", "Boolean", "BigInt", "JSON", "Math", "Reflect", "Proxy",
+  "ArrayBuffer", "DataView", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+  "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+  "BigInt64Array", "BigUint64Array", "Map", "Set", "WeakMap", "WeakSet",
+  "LinkedHashMap", "HashMap", "ArrayList", "LinkedHashSet", "HashSet", "ArrayDeque", "Long",
+  // kotlin.Unit: the result of a Unit-returning guest function (e.g. the direct-event sink).
+  "Unit",
+)
+
+/**
+ * How the guest classified an opaque JS value, from the value-ops `kind` call. The codes are the
+ * guest's own (`BridgeValueOps` on the JS side). A JS array is never one of these: it is decoded
+ * before [collectionKind] is consulted.
+ */
+enum class CollectionKind(val code: Int) {
+  NONE(0),
+  MAP(1),
+  SET(2),
+  LIST(3),
+  ;
+
+  companion object {
+    /** The kind [code] stands for, or [NONE] when the guest sent a code this build doesn't know. */
+    fun of(code: Int): CollectionKind = when (code) {
+      MAP.code -> MAP
+      SET.code -> SET
+      LIST.code -> LIST
+      else -> NONE
+    }
+  }
+}
+
+/** The guest's classification of [jsVal], or [CollectionKind.NONE] when it is not a collection. */
+private fun collectionKind(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): CollectionKind {
+  if (JsValueGetNormTag(jsVal) != JS_TAG_OBJECT) return CollectionKind.NONE
+  val kind = callValueOp(ctx, "kind", jsVal) ?: return CollectionKind.NONE
+  val code = if (JsValueGetNormTag(kind) == JS_TAG_INT) JsValueGetInt(kind) else CollectionKind.NONE.code
+  JS_FreeValue(ctx, kind)
+  return CollectionKind.of(code)
+}
+
+/** Builds a LinkedHashSet ([CollectionKind.SET]) or ArrayList ([CollectionKind.LIST]) from the guest's iterator. */
+fun jsCollectionToKotlin(
+  ctx: CPointer<JSContext>,
+  jsVal: CValue<JSValue>,
+  kind: CollectionKind,
+  converter: (CValue<JSValue>) -> Any?,
+): Any {
+  val result: MutableCollection<Any?> = when (kind) {
+    CollectionKind.SET -> LinkedHashSet()
+    else -> ArrayList()
+  }
+  val iterator = callValueOp(ctx, "iterator", jsVal) ?: return result
+  while (true) {
+    val hasNext = callValueOp(ctx, "hasNext", iterator) ?: break
+    val more = JsValueGetNormTag(hasNext) == JS_TAG_BOOL && JsValueGetBool(hasNext) != 0
+    JS_FreeValue(ctx, hasNext)
+    if (!more) break
+    val element = callValueOp(ctx, "next", iterator) ?: break
+    result.add(converter(element))
+    JS_FreeValue(ctx, element)
+  }
+  JS_FreeValue(ctx, iterator)
+  return result
+}
+
 fun JsNumberToDouble(jsVal: CValue<JSValue>): Double = when (JsValueGetNormTag(jsVal)) {
   JS_TAG_INT -> JsValueGetInt(jsVal).toDouble()
   else -> JsValueGetFloat64(jsVal)
@@ -328,6 +427,16 @@ fun bridgeForAny(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? = when 
   }
   JS_IsUndefined(jsVal) != 0 || JS_IsNull(jsVal) != 0 -> null
   else -> {
+    // Kotlin/JS collection (map/set/list): the guest identifies it and drives the iteration.
+    when (val kind = collectionKind(ctx, jsVal)) {
+      CollectionKind.MAP -> return jsMapToKotlin(
+        ctx, jsVal, { element -> bridgeForAny(ctx, element) },
+        { element -> bridgeForAny(ctx, element) },
+      )
+      CollectionKind.SET, CollectionKind.LIST ->
+        return jsCollectionToKotlin(ctx, jsVal, kind) { element -> bridgeForAny(ctx, element) }
+      CollectionKind.NONE -> Unit
+    }
     val dispatch = JS_GetPropertyStr(ctx, jsVal, "bridge_dispatch")
     if (JS_IsUndefined(dispatch) == 0) {
       val fn = JsValueGetFloat64(dispatch).toRawBits().toCPointer<UByteVar>()!!.asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()
@@ -336,31 +445,12 @@ fun bridgeForAny(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? = when 
       r
     } else {
       JS_FreeValue(ctx, dispatch)
-      // Check for Kotlin/JS Long: {low_1, high_1} with constructor.name === "Long"
-      val lo = JS_GetPropertyStr(ctx, jsVal, "low_1")
-      if (JS_IsUndefined(lo) == 0) {
-        val ctor = JS_GetPropertyStr(ctx, jsVal, "constructor")
-        var isLong = false
-        if (JS_IsUndefined(ctor) == 0) {
-          val ctorName = JS_GetPropertyStr(ctx, ctor, "name")
-          val ctorNameStr = JS_ToCString(ctx, ctorName)
-          isLong = ctorNameStr?.toKStringFromUtf8() == "Long"
-          JS_FreeCString(ctx, ctorNameStr)
-          JS_FreeValue(ctx, ctorName)
-        }
-        JS_FreeValue(ctx, ctor)
-        if (isLong) {
-          val hi = JS_GetPropertyStr(ctx, jsVal, "high_1")
-          val loVal = JsNumberToInt(lo).toLong() and 0xFFFFFFFFL
-          val hiVal = JsNumberToInt(hi).toLong() shl 32
-          val lv = hiVal or loVal
-          JS_FreeValue(ctx, hi)
-          JS_FreeValue(ctx, lo)
-          return lv
-        }
-        JS_FreeValue(ctx, lo)
-      }
-      null
+      // A boxed kotlin.Long: the guest identifies it (Kotlin/JS mangles the fields of the box).
+      if (jsIsLong(ctx, jsVal)) return jsLongValue(ctx, jsVal)
+      // 3) No converter: a class instance that cannot be decoded. Returning null here used to
+      // surface as a confusing cast/NPE far from the cause (e.g. a List<TopBarIcon> arriving as
+      // [null] because TopBarIcon was not annotated), so name the class instead.
+      throwUnbridgedJsObject(ctx, jsVal)
     }
   }
 }
@@ -371,109 +461,29 @@ fun bridgeForAny(ctx: CPointer<JSContext>, jsVal: CValue<JSValue>): Any? = when 
  * supplied converters. Used by generated bridge code for Map fields.
  */
 @OptIn(ExperimentalForeignApi::class)
-public fun jsMapToKotlin(
+public fun <K, V> jsMapToKotlin(
   ctx: CPointer<JSContext>,
   jsVal: CValue<JSValue>,
-  keyConverter: (CValue<JSValue>) -> Any,
-  valueConverter: (CValue<JSValue>) -> Any,
-): Map<Any, Any> {
-  val result = mutableMapOf<Any, Any>()
-  // Kotlin/JS exposes Map iteration only through mangled methods (get_entries_*, iterator_*,
-  // hasNext_*, next_*, get_key_*, get_value_*) with stable prefixes; discover the exact names
-  // at runtime and call them via JS_Call.
-  fun protoNames(obj: CValue<JSValue>): List<String> {
-    // Kotlin/JS methods live on the prototype chain (constructor.prototype + __proto__ parents);
-    // own properties are only fields. Walk the chain collecting method names.
-    val result = mutableListOf<String>()
-    val constructor = JS_GetPropertyStr(ctx, obj, "constructor")
-    var proto = JS_GetPropertyStr(ctx, constructor, "prototype")
-    JS_FreeValue(ctx, constructor)
-    while (JS_IsUndefined(proto) == 0 && JS_IsNull(proto) == 0) {
-      val names = memScoped {
-        val count = alloc<IntVar>()
-        val ptab = JsGetOwnPropertyNames(ctx, proto, count.ptr)
-        if (ptab == null) {
-          emptyList()
-        } else {
-          val list = (0 until count.value).mapNotNull { i ->
-            JsGetPropertyName(ctx, ptab, i)?.toKStringFromUtf8()
-          }
-          JsFreePropertyEnum(ctx, ptab)
-          list
-        }
-      }
-      result.addAll(names)
-      val parent = JS_GetPropertyStr(ctx, proto, "__proto__")
-      JS_FreeValue(ctx, proto)
-      proto = parent
-    }
-    JS_FreeValue(ctx, proto)
-    return result
-  }
-  fun findMethod(protoNames: List<String>, prefix: String): String? =
-    protoNames.firstOrNull { it.startsWith(prefix) }
-
-  val mapNames = protoNames(jsVal)
-  val entriesName = findMethod(mapNames, "get_entries_") ?: return result
-  val entriesFn = JS_GetPropertyStr(ctx, jsVal, entriesName)
-  val entries = JS_Call(ctx, entriesFn, jsVal, 0, null)
-  JS_FreeValue(ctx, entriesFn)
-  if (JS_IsException(entries) != 0) {
-    JS_FreeValue(ctx, entries)
-    return result
-  }
-  val entriesNames = protoNames(entries)
-  val iteratorName = findMethod(entriesNames, "iterator_") ?: run {
-    JS_FreeValue(ctx, entries)
-    return result
-  }
-  val iteratorFn = JS_GetPropertyStr(ctx, entries, iteratorName)
-  val iterator = JS_Call(ctx, iteratorFn, entries, 0, null)
-  JS_FreeValue(ctx, iteratorFn)
-  JS_FreeValue(ctx, entries)
-  if (JS_IsException(iterator) != 0) {
-    JS_FreeValue(ctx, iterator)
-    return result
-  }
-  val iteratorNames = protoNames(iterator)
-  val hasNextName = findMethod(iteratorNames, "hasNext_")
-  val nextName = findMethod(iteratorNames, "next_")
-  if (hasNextName == null || nextName == null) {
-    JS_FreeValue(ctx, iterator)
-    return result
-  }
-  val hasNextFn = JS_GetPropertyStr(ctx, iterator, hasNextName)
-  val nextFn = JS_GetPropertyStr(ctx, iterator, nextName)
+  keyConverter: (CValue<JSValue>) -> K,
+  valueConverter: (CValue<JSValue>) -> V,
+): Map<K, V> {
+  val result = mutableMapOf<K, V>()
+  val iterator = callValueOp(ctx, "iterator", jsVal) ?: return result
   while (true) {
-    val hasNext = JS_Call(ctx, hasNextFn, iterator, 0, null)
-    val hasNextValue = JsValueGetBool(hasNext) != 0
+    val hasNext = callValueOp(ctx, "hasNext", iterator) ?: break
+    val more = JsValueGetNormTag(hasNext) == JS_TAG_BOOL && JsValueGetBool(hasNext) != 0
     JS_FreeValue(ctx, hasNext)
-    if (!hasNextValue) break
-    val entry = JS_Call(ctx, nextFn, iterator, 0, null)
-    if (JS_IsException(entry) != 0) {
-      JS_FreeValue(ctx, entry)
-      break
+    if (!more) break
+    val entry = callValueOp(ctx, "next", iterator) ?: break
+    val rawKey = callValueOp(ctx, "key", entry)
+    val rawValue = callValueOp(ctx, "value", entry)
+    if (rawKey != null && rawValue != null) {
+      result[keyConverter(rawKey)] = valueConverter(rawValue)
+      JS_FreeValue(ctx, rawValue)
+      JS_FreeValue(ctx, rawKey)
     }
-    val entryNames = protoNames(entry)
-    val keyName = findMethod(entryNames, "get_key_")
-    val valueName = findMethod(entryNames, "get_value_")
-    if (keyName == null || valueName == null) {
-      JS_FreeValue(ctx, entry)
-      break
-    }
-    val keyFn = JS_GetPropertyStr(ctx, entry, keyName)
-    val valueFn = JS_GetPropertyStr(ctx, entry, valueName)
-    val keyRaw = JS_Call(ctx, keyFn, entry, 0, null)
-    val valueRaw = JS_Call(ctx, valueFn, entry, 0, null)
-    JS_FreeValue(ctx, keyFn)
-    JS_FreeValue(ctx, valueFn)
-    result[keyConverter(keyRaw)] = valueConverter(valueRaw)
-    JS_FreeValue(ctx, valueRaw)
-    JS_FreeValue(ctx, keyRaw)
     JS_FreeValue(ctx, entry)
   }
-  JS_FreeValue(ctx, nextFn)
-  JS_FreeValue(ctx, hasNextFn)
   JS_FreeValue(ctx, iterator)
   return result
 }

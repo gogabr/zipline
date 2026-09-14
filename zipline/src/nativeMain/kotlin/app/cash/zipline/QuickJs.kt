@@ -537,6 +537,9 @@ actual class QuickJs private constructor(
       }
       functionList = null
       JS_FreeContext(contextForCompiling)
+      // The ops accessors are cached for the whole runtime; release them before the context.
+      bridgeValueOps?.let { JS_FreeValue(context, it) }
+      bridgeValueOps = null
       JS_FreeContext(context)
       JS_FreeRuntime(runtime)
       thisPtr.dispose()

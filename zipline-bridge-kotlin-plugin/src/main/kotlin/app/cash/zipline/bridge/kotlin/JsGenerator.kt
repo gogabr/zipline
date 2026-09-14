@@ -54,6 +54,14 @@ internal fun injectCompanionInitBlocks(
     } ?: error("KClass.js property getter not found")
   val kclassJsGetterSymbol = kclassJsGetterFn.symbol
 
+  // Prefer zipline's tolerant helper: it no-ops when no host installed `__bridgeRegister` (a bare
+  // Kotlin/JS runtime — a unit test, or any plain JS consumer of a bridged module — has nothing to
+  // register with), where the raw external below would throw at class-initialization time for every
+  // bridged class the runtime touches. See app.cash.zipline.registerBridge.
+  val tolerantRegisterSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("registerBridge")),
+  ).firstOrNull()
+
   // Generate @JsName("__bridgeRegister") external fun __bridgeRegister(fqn: String, ctor: Any?)
   // once in the module. Companion constructors call this directly — no bridgeSelfRegister wrapper.
   var bridgeRegisterFn = fileForModule.declarations
@@ -92,7 +100,7 @@ internal fun injectCompanionInitBlocks(
     }
     fileForModule.declarations += bridgeRegisterFn
   }
-  val bridgeRegisterSymbol = bridgeRegisterFn.symbol
+  val bridgeRegisterSymbol = tolerantRegisterSymbol ?: bridgeRegisterFn.symbol
 
   for (clazz in dispatchClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue

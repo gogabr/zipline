@@ -61,6 +61,11 @@ public abstract interface class app/cash/zipline/InterruptHandler {
 	public abstract fun poll ()Z
 }
 
+public final class app/cash/zipline/JsonEngineKt {
+	public static final fun decodeFromStringFast (Lkotlinx/serialization/json/Json;Lkotlinx/serialization/DeserializationStrategy;Ljava/lang/String;)Ljava/lang/Object;
+	public static final fun encodeToStringFast (Lkotlinx/serialization/json/Json;Lkotlinx/serialization/KSerializer;Ljava/lang/Object;)Ljava/lang/String;
+}
+
 public final class app/cash/zipline/MemoryUsage {
 	public fun <init> (JJJJJJJJJJJJJJJJJJJJJJJJJJ)V
 	public final fun component1 ()J
@@ -125,6 +130,7 @@ public final class app/cash/zipline/MemoryUsage {
 public final class app/cash/zipline/QuickJs : java/io/Closeable, java/lang/AutoCloseable {
 	public static final field Companion Lapp/cash/zipline/QuickJs$Companion;
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun callGuestFunction (Ljava/lang/String;Ljava/util/List;)Ljava/lang/Object;
 	public fun close ()V
 	public final fun compile (Ljava/lang/String;Ljava/lang/String;)[B
 	public static final fun create ()Lapp/cash/zipline/QuickJs;
@@ -132,6 +138,7 @@ public final class app/cash/zipline/QuickJs : java/io/Closeable, java/lang/AutoC
 	public static final fun dumpAllocHeap ()V
 	public final fun evaluate (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
 	public static synthetic fun evaluate$default (Lapp/cash/zipline/QuickJs;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Ljava/lang/Object;
+	public final fun evaluateForBridge (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/Object;
 	public final fun execute ([B)Ljava/lang/Object;
 	public final fun gc ()V
 	public final fun getGcThreshold ()J
@@ -140,6 +147,7 @@ public final class app/cash/zipline/QuickJs : java/io/Closeable, java/lang/AutoC
 	public final fun getMemoryLimit ()J
 	public final fun getMemoryUsage ()Lapp/cash/zipline/MemoryUsage;
 	public final fun getRdmaChangeSink ()Lapp/cash/zipline/RdmaChangeSink;
+	public final fun hasGlobalFunction (Ljava/lang/String;)Z
 	public final fun initRdmaChangesChannel ()V
 	public static final fun setAllocTracingSampleRate (I)V
 	public final fun setGcThreshold (J)V
@@ -170,6 +178,7 @@ public final class app/cash/zipline/QuickJsException : java/lang/RuntimeExceptio
 
 public abstract interface class app/cash/zipline/RdmaChangeSink {
 	public abstract fun createAdd (IIII)V
+	public abstract fun createBridgeChange (ILjava/lang/Object;)V
 	public abstract fun createCreate (II)V
 	public abstract fun createModifierChange (ILjava/util/List;)V
 	public abstract fun createMove (IIIII)V
@@ -198,6 +207,7 @@ public final class app/cash/zipline/Zipline : java/lang/AutoCloseable {
 	public final fun getJson ()Lkotlinx/serialization/json/Json;
 	public final fun getOrPutAttachment (Lkotlin/reflect/KClass;Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
 	public final fun getQuickJs ()Lapp/cash/zipline/QuickJs;
+	public final fun initRdmaChannel (Lapp/cash/zipline/RdmaChangeSink;)V
 	public final fun loadJsModule (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun loadJsModule ([BLjava/lang/String;)V
 	public final fun take (Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;)Lapp/cash/zipline/ZiplineService;
@@ -379,6 +389,11 @@ public abstract interface class app/cash/zipline/ZiplineServiceType {
 public final class app/cash/zipline/ZiplineServiceTypeKt {
 	public static final fun getSourceType (Lapp/cash/zipline/ZiplineService;)Lapp/cash/zipline/ZiplineServiceType;
 	public static final fun getTargetType (Lapp/cash/zipline/ZiplineService;)Lapp/cash/zipline/ZiplineServiceType;
+}
+
+public final class app/cash/zipline/internal/QuickJsExtensionsKt {
+	public static final fun initModuleLoader (Lapp/cash/zipline/QuickJs;)V
+	public static final fun loadJsModule (Lapp/cash/zipline/QuickJs;Ljava/lang/String;[B)V
 }
 
 public abstract interface class app/cash/zipline/internal/bridge/CallChannel {

@@ -69,4 +69,31 @@ class QuickJsTest {
   @Test fun gc() {
     assertNull(quickJs.evaluate("""globalThis.gc();"""))
   }
+
+  // -- Phase 1: host->guest JS-call API --
+
+  @Test fun hasGlobalFunctionProbe() {
+    quickJs.evaluate("globalThis.__testSink = function (a) { return a; }; 0")
+    assertEquals(true, quickJs.hasGlobalFunction("__testSink"))
+    assertEquals(false, quickJs.hasGlobalFunction("__no_such_sink"))
+  }
+
+  @Test fun callGuestFunctionRoundTrip() {
+    quickJs.evaluate("globalThis.__testSink = function (a, b, c) { return 'x' + b + c; }; 0")
+    val result = quickJs.callGuestFunction("__testSink", listOf("ignored", 7, true))
+    assertEquals("x7true", result)
+  }
+
+  @Test fun callGuestFunctionUnknownFunctionThrows() {
+    assertFailsWith<QuickJsException> {
+      quickJs.callGuestFunction("__no_such_sink", emptyList())
+    }
+  }
+
+  @Test fun callGuestFunctionUnbridgeableArgThrows() {
+    quickJs.evaluate("globalThis.__testSink = function (a) { return 'unreachable'; }; 0")
+    assertFailsWith<QuickJsException> {
+      quickJs.callGuestFunction("__testSink", listOf(Any()))
+    }
+  }
 }

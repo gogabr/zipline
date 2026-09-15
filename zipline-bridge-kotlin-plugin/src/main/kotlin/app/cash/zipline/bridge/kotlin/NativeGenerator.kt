@@ -154,25 +154,14 @@ private fun emitListHelper(
   val elementName = "${name}_element"
   val renderedElement = renderedTypeName(elementType)
   val pending = StringBuilder()
-  helpers.appendLine("private fun $name(ctx: CPointer<JSContext>, jsArr: CValue<JSValue>): List<$renderedElement> = run {")
-  // Kotlin/JS ArrayList wraps the JS array in a name-mangled 'array_1' property; unwrap it.
-  // The input is borrowed: only the lookup result is freed here; the caller frees the input.
-  helpers.appendLine("    var arr = jsArr")
-  helpers.appendLine("    val _tmpArr = JS_GetPropertyStr(ctx, jsArr, \"array_1\")")
-  helpers.appendLine("    if (JS_IsUndefined(_tmpArr) == 0) arr = _tmpArr")
-  helpers.appendLine("    val lenVal = JS_GetPropertyStr(ctx, arr, \"length\")")
-  helpers.appendLine("    val len = JsValueGetInt(lenVal)")
-  helpers.appendLine("    JS_FreeValue(ctx, lenVal)")
-  helpers.appendLine("    val result = mutableListOf<$renderedElement>()")
-  helpers.appendLine("    var i = 0")
-  helpers.appendLine("    while (i < len.toInt()) {")
-  helpers.appendLine("        val elem = JS_GetPropertyUint32(ctx, arr, i.toUInt())")
-  val elemConv = jsValueToKotlinExpression(pending, elementName, elementType, ctx, "elem")
-  helpers.appendLine("        result.add($elemConv)")
-  helpers.appendLine("        JS_FreeValue(ctx, elem)")
-  helpers.appendLine("        i++")
-  helpers.appendLine("    }")
-  helpers.appendLine("    JS_FreeValue(ctx, _tmpArr)")
+  // The guest drives the iteration: Kotlin/JS mangles the stdlib's backing fields in production
+  // builds, and the concrete list class depends on how the guest built the value.
+  helpers.appendLine("private fun $name(ctx: CPointer<JSContext>, jsList: CValue<JSValue>): List<$renderedElement> = run {")
+  helpers.appendLine("    @Suppress(\"UNCHECKED_CAST\")")
+  helpers.appendLine("    val result = jsCollectionToKotlin(ctx, jsList, CollectionKind.LIST) { element ->")
+  val elemConv = jsValueToKotlinExpression(pending, elementName, elementType, ctx, "element")
+  helpers.appendLine("        $elemConv")
+  helpers.appendLine("    } as List<$renderedElement>")
   helpers.appendLine("    result")
   helpers.appendLine("}")
   helpers.appendLine()
@@ -279,9 +268,9 @@ internal fun generateNativeBridgeFile(
   messageCollector: MessageCollector? = null,
 ) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
-  // The helper is named from the FQN, like the generated file and the C generator's prefix:
-  // two classes can share a simple name (Alignment, LineHeightStyle.Alignment), and simple
-  // names would then collide as duplicate top-level functions in the same module.
+  // Full-FQN function name: sealed children (e.g. two nested `Error` classes under different
+  // sealed parents) share the shared `generated_bridges` package, so the short class name would
+  // collide across files. The dotted FQN is unique per class, like the output file name below.
   val functionName = "${fqn.replace(".", "_")}_toKotlin"
   val fields = extractFields(clazz)
 
@@ -299,6 +288,15 @@ internal fun generateNativeBridgeFile(
   // as the host failing to find a converter for a class the author annotated.
   val nonNullableFunctionField = fields.firstOrNull {
     it.isObjectType && it.ktType.startsWith("kotlin.Function") && !it.isNullable
+  }
+  if (nonNullableFunctionField != null) {
+    messageCollector?.report(
+      CompilerMessageSeverity.WARNING,
+      "bridge: skipping ${clazz.fqNameWhenAvailable}; field '${nonNullableFunctionField.name}' has " +
+        "the non-nullable function type ${nonNullableFunctionField.ktType}, which cannot be " +
+        "bridged. Make it nullable (it decodes to null) or keep the class off the bridge.",
+    )
+    return
   }
 
   val source = buildString {
@@ -340,6 +338,10 @@ internal fun generateNativeBridgeFile(
     if (needsMapHelper.isNotEmpty()) {
       appendLine("import app.cash.zipline.jsMapToKotlin")
     }
+    // Enums read their ordinal through the guest's value ops (Kotlin/JS mangles `ordinal`).
+    appendLine("import app.cash.zipline.jsEnumOrdinal")
+    appendLine("import app.cash.zipline.jsCollectionToKotlin")
+    appendLine("import app.cash.zipline.CollectionKind")
     // Used for Int/Char/Short/Byte field and element reads below; JsValueGetInt is
     // tag-blind (reads the raw low int32, which is 0 for float64-tagged numbers),
     // so every decode goes through the tag-aware JsNumberToInt.
@@ -585,48 +587,54 @@ internal fun generateNativeBridgeFile(
           appendLine("    JS_FreeValue(ctx, ${field.name}Ref)")
           appendLine("    val ${field.name} = null")
         }
-
         field.isObjectType && field.ktType != "kotlin.collections.List" &&
           field.effectiveKtType !in MAP_KOTLIN_TYPES -> {
           val typeName = field.ktType.substringAfterLast(".")
           val castName = if (typeName == "List") "Any" else typeName
           appendLine("    val ${field.name}Ref = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
+          // Without a converter on the value (an object that is not bridged, a JS function, …)
+          // dereferencing the dispatch pointer reads garbage. Fall back to bridgeForAny, which
+          // applies the loud "no converter" guard instead of crashing on a bad pointer.
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Ref) != 0 || JS_IsNull(${field.name}Ref) != 0) null else {")
             appendLine("        val dispatch = JS_GetPropertyStr(ctx, ${field.name}Ref, \"bridge_dispatch\")")
-            appendLine("        val dispatchFn = JsValueGetFloat64(dispatch).toRawBits().toCPointer<UByteVar>()!!.asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()")
-            appendLine("        val result = dispatchFn.get()(ctx, ${field.name}Ref) as $castName")
-            appendLine("        JS_FreeValue(ctx, dispatch)")
-            appendLine("        result")
+            appendLine("        if (JS_IsUndefined(dispatch) != 0) {")
+            appendLine("            JS_FreeValue(ctx, dispatch)")
+            appendLine("            bridgeForAny(ctx, ${field.name}Ref) as $castName")
+            appendLine("        } else {")
+            appendLine("            val dispatchFn = JsValueGetFloat64(dispatch).toRawBits().toCPointer<UByteVar>()!!.asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()")
+            appendLine("            val result = dispatchFn.get()(ctx, ${field.name}Ref) as $castName")
+            appendLine("            JS_FreeValue(ctx, dispatch)")
+            appendLine("            result")
+            appendLine("        }")
             appendLine("    }")
           } else {
             appendLine("    val ${field.name}Dispatch = JS_GetPropertyStr(ctx, ${field.name}Ref, \"bridge_dispatch\")")
-            appendLine("    val ${field.name}DispatchFn = JsValueGetFloat64(${field.name}Dispatch).toRawBits().toCPointer<UByteVar>()!!.asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()")
-            appendLine("    val ${field.name} = ${field.name}DispatchFn.get()(ctx, ${field.name}Ref) as $castName")
-            appendLine("    JS_FreeValue(ctx, ${field.name}Dispatch)")
+            appendLine("    val ${field.name} = if (JS_IsUndefined(${field.name}Dispatch) != 0) {")
+            appendLine("        JS_FreeValue(ctx, ${field.name}Dispatch)")
+            appendLine("        bridgeForAny(ctx, ${field.name}Ref) as $castName")
+            appendLine("    } else {")
+            appendLine("        val ${field.name}DispatchFn = JsValueGetFloat64(${field.name}Dispatch).toRawBits().toCPointer<UByteVar>()!!.asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()")
+            appendLine("        val result = ${field.name}DispatchFn.get()(ctx, ${field.name}Ref) as $castName")
+            appendLine("        JS_FreeValue(ctx, ${field.name}Dispatch)")
+            appendLine("        result")
+            appendLine("    }")
           }
           appendLine("    JS_FreeValue(ctx, ${field.name}Ref)")
         }
         field.ktType == "kotlin.collections.List" -> {
           appendLine("    val ${field.name}Raw = JS_GetPropertyStr(ctx, jsVal, \"$propName\")")
-          // Kotlin/JS ArrayList wraps the JS array in a name-mangled 'array_1' property.
-          appendLine("    var ${field.name}Arr = ${field.name}Raw")
-          appendLine("    var _tmpArr_${field.name} = JS_GetPropertyStr(ctx, ${field.name}Raw, \"array_1\")")
-          appendLine("    if (JS_IsUndefined(_tmpArr_${field.name}) == 0) {")
-          appendLine("        JS_FreeValue(ctx, ${field.name}Raw)")
-          appendLine("        ${field.name}Arr = _tmpArr_${field.name}")
-          appendLine("    }")
           val renderedElement = renderedTypeName(field.arrayElementIrType)
-          val conv = emitListHelper(helpers, "conv_${field.name}", field.arrayElementIrType, "ctx", "${field.name}Arr")
+          val conv = emitListHelper(helpers, "conv_${field.name}", field.arrayElementIrType, "ctx", "${field.name}Raw")
           if (field.isNullable) {
-            appendLine("    val ${field.name}: List<$renderedElement>? = if (JS_IsUndefined(${field.name}Arr) != 0 || JS_IsNull(${field.name}Arr) != 0) null else {")
+            appendLine("    val ${field.name}: List<$renderedElement>? = if (JS_IsUndefined(${field.name}Raw) != 0 || JS_IsNull(${field.name}Raw) != 0) null else {")
             appendLine("        val result = $conv")
-            appendLine("        JS_FreeValue(ctx, ${field.name}Arr)")
+            appendLine("        JS_FreeValue(ctx, ${field.name}Raw)")
             appendLine("        result")
             appendLine("    }")
           } else {
             appendLine("    val ${field.name}: List<$renderedElement> = $conv")
-            appendLine("    JS_FreeValue(ctx, ${field.name}Arr)")
+            appendLine("    JS_FreeValue(ctx, ${field.name}Raw)")
           }
         }
         field.effectiveKtType in PRIMITIVE_ARRAY_ELEMENT_TYPE -> {
@@ -699,11 +707,9 @@ internal fun generateNativeBridgeFile(
     val className = clazz.name.asString()
     val qualifier = ((clazz.parent as? IrClass)?.name?.asString()?.plus(".")) ?: ""
     if (clazz.kind == ClassKind.ENUM_CLASS) {
-      // Enum — read ordinal, return entries[ordinal]
-      appendLine("    val ordinalRaw = JS_GetPropertyStr(ctx, jsVal, \"ordinal_1\")")
-      appendLine("    val ordinal = JsNumberToInt(ordinalRaw)")
-      appendLine("    JS_FreeValue(ctx, ordinalRaw)")
-      appendLine("    val _obj = $qualifier$className.entries[ordinal]")
+      // Enum — the guest reports the ordinal (Kotlin/JS mangles the ordinal field's name).
+      appendLine("    val ordinal = jsEnumOrdinal(ctx, jsVal)")
+      appendLine("    val _obj = $qualifier$className.entries.getOrNull(ordinal) ?: error(\"host bridge: no enum entry at ordinal \$ordinal\")")
     } else if (ctorFields.isNotEmpty()) {
       appendLine("    @Suppress(\"UNCHECKED_CAST\")")
       append("    val _obj = $qualifier$className(")

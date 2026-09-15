@@ -156,6 +156,14 @@ actual class QuickJs private constructor(
     initRdmaChangesChannel(context, rdmaChangeSink)
   }
 
+  actual fun hasGlobalFunction(name: String): Boolean {
+    return hasGlobalFunction(context, name)
+  }
+
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? {
+    return callGuestFunction(context, name, args)
+  }
+
   internal actual fun getInboundChannel(): CallChannel {
     val instance = getInboundCallChannel(context, INBOUND_CHANNEL_NAME)
     if (instance == 0L) {
@@ -215,6 +223,12 @@ actual class QuickJs private constructor(
   private external fun setMaxStackSize(context: Long, stackSize: Long)
   @JvmName("initRdmaChangesChannel")
   private external fun initRdmaChangesChannel(context: Long, rdmaChangeSink: RdmaChangeSink?)
+
+  @JvmName("hasGlobalFunction")
+  private external fun hasGlobalFunction(context: Long, name: String): Boolean
+
+  @JvmName("callGuestFunction")
+  private external fun callGuestFunction(context: Long, name: String, args: List<Any?>): Any?
 
   internal actual fun bridgeInitAll() {
     bridgeInitAllNative(getJsContext(context))

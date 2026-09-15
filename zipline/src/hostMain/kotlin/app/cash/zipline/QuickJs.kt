@@ -117,6 +117,23 @@ expect class QuickJs : AutoCloseable {
   @EngineApi
   fun initRdmaChangesChannel()
 
+  /**
+   * True if [name] names a callable function property on the runtime's globalThis.
+   */
+  @EngineApi
+  fun hasGlobalFunction(name: String): Boolean
+
+  /**
+   * Convert each [args] element host→JS (via the @WithHost2JSBridge machinery, primitives,
+   * collections, Long) and JS_Call globalThis[name] with them. Converts the JS return value
+   * back JS→host via the existing bridge readers.
+   *
+   * @throws QuickJsException if [name] is missing/not callable or any conversion fails
+   *   (message includes the offending class).
+   */
+  @EngineApi
+  fun callGuestFunction(name: String, args: List<Any?>): Any?
+
   override fun close()
 
   internal fun bridgeInitAll()

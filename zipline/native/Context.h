@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <mutex>
 #include "quickjs/quickjs.h"
 
@@ -69,6 +70,11 @@ public:
   jobject toJavaObject(JNIEnv*, const JSValue& value, bool throwOnUnsupportedType = true);
   void throwJsException(JNIEnv*, const JSValue& value) const;
   JSValue throwJavaExceptionFromJs(JNIEnv*) const;
+
+  // Host→guest bridge call (direct events): probe and call a callable on globalThis,
+  // converting each argument host→JS via bridgeAnyToJs and the result JS→host via bridgeForAny.
+  jboolean hasGlobalFunction(JNIEnv* env, jstring name);
+  jobject callGuestFunction(JNIEnv* env, jstring name, jobject argsList);
 
   JNIEnv* getEnv() const;
 
@@ -126,6 +132,45 @@ public:
   static jmethodID linkedHashSetInit;
   static jmethodID setAdd;
 
+  // JNI cache for host2js boxed-primitive keys and java.util.List/Map iteration
+  static jclass floatClass;
+  static jclass shortClass;
+  static jclass byteClass;
+  static jclass characterClass;
+  static jclass listClass;
+  static jclass mapClass;
+  static jclass mapEntryClass;
+  static jclass setClass;
+  static jclass iteratorClass;
+  // JNI cache for the host2js array conversions. JNI has no IsArray: every reference array is a
+  // subtype of Object[], and each primitive array has its own class — these nine ARE the test.
+  static jclass objectArrayClass;
+  static jclass intArrayClass;
+  static jclass longArrayClass;
+  static jclass doubleArrayClass;
+  static jclass floatArrayClass;
+  static jclass booleanArrayClass;
+  static jclass shortArrayClass;
+  static jclass byteArrayClass;
+  static jclass characterArrayClass;
+  static jmethodID integerIntValue;
+  static jmethodID longLongValue;
+  static jmethodID doubleDoubleValue;
+  static jmethodID floatFloatValue;
+  static jmethodID booleanBooleanValue;
+  static jmethodID shortShortValue;
+  static jmethodID byteByteValue;
+  static jmethodID characterCharValue;
+  static jmethodID objectToString;
+  static jmethodID listSize;
+  static jmethodID listGet;
+  static jmethodID mapEntrySet;
+  static jmethodID setIterator;
+  static jmethodID iteratorHasNext;
+  static jmethodID iteratorNext;
+  static jmethodID entryGetKey;
+  static jmethodID entryGetValue;
+
   // JNI cache for the RdmaChangeSink interface and kotlin.Pair
   static jmethodID rdmaSinkCreateCreate;
   static jmethodID rdmaSinkCreatePropertyChange;
@@ -154,6 +199,15 @@ public:
   jobject interruptHandler;
   std::vector<InboundCallChannel*> callChannels;
   std::unordered_map<std::string, jclass> globalReferences;
+
+  // Host2JS state: retained guest class prototypes (for bridgeNewJsObject instance creation)
+  // and the guest's runtime factory functions (kotlin.Long/ArrayList/LinkedHashMap
+  // construction). JS values are context-local, so these live on the Context and are freed in
+  // the destructor.
+  std::map<std::string, JSValue> bridgeProtos;
+  JSValue bridgeNewLong;
+  JSValue bridgeNewArrayList;
+  JSValue bridgeNewLinkedHashMap;
 
   // Per-QuickJs RdmaChangeSink: all RDMA change delivery is routed through this instance so
   // that each zipline session gets its own change stream.

@@ -38,6 +38,7 @@ import app.cash.zipline.quickjs.JS_FreeCString
 import app.cash.zipline.quickjs.JS_FreeContext
 import app.cash.zipline.quickjs.JS_FreeRuntime
 import app.cash.zipline.quickjs.JS_FreeValue
+import app.cash.zipline.quickjs.JS_DupValue
 import app.cash.zipline.quickjs.JS_GetException
 import app.cash.zipline.quickjs.JS_GetGlobalObject
 import app.cash.zipline.quickjs.JS_GetPropertyStr
@@ -46,9 +47,13 @@ import app.cash.zipline.quickjs.JS_GetRuntime
 import app.cash.zipline.quickjs.JS_GetRuntimeOpaque
 import app.cash.zipline.quickjs.JS_HasProperty
 import app.cash.zipline.quickjs.JS_IsArray
+import app.cash.zipline.quickjs.JS_IsFunction
+import app.cash.zipline.quickjs.JS_Call
 import app.cash.zipline.quickjs.JS_IsException
+import app.cash.zipline.quickjs.JS_IsNull
 import app.cash.zipline.quickjs.JS_IsUndefined
 import app.cash.zipline.quickjs.JS_NewObject
+import app.cash.zipline.quickjs.JS_NewObjectProto
 import app.cash.zipline.quickjs.JS_SetPropertyStr
 import app.cash.zipline.quickjs.JS_NewAtom
 import app.cash.zipline.quickjs.JS_NewClass
@@ -114,6 +119,7 @@ import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
+import kotlinx.cinterop.allocArrayOf
 import kotlinx.cinterop.asStableRef
 import kotlinx.cinterop.CFunction
 import kotlinx.cinterop.convert
@@ -150,6 +156,31 @@ private val bridgeTable = mutableMapOf<String, StableRef<(CPointer<JSContext>, C
 
 fun registerBridge(fqn: String, fn: (CPointer<JSContext>, CValue<JSValue>) -> Any) {
   bridgeTable[fqn] = StableRef.create(fn)
+}
+
+/**
+ * Create a new JS instance whose prototype is the **existing** retained guest prototype for
+ * [fqn] (registered by the guest's module-load `__bridgeRegister`). The prototype is never
+ * created or cloned; the caller owns the returned value.
+ *
+ * Fails loudly: throws [IllegalStateException] when no prototype is registered for [fqn]
+ * (missing module-load registration) or when QuickJS cannot allocate the instance. Never
+ * returns a sentinel — `undefined`/null is indistinguishable from real data downstream.
+ */
+public fun newJsObject(ctx: CPointer<JSContext>, fqn: String): CValue<JSValue> {
+  val quickJs = quickJsFor(ctx)
+  val proto = quickJs.bridgeProtos[fqn]
+    ?: error(
+      "host2js: no registered prototype for $fqn; " +
+        "the guest module did not call __bridgeRegister for this class",
+    )
+  val instance = JS_NewObjectProto(ctx, proto) // the map keeps its own reference
+  if (JS_IsException(instance) != 0) {
+    // Drop the pending JS exception: the Kotlin exception below is the one that propagates.
+    JS_FreeValue(ctx, JS_GetException(ctx))
+    error("host2js: failed to allocate a JS object for $fqn")
+  }
+  return instance
 }
 
 @EngineApi
@@ -206,6 +237,22 @@ actual class QuickJs private constructor(
   private var closed = false
   private var outboundChannel: CallChannel? = null
   private var functionList: CArrayPointer<JSCFunctionListEntry>? = null
+
+  // --- Host2JS bridge state (populated by guest module-load registration) ---
+
+  /** JS values are context-local, so retained prototypes/factories are per-instance. */
+  internal val bridgeProtos = mutableMapOf<String, CValue<JSValue>>()
+
+  internal var bridgeNewLong: CValue<JSValue>? = null
+  internal var bridgeNewArrayList: CValue<JSValue>? = null
+  internal var bridgeNewLinkedHashMap: CValue<JSValue>? = null
+
+  /**
+   * The JSContext that executes guest code. Needed to call host2js conversion functions
+   * ([app.cash.zipline.anyToJs], [app.cash.zipline.kotlinLongToJs]) and to read converted
+   * values back via [bridgeForAny].
+   */
+  val jsContext: CPointer<JSContext> get() = context
 
   internal fun jsInterruptHandler(runtime: CPointer<JSRuntime>?): Int {
     val interruptHandler = interruptHandler ?: return 0
@@ -518,6 +565,78 @@ actual class QuickJs private constructor(
     JS_FreeValue(context, globalThis)
   }
 
+  /**
+   * True if [name] names a callable function property on the runtime's globalThis.
+   */
+  actual fun hasGlobalFunction(name: String): Boolean {
+    checkNotClosed()
+
+    val globalThis = JS_GetGlobalObject(context)
+    val fn = JS_GetPropertyStr(context, globalThis, name)
+    JS_FreeValue(context, globalThis)
+    val isFunction = JS_IsFunction(context, fn) != 0
+    JS_FreeValue(context, fn)
+    return isFunction
+  }
+
+  /**
+   * Convert each [args] element host→JS (via the @WithHost2JSBridge machinery, primitives,
+   * collections, Long) and JS_Call globalThis[name] with them. Converts the JS return value
+   * back JS→host via the existing bridge readers.
+   *
+   * @throws QuickJsException if [name] is missing/not callable or any conversion fails
+   *   (message includes the offending class).
+   */
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? {
+    checkNotClosed()
+
+    // Resolve the callable; a missing global is a loud error.
+    val globalThis = JS_GetGlobalObject(context)
+    val fn = JS_GetPropertyStr(context, globalThis, name)
+    JS_FreeValue(context, globalThis)
+    if (JS_IsFunction(context, fn) == 0) {
+      JS_FreeValue(context, fn)
+      throw QuickJsException("callGuestFunction: no callable function '$name' on globalThis")
+    }
+
+    // Convert each argument host→JS; an unbridgeable value throws with the offending class.
+    val converted = mutableListOf<CValue<JSValue>>()
+    try {
+      for ((index, element) in args.withIndex()) {
+        try {
+          converted += anyToJs(context, element)
+        } catch (t: Throwable) {
+          val cls = element?.let { it::class.qualifiedName } ?: "null"
+          throw QuickJsException(
+            "callGuestFunction: cannot convert argument $index of class $cls to JS: ${t.message}",
+          )
+        }
+      }
+
+      val result = memScoped {
+        val argv = if (converted.isEmpty()) {
+          allocArrayOf(JsUndefined())
+        } else {
+          allocArrayOf(*converted.toTypedArray())
+        }
+        JS_Call(context, fn, JsUndefined(), args.size, argv)
+      }
+      if (JS_IsException(result) != 0) {
+        JS_FreeValue(context, result)
+        // Reads and throws the pending JS exception as a QuickJsException.
+        throwJsException()
+      }
+      try {
+        return bridgeForAny(context, result)
+      } finally {
+        JS_FreeValue(context, result)
+      }
+    } finally {
+      converted.forEach { JS_FreeValue(context, it) }
+      JS_FreeValue(context, fn)
+    }
+  }
+
   internal actual fun bridgeInitAll() {
     checkNotClosed()
 
@@ -527,6 +646,8 @@ actual class QuickJs private constructor(
     val globalThis = JS_GetGlobalObject(context)
     JS_SetPropertyStr(context, globalThis, "__bridgeRegister",
       JsNewCFunction(context, staticCFunction(::bridgeRegisterGlobal), "__bridgeRegister", 2))
+    JS_SetPropertyStr(context, globalThis, "__bridgeRegisterRuntime",
+      JsNewCFunction(context, staticCFunction(::bridgeRegisterRuntimeGlobal), "__bridgeRegisterRuntime", 3))
     JS_FreeValue(context, globalThis)
   }
 
@@ -536,6 +657,14 @@ actual class QuickJs private constructor(
         nativeHeap.free(ptr)
       }
       functionList = null
+      bridgeProtos.values.forEach { JS_FreeValue(context, it) }
+      bridgeProtos.clear()
+      bridgeNewLong?.let { JS_FreeValue(context, it) }
+      bridgeNewArrayList?.let { JS_FreeValue(context, it) }
+      bridgeNewLinkedHashMap?.let { JS_FreeValue(context, it) }
+      bridgeNewLong = null
+      bridgeNewArrayList = null
+      bridgeNewLinkedHashMap = null
       JS_FreeContext(contextForCompiling)
       // The ops accessors are cached for the whole runtime; release them before the context.
       bridgeValueOps?.let { JS_FreeValue(context, it) }
@@ -715,17 +844,48 @@ actual class QuickJs private constructor(
     val ctor = JsValueArrayToInstanceRef(argv, 1)
     if (JS_IsUndefined(ctor) != 0) return JsUndefined()
 
-    val dispatchFn = bridgeTable[fq]
-    if (dispatchFn == null) {
-      println("BRIDGE: __bridgeRegister FQN not found in bridgeTable: '$fq'")
+    // Retain the class prototype for host2js instance creation (newJsObject) and set
+    // bridge_dispatch only when a JS2Host converter exists. Lenient: host2js-only classes
+    // register fine, and unknown FQNs are logged, never thrown.
+    val proto = JS_GetPropertyStr(context, ctor, "prototype")
+    if (JS_IsUndefined(proto) == 0 && JS_IsNull(proto) == 0) {
+      bridgeProtos[fq]?.let { JS_FreeValue(context, it) }
+      bridgeProtos[fq] = JS_DupValue(context, proto)
+
+      val dispatchFn = bridgeTable[fq]
+      if (dispatchFn == null) {
+        println("BRIDGE: __bridgeRegister FQN not found in bridgeTable: '$fq' (host2js-only class)")
+      } else {
+        val bits = dispatchFn.asCPointer().rawValue.toLong()
+        JS_SetPropertyStr(context, proto, "bridge_dispatch",
+          JsNewFloat64(Double.fromBits(bits)))
+      }
+    }
+    JS_FreeValue(context, proto)
+    return JsUndefined()
+  }
+
+  /**
+   * Handles the guest's module-load `__bridgeRegisterRuntime(__BridgeRuntimeFactories)` call,
+   * retaining the three factory methods for host2js collection/Long construction. A guest
+   * compiled with the bridge plugin always calls this; a missing call is a crash at conversion
+   * time (see [app.cash.zipline.anyToJs]).
+   */
+  internal fun bridgeRegisterRuntimeJsHandler(
+    argc: Int,
+    argv: CArrayPointer<JSValue>,
+  ): CValue<JSValue> {
+    if (argc < 1) {
+      println("BRIDGE: __bridgeRegisterRuntime expected 1 arg, got $argc")
       return JsUndefined()
     }
-
-    val proto = JS_GetPropertyStr(context, ctor, "prototype")
-    val bits = dispatchFn.asCPointer().rawValue.toLong()
-    JS_SetPropertyStr(context, proto, "bridge_dispatch",
-      JsNewFloat64(Double.fromBits(bits)))
-    JS_FreeValue(context, proto)
+    val factories = JsValueArrayToInstanceRef(argv, 0)
+    bridgeNewLong?.let { JS_FreeValue(context, it) }
+    bridgeNewArrayList?.let { JS_FreeValue(context, it) }
+    bridgeNewLinkedHashMap?.let { JS_FreeValue(context, it) }
+    bridgeNewLong = JS_GetPropertyStr(context, factories, "newLong")
+    bridgeNewArrayList = JS_GetPropertyStr(context, factories, "newArrayList")
+    bridgeNewLinkedHashMap = JS_GetPropertyStr(context, factories, "newLinkedHashMap")
     return JsUndefined()
   }
 
@@ -1037,6 +1197,22 @@ internal fun bridgeRegisterGlobal(
   val quickJs = JS_GetRuntimeOpaque(JS_GetRuntime(context))!!.asStableRef<QuickJs>().get()
   return try {
     quickJs.bridgeRegisterJsHandler(argc, argv)
+  } catch (t: Throwable) {
+    t.printStackTrace()
+    throw t
+  }
+}
+
+@Suppress("UNUSED_PARAMETER")
+internal fun bridgeRegisterRuntimeGlobal(
+  context: CPointer<JSContext>,
+  thisVal: CValue<JSValue>,
+  argc: Int,
+  argv: CArrayPointer<JSValue>,
+): CValue<JSValue> {
+  val quickJs = JS_GetRuntimeOpaque(JS_GetRuntime(context))!!.asStableRef<QuickJs>().get()
+  return try {
+    quickJs.bridgeRegisterRuntimeJsHandler(argc, argv)
   } catch (t: Throwable) {
     t.printStackTrace()
     throw t

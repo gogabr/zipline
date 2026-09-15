@@ -48,6 +48,34 @@ internal fun collectAnnotatedClasses(
   }
 }
 
+/** Collect all classes in the module annotated with @WithHost2JSBridge. */
+internal fun findHost2JsAnnotatedClasses(
+  moduleFragment: IrModuleFragment,
+): List<IrClass> {
+  val result = mutableListOf<IrClass>()
+  for (irFile in moduleFragment.files) {
+    for (declaration in irFile.declarations) {
+      collectHost2JsAnnotatedClasses(declaration, result)
+    }
+  }
+  return result
+}
+
+/** Walk [declaration] and its nested classes, collecting @WithHost2JSBridge-annotated ones. */
+internal fun collectHost2JsAnnotatedClasses(
+  declaration: org.jetbrains.kotlin.ir.declarations.IrDeclaration,
+  acc: MutableList<IrClass>,
+) {
+  if (declaration is IrClass) {
+    if (hasWithHost2JSBridgeAnnotation(declaration)) {
+      acc.add(declaration)
+    }
+    for (nested in declaration.declarations) {
+      collectHost2JsAnnotatedClasses(nested, acc)
+    }
+  }
+}
+
 internal fun importForType(fqName: String): String {
   val lastDot = fqName.lastIndexOf('.')
   if (lastDot < 0) return ""
@@ -112,6 +140,12 @@ private fun IrProperty.jsName(): String {
 internal fun hasWithJS2HostBridgeAnnotation(irClass: IrClass): Boolean {
   return irClass.annotations.any {
     it.symbol.owner.returnType.getClass()?.classId == WITH_JS2HOST_BRIDGE_CLASS_ID
+  }
+}
+
+internal fun hasWithHost2JSBridgeAnnotation(irClass: IrClass): Boolean {
+  return irClass.annotations.any {
+    it.symbol.owner.returnType.getClass()?.classId == WITH_HOST2JS_BRIDGE_CLASS_ID
   }
 }
 

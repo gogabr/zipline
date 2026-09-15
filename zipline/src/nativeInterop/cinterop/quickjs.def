@@ -36,6 +36,10 @@ static inline JSValue JsUndefined() {
   return JS_UNDEFINED;
 }
 
+static inline JSValue JsNull() {
+  return JS_NULL;
+}
+
 static inline JSValue JsTrue() {
   return JS_TRUE;
 }

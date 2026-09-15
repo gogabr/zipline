@@ -43,6 +43,8 @@ typedef enum CollectionKind {
 
 
 
+
+
 /** Pack a bridge converter pointer into a JSValue (as float64, bit-preserving). */
 static inline JSValue bridgeConverterToJSValue(JSContext* ctx, BridgeConverterFn fn) {
     union {
@@ -72,11 +74,36 @@ void init_all(JNIEnv* env);
 
 /** Install __bridgeRegister on global and run register_all. */
 void register_all(JSContext* ctx);
-/** If val is a Kotlin/JS Long ({low_1, high_1}), return a boxed java.lang.Long, else NULL. */
-jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val);
-
 /** Convert any JS value to a Java object. Returns NULL for null/undefined/unrecognized. */
 jobject bridgeForAny(JNIEnv *env, JSContext *ctx, JSValue val);
+
+/**
+ * Create a new JS instance whose prototype is the EXISTING retained guest prototype for [fq]
+ * (registered by the guest's module-load __bridgeRegister). The prototype is never created or
+ * cloned; the caller owns the returned value.
+ *
+ * Fails loudly: throws IllegalStateException (left pending on [env]) when the runtime has no
+ * Context, when no prototype is registered for [fq], or when QuickJS cannot allocate the
+ * instance. JS_UNDEFINED is returned only on those paths — never as a value a caller may
+ * proceed with, since `undefined` is indistinguishable from real data downstream.
+ */
+JSValue bridgeNewJsObject(JNIEnv *env, JSContext *ctx, const char *fq);
+
+/**
+ * Convert any Java object to its JS counterpart: boxed primitives, String, List (via the
+ * guest's newArrayList factory), Map (via the guest's newLinkedHashMap factory), arrays, and
+ * @WithHost2JSBridge objects (via virtual convertToJs(J)J dispatch). On failure a Java
+ * exception is left pending and JS_NULL is returned; the caller MUST check ExceptionCheck
+ * before using the result.
+ */
+JSValue bridgeAnyToJs(JNIEnv *env, JSContext *ctx, jobject obj);
+
+/**
+ * Convert a Java long to a real Kotlin/JS kotlin.Long instance via the guest's retained
+ * newLong factory. On failure (factory not registered) an IllegalStateException is thrown and
+ * JS_NULL is returned with the exception pending; the caller MUST check ExceptionCheck.
+ */
+JSValue bridgeLongToJs(JNIEnv *env, JSContext *ctx, jlong value);
 #ifdef __cplusplus
 }
 #endif
@@ -89,6 +116,21 @@ jobject bridgeForAny(JNIEnv *env, JSContext *ctx, JSValue val);
  * [valueConverter] (use bridgeForAny when the element types are unknown, as for property values).
  * Returns a java.util.LinkedHashMap, LinkedHashSet or ArrayList.
  */
+#ifdef __cplusplus
+extern "C"
+#endif
+jlong bridgeJsLongValue(JNIEnv *env, JSContext *ctx, JSValue val);
+
+#ifdef __cplusplus
+extern "C"
+#endif
+jint bridgeJsEnumOrdinal(JNIEnv *env, JSContext *ctx, JSValue val);
+
+#ifdef __cplusplus
+extern "C"
+#endif
+jobject bridgeTryUnwrapLong(JNIEnv *env, JSContext *ctx, JSValue val);
+
 #ifdef __cplusplus
 extern "C"
 #endif

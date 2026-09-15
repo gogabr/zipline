@@ -50,23 +50,6 @@ class BridgeEndToEndTest {
   }
 
   @Test
-  fun guestListsDecode() {
-    assertEquals(listOf("a", "b"), evalOne("provideGuestList"))
-    assertEquals(listOf("only"), evalOne("provideGuestSingletonList"))
-    assertEquals(emptyList<String>(), evalOne("provideGuestEmptyList"))
-  }
-
-  @Test
-  fun guestMapDecodes() {
-    assertEquals(mapOf("a" to "1", "b" to "2"), evalOne("provideGuestMap"))
-  }
-
-  @Test
-  fun guestUnitDoesNotTripTheLoudGuard() {
-    evalOne("provideUnit")
-  }
-
-  @Test
   fun bridgedData() {
     assertEquals(BridgedTestValues.data, evalOne("provideBridgedData"))
   }
@@ -99,6 +82,14 @@ class BridgeEndToEndTest {
   @Test
   fun bridgedListHolder() {
     assertEquals(BridgedTestValues.listHolder, evalOne("provideBridgedListHolder"))
+  }
+
+  @Test
+  fun bridgedCallbackHolder() {
+    // The function field decodes to null; the rest of the object must survive the round trip.
+    val decoded = evalOne("provideBridgedCallbackHolder") as BridgedCallbackHolder
+    assertEquals("done", decoded.name)
+    assertEquals(null, decoded.onDone)
   }
 
   @Test

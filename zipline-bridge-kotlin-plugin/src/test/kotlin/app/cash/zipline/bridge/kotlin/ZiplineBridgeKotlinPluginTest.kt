@@ -1009,7 +1009,7 @@ class ZiplineBridgeNativePluginTest {
       val content = ktFile.readText()
 
       // Function signature returns Any (not COpaquePointer?)
-      assertTrue(content.contains("public fun Simple_toKotlin("))
+      assertTrue(content.contains("public fun com_example_Simple_toKotlin("))
       assertTrue(content.contains("): Any {"))
 
       // Imports
@@ -1215,7 +1215,7 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(bridgeFile.exists(), "Expected per-class bridge file")
       val bridgeContent = bridgeFile.readText()
       assertTrue(bridgeContent.contains("@kotlin.native.EagerInitialization"))
-      assertTrue(bridgeContent.contains("registerBridge(\"com.example.Foo\", ::Foo_toKotlin)"))
+      assertTrue(bridgeContent.contains("registerBridge(\"com.example.Foo\", ::com_example_Foo_toKotlin)"))
       assertFalse(bridgeContent.contains("staticCFunction"), "Should not use staticCFunction")
 
 
@@ -1288,6 +1288,41 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(content.contains("import app.cash.zipline.JsNumberToDouble"))
       assertTrue(content.contains("JsNumberToDouble(elem).toFloat()"))
       assertFalse(content.contains("JsValueGetFloat64(elem)"), "Should not read float64 slot directly")
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `native converters for classes sharing a simple name do not collide`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "AlignmentCollision.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Alignment(val x: Int)
+
+          class LineHeightStyle {
+            @WithJS2HostBridge
+            class Alignment(val y: Int)
+          }
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      // Both classes are bridged, and they share a simple name: the converters must be named from
+      // the FQN, or the two generated top-level functions are a duplicate declaration.
+      val outer = outputDir.resolve("com_example_Alignment_bridge_native.kt").toFile().readText()
+      val nested = outputDir.resolve("com_example_LineHeightStyle_Alignment_bridge_native.kt").toFile().readText()
+      assertTrue(outer.contains("public fun com_example_Alignment_toKotlin("))
+      assertTrue(nested.contains("public fun com_example_LineHeightStyle_Alignment_toKotlin("))
     } finally {
       outputDir.toFile().deleteRecursively()
     }

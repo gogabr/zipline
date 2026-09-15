@@ -279,7 +279,10 @@ internal fun generateNativeBridgeFile(
   messageCollector: MessageCollector? = null,
 ) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
-  val functionName = "${clazz.name.asString()}_toKotlin"
+  // The helper is named from the FQN, like the generated file and the C generator's prefix:
+  // two classes can share a simple name (Alignment, LineHeightStyle.Alignment), and simple
+  // names would then collide as duplicate top-level functions in the same module.
+  val functionName = "${fqn.replace(".", "_")}_toKotlin"
   val fields = extractFields(clazz)
 
   // The generated code constructs the bridged class (and, for nested classes, its enclosing

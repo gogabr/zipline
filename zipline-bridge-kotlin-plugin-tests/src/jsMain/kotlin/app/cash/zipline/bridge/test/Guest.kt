@@ -34,6 +34,10 @@ fun provideBridgedEnumHolder(): BridgedEnumHolder = BridgedTestValues.enumHolder
 
 @JsExport
 fun provideBridgedListHolder(): BridgedListHolder = BridgedTestValues.listHolder
+
+@JsExport
+fun provideBridgedCallbackHolder(): BridgedCallbackHolder = BridgedTestValues.callbackHolder
+
 @JsExport
 fun provideBridgedFloatListHolder(): BridgedFloatListHolder = BridgedTestValues.floatList
 
@@ -91,19 +95,39 @@ fun provideBridgedBoundedGenericClass(): BridgedBoundedGenericClass<BridgedBound
 fun provideBridgedNestedGeneric(): BridgedNestedGeneric = BridgedTestValues.nestedGeneric
 
 @JsExport
-fun provideGuestList(): List<String> = listOf("a", "b")
+fun provideBridgedLongHolder(): BridgedLongHolder = BridgedTestValues.longHolder
 
-/** A Kotlin/JS Map sent through the untyped channel (decoded host-side by bridgeForAny). */
+@JsExport
+fun provideBridgedLongInlineHolder(): BridgedLongInlineHolder = BridgedTestValues.longInlineHolder
+
+@JsExport
+fun provideBridgedLongInline(): BridgedLongInline = BridgedTestValues.longInline
+
+/** Returns kotlin.Unit, the shape a Unit-returning guest function (e.g. an event sink) produces. */
+@JsExport
+fun provideUnit(): Unit = Unit
+
+/** A Kotlin/JS Map sent through the untyped channel (decoded by bridgeForAny host-side). */
 @JsExport
 fun provideGuestMap(): Map<String, String> = mapOf("a" to "1", "b" to "2")
 
-/** Kotlin/JS Lists in the guest's own shapes: array-backed, singleton and empty. */
+/**
+ * Kotlin/JS Lists sent through the untyped channel, in the shapes the stdlib actually produces:
+ * `listOf` is an ArrayList (array-backed), `emptyList()`/`listOf(x)` are the single-object
+ * singletons. A guest-authored List must decode host-side in all three, top-level or embedded,
+ * without the guest reshaping the value.
+ */
+@JsExport
+fun provideGuestList(): List<String> = listOf("a", "b")
+
 @JsExport
 fun provideGuestSingletonList(): List<String> = listOf("only")
 
 @JsExport
 fun provideGuestEmptyList(): List<String> = emptyList()
 
-/** Returns kotlin.Unit, the shape a Unit-returning guest function produces. */
+/** An unannotated Kotlin class: sending an instance to the host must fail loudly, naming it. */
+class NotBridgedGuest(val payload: String)
+
 @JsExport
-fun provideUnit(): Unit = Unit
+fun provideNotBridgedGuest(): NotBridgedGuest = NotBridgedGuest("nope")

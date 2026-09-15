@@ -30,36 +30,23 @@ public fun initModuleLoader(quickJs: QuickJs) {
 internal fun loadJsModule(quickJs: QuickJs, script: String, id: String) {
   quickJs.evaluate("globalThis.$CURRENT_MODULE_ID = '$id';")
   quickJs.evaluate(script, id)
-  // Publish the guest value ops (the plugin's __bridgeWarmUpHost2Js hook) while the module is
-  // still current: require() needs globalThis.$CURRENT_MODULE_ID to resolve its exports.
-  warmUpBridges(quickJs, id)
   quickJs.evaluate("delete globalThis.$CURRENT_MODULE_ID;")
+  warmUpBridges(quickJs, id)
   logBridgeDiagnostics(quickJs)
 }
 
 public fun loadJsModule(quickJs: QuickJs, id: String, bytecode: ByteArray) {
   quickJs.evaluate("globalThis.$CURRENT_MODULE_ID = '$id';")
   quickJs.execute(bytecode)
-  // Publish the guest value ops (the plugin's __bridgeWarmUpHost2Js hook) while the module is
-  // still current: require() needs globalThis.$CURRENT_MODULE_ID to resolve its exports.
-  warmUpBridges(quickJs, id)
   quickJs.evaluate("delete globalThis.$CURRENT_MODULE_ID;")
+  warmUpBridges(quickJs, id)
   logBridgeDiagnostics(quickJs)
 }
 
-/** Print __define_log after each module — shows which modules have bridge FQNs and registration status. */
-private fun logBridgeDiagnostics(quickJs: QuickJs) {
-  val log = quickJs.evaluate("var _l = globalThis.__define_log; globalThis.__define_log = ''; _l") as? String
-  if (!log.isNullOrEmpty()) println("BRIDGE_DEFINE: $log")
-}
-
-internal fun runApplication(quickJs: QuickJs, mainModuleId: String, mainFunction: String) {
-  quickJs.evaluate(
-    script = "require('$mainModuleId').$mainFunction()",
-    fileName = "RunApplication.kt",
-  )
-}
-
+/**
+ * Name of the exported hook the Kotlin/JS bridge plugin emits per module
+ * (`zipline-bridge-kotlin-plugin`, `JsGenerator.BRIDGE_WARM_UP_FUNCTION_NAME`).
+ */
 private const val BRIDGE_WARM_UP_FUNCTION_NAME = "__bridgeWarmUpHost2Js"
 
 /**
@@ -100,5 +87,18 @@ private fun warmUpBridges(quickJs: QuickJs, id: String) {
       })()
     """.trimIndent(),
     fileName = "bridgeWarmUp.js",
+  )
+}
+
+/** Print __define_log after each module — shows which modules have bridge FQNs and registration status. */
+private fun logBridgeDiagnostics(quickJs: QuickJs) {
+  val log = quickJs.evaluate("var _l = globalThis.__define_log; globalThis.__define_log = ''; _l") as? String
+  if (!log.isNullOrEmpty()) println("BRIDGE_DEFINE: $log")
+}
+
+internal fun runApplication(quickJs: QuickJs, mainModuleId: String, mainFunction: String) {
+  quickJs.evaluate(
+    script = "require('$mainModuleId').$mainFunction()",
+    fileName = "RunApplication.kt",
   )
 }

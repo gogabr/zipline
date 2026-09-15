@@ -880,6 +880,122 @@ class ZiplineBridgeKotlinPluginTest {
       outputDir.toFile().deleteRecursively()
     }
   }
+
+  @Test
+  fun `host2js annotated class generates convertToJs JNI impl`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+            val age: Int = 42
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.resolve("com_example_Bridged.c").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+
+      val content = cFile.readText()
+
+      // JNI implementation of the injected external member, prototype-based object creation.
+      assertTrue(content.contains("JNIEXPORT jlong JNICALL Java_com_example_Bridged_convertToJs(JNIEnv *env, jobject self, jlong ctxPtr)"))
+      assertTrue(content.contains("bridgeNewJsObject(env, ctx, \"com.example.Bridged\")"))
+
+      // Recursive field conversion and property definition on the new instance.
+      assertTrue(content.contains("bridgeAnyToJs"))
+      assertTrue(content.contains("JS_DefinePropertyValueStr(ctx, result, \"name\""))
+      assertTrue(content.contains("JS_DefinePropertyValueStr(ctx, result, \"age\""))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `host2js annotated class gets convertToJs member on JVM`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val clazz = result.classLoader.loadClass("com.example.Bridged")
+      val convertToJs = clazz.getDeclaredMethod("convertToJs", Long::class.javaPrimitiveType)
+      assertEquals(Long::class.javaPrimitiveType, convertToJs.returnType)
+      assertTrue(
+        convertToJs.modifiers and java.lang.reflect.Modifier.NATIVE != 0,
+        "convertToJs should be native",
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `remapped target FQN uses internal name for JNI, dotted name for the bridge key`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "RemappedHolder.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge("com.example.protocol.TargetImpl")
+          @WithHost2JSBridge
+          class RemappedHolder {
+            val name: String = "test"
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.toFile().listFiles { f -> f.extension == "c" }!!.single()
+      val content = cFile.readText()
+
+      // JNI takes the internal class name; a dotted one is an illegal class name on ART.
+      assertTrue(content.contains("FindClass(env, \"com/example/protocol/TargetImpl\")"), content)
+      assertFalse(content.contains("FindClass(env, \"com.example.protocol.TargetImpl\")"))
+      assertTrue(content.contains("JNIEXPORT jlong JNICALL Java_com_example_protocol_TargetImpl_convertToJs"), content)
+
+      // The bridge key is the guest's registration name (targetFqn ?: own FQN), dotted.
+      assertTrue(content.contains("addBridgeEntry(\"com.example.protocol.TargetImpl\""), content)
+      assertFalse(content.contains("addBridgeEntry(\"com.example.RemappedHolder\""))
+      assertTrue(content.contains("bridgeNewJsObject(env, ctx, \"com.example.protocol.TargetImpl\")"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
 
 @ExperimentalCompilerApi
@@ -1009,6 +1125,7 @@ class ZiplineBridgeNativePluginTest {
       val content = ktFile.readText()
 
       // Function signature returns Any (not COpaquePointer?)
+      // Function name derives from the full dotted FQN (unique across nested/sealed classes).
       assertTrue(content.contains("public fun com_example_Simple_toKotlin("))
       assertTrue(content.contains("): Any {"))
 
@@ -1182,11 +1299,9 @@ class ZiplineBridgeNativePluginTest {
       // bridgeForAny import
       assertTrue(content.contains("import app.cash.zipline.bridgeForAny"))
 
-      // List extraction pattern
-      assertTrue(content.contains("bridgeForAny(ctx, elem) as String"))
-      assertTrue(content.contains("while (i < len.toInt())"))
-      assertTrue(content.contains("JS_GetPropertyUint32"))
-      assertTrue(content.contains("mutableListOf"))
+      // List extraction: the guest drives the iteration, elements go through bridgeForAny.
+      assertTrue(content.contains("jsCollectionToKotlin(ctx, jsList, CollectionKind.LIST)"))
+      assertTrue(content.contains("bridgeForAny(ctx, element) as String"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
@@ -1250,11 +1365,10 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // Enum ordinal extraction
-      assertTrue(content.contains("ordinal_1"))
-      assertTrue(content.contains("JsNumberToInt(ordinalRaw)"))
-      assertTrue(content.contains(".entries[ordinal]"))
-      assertTrue(content.contains("Color.entries[ordinal]"))
+      // Enum ordinal extraction: the guest reports it (Kotlin/JS mangles the ordinal field).
+      assertTrue(content.contains("jsEnumOrdinal(ctx, jsVal)"))
+      assertTrue(content.contains(".entries.getOrNull(ordinal)"))
+      assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }

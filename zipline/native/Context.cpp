@@ -550,7 +550,7 @@ static JSValue callValueOp(JSContext* ctx, JSValue ops, const char* name, JSValu
  * The 32-bit halves of the boxed `kotlin.Long` in [val], as reported by the guest (the fields of a
  * Kotlin/JS Long are mangled and disappear in production builds). Returns 0 for other values.
  */
-__attribute__((used, visibility("default")))
+
 extern "C" __attribute__((used, visibility("default"))) jlong bridgeJsLongValue(JNIEnv* env, JSContext* ctx, JSValue val) {
   if (JS_VALUE_GET_NORM_TAG(val) != JS_TAG_OBJECT) return 0;
   JSValue ops = valueOps(ctx);
@@ -571,7 +571,6 @@ extern "C" __attribute__((used, visibility("default"))) jlong bridgeJsLongValue(
 }
 
 /** Ordinal of the enum instance in [val], or -1 when it isn't an enum. */
-__attribute__((used, visibility("default")))
 extern "C" __attribute__((used, visibility("default"))) jint bridgeJsEnumOrdinal(JNIEnv* env, JSContext* ctx, JSValue val) {
   JSValue ops = valueOps(ctx);
   if (JS_IsUndefined(ops)) {

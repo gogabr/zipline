@@ -465,6 +465,31 @@ Java_app_cash_zipline_JsEngine_installModuleLoader(JNIEnv* env, jobject /*thiz*/
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_app_cash_zipline_JsEngine_hasGlobalFunction(JNIEnv* env, jobject /*thiz*/,
+                                                 jlong _context, jstring name) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return JNI_FALSE;
+  }
+  return ctx->hasGlobalFunction(env, name);
+}
+
+extern "C" JNIEXPORT jobject JNICALL
+Java_app_cash_zipline_JsEngine_callGuestFunction(JNIEnv* env, jobject /*thiz*/,
+                                                 jlong _context, jstring name,
+                                                 jobject args) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return nullptr;
+  }
+  return ctx->callGuestFunction(env, name, args);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_app_cash_zipline_JsEngine_cdpAttach(JNIEnv* env, jobject /*thiz*/,
                                          jlong _context, jobject listener) {
   ContextJni* ctx = toContext(_context);

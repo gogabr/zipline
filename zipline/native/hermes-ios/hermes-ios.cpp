@@ -40,6 +40,13 @@ static jsi::Runtime* getJsiRuntimeOrNull(void* context) {
 
 namespace {
 
+// Reserve handle 0 (the global object) and append [value] as a new handle. Every function that
+// hands a handle to Kotlin goes through this, so the failure marker (-1) and the global-object
+// sentinel (0) never collide with a real handle. Defined below; declared here because the RDMA
+// host functions precede it.
+int bridgeAppendHandle(ContextNative* ctx, jsi::Runtime& rt, jsi::Value value);
+
+
 char* copyToMalloc(const std::string& str) {
     char* copy = (char*)malloc(str.size() + 1);
     if (copy) {
@@ -475,8 +482,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             ContextNative* ctx = asNativeContext(context);
             if (!ctx->propertyChangeCb) return jsi::Value::undefined();
-            int handle = static_cast<int>(ctx->bridgeHandles.size());
-            ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(runtime, args[3]));
+            int handle = bridgeAppendHandle(ctx, runtime, jsi::Value(runtime, args[3]));
             ctx->propertyChangeCb(context,
                 static_cast<int>(args[0].asNumber()),
                 static_cast<int>(args[1].asNumber()),
@@ -496,8 +502,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             ContextNative* ctx = asNativeContext(context);
             if (!ctx->modifierChangeCb) return jsi::Value::undefined();
-            int handle = static_cast<int>(ctx->bridgeHandles.size());
-            ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(runtime, args[1]));
+            int handle = bridgeAppendHandle(ctx, runtime, jsi::Value(runtime, args[1]));
             ctx->modifierChangeCb(context, static_cast<int>(args[0].asNumber()), handle);
             HermesBridge_freeHandle(context, handle);
             return jsi::Value::undefined();
@@ -585,8 +590,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             ContextNative* ctx = asNativeContext(context);
             if (!ctx->bridgeChangeCb) return jsi::Value::undefined();
-            int handle = static_cast<int>(ctx->bridgeHandles.size());
-            ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(runtime, args[1]));
+            int handle = bridgeAppendHandle(ctx, runtime, jsi::Value(runtime, args[1]));
             ctx->bridgeChangeCb(context, static_cast<int>(args[0].asNumber()), handle);
             HermesBridge_freeHandle(context, handle);
             return jsi::Value::undefined();
@@ -778,25 +782,18 @@ int HermesBridge_createHandle(void* context, int parentHandle, const char* name)
     jsi::Runtime& rt = *ctx->runtime;
 
     // Allocate new handle
-    int handle = static_cast<int>(ctx->bridgeHandles.size());
-
     if (parentHandle == 0) {
         // 0 = no parent, create from global object
-        auto val = std::make_shared<jsi::Value>(rt.global().getProperty(rt, name));
-        ctx->bridgeHandles.push_back(val);
-    } else if (parentHandle >= 0 && static_cast<size_t>(parentHandle) < ctx->bridgeHandles.size()) {
+        return bridgeAppendHandle(ctx, rt, jsi::Value(rt, rt.global().getProperty(rt, name)));
+    } else if (parentHandle > 0 && static_cast<size_t>(parentHandle) < ctx->bridgeHandles.size()) {
         auto& parent = ctx->bridgeHandles[parentHandle];
         if (parent->isObject()) {
-            auto val = std::make_shared<jsi::Value>(
-                parent->asObject(rt).getProperty(rt, name));
-            ctx->bridgeHandles.push_back(val);
-        } else {
-            return 0;
+            return bridgeAppendHandle(
+                ctx, rt, jsi::Value(rt, parent->asObject(rt).getProperty(rt, name)));
         }
-    } else {
         return 0;
     }
-    return handle;
+    return 0;
 }
 
 int HermesBridge_createArrayElementHandle(void* context, int arrayHandle, int index) {
@@ -812,9 +809,7 @@ int HermesBridge_createArrayElementHandle(void* context, int arrayHandle, int in
     // Use getProperty by index so both plain JS arrays and Kotlin/JS typed
     // arrays (Int32Array, Float64Array, ...) are supported.
     jsi::Value elem = obj.getProperty(rt, std::to_string(index).c_str());
-    int handle = static_cast<int>(ctx->bridgeHandles.size());
-    ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(rt, elem));
-    return handle;
+    return bridgeAppendHandle(ctx, rt, std::move(elem));
 }
 
 int HermesBridge_getArrayLength(void* context, int handle) {
@@ -909,9 +904,7 @@ int HermesBridge_getObjectPropertyNames(void* context, int objectHandle) {
     if (obj.isArray(rt)) return 0;
 
     jsi::Array names = obj.getPropertyNames(rt);
-    int handle = static_cast<int>(ctx->bridgeHandles.size());
-    ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(rt, names));
-    return handle;
+    return bridgeAppendHandle(ctx, rt, jsi::Value(rt, names));
 }
 
 static jsi::Value bridgeFindMethod(jsi::Runtime& rt, const jsi::Value& obj, const char* prefix) {
@@ -1043,6 +1036,37 @@ void HermesBridge_addBridgeEntry(const char* fqn, void* fn) {
     g_iosBridgeTable.push_back({fqn, fn});
 }
 
+namespace {
+
+// Reserve handle 0 (the global object) and append [value] as a new handle. Every function that
+// hands a handle back to Kotlin goes through here so the failure marker (-1) never collides
+// with a real handle.
+int bridgeAppendHandle(ContextNative* ctx, jsi::Runtime& rt, jsi::Value value) {
+    if (ctx->bridgeHandles.empty()) {
+        ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(jsi::Value::undefined()));
+    }
+    int handle = static_cast<int>(ctx->bridgeHandles.size());
+    ctx->bridgeHandles.push_back(std::make_shared<jsi::Value>(rt, std::move(value)));
+    return handle;
+}
+
+// Record [message] as this context's last error (the same buffer the other failing entry
+// points fill) and return the handle failure marker.
+int bridgeFailure(ContextNative* ctx, const std::string& message) {
+    if (ctx) ctx->lastError = message;
+    snprintf(g_lastError, sizeof(g_lastError), "%s", message.c_str());
+    return -1;
+}
+
+// The value behind [handle], or nullptr when the handle is invalid. Handle 0 is the global
+// object and has no stored value of its own.
+jsi::Value* bridgeHandleValue(ContextNative* ctx, int handle) {
+    if (handle <= 0 || static_cast<size_t>(handle) >= ctx->bridgeHandles.size()) return nullptr;
+    return ctx->bridgeHandles[handle].get();
+}
+
+} // namespace
+
 void HermesBridge_installBridgeRegister(void* jsiRuntime) {
     if (!jsiRuntime) return;
     jsi::Runtime& rt = *static_cast<jsi::Runtime*>(jsiRuntime);
@@ -1053,26 +1077,317 @@ void HermesBridge_installBridgeRegister(void* jsiRuntime) {
         2,
         [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
             if (argc < 2) return jsi::Value::undefined();
+            if (!args[0].isString() || !args[1].isObject()) return jsi::Value::undefined();
             auto fq = args[0].asString(rt).utf8(rt);
-            if (!args[1].isObject()) return jsi::Value::undefined();
             jsi::Object ctor = args[1].asObject(rt);
 
-            std::lock_guard<std::mutex> lock(g_iosBridgeMutex);
-            for (auto& entry : g_iosBridgeTable) {
-                if (entry.first == fq) {
-                    jsi::Object proto = ctor.getPropertyAsObject(rt, "prototype");
-                    intptr_t ptr = reinterpret_cast<intptr_t>(entry.second);
-                    int32_t low  = static_cast<int32_t>(ptr & 0xFFFFFFFF);
-                    int32_t high = static_cast<int32_t>((ptr >> 32) & 0xFFFFFFFF);
-                    proto.setProperty(rt, "bridge_dispatch_low",  jsi::Value(static_cast<double>(low)));
-                    proto.setProperty(rt, "bridge_dispatch_high", jsi::Value(static_cast<double>(high)));
-                    return jsi::Value::undefined();
+            // Retain the class prototype so the host can build instances of it later
+            // (newObjectWithPrototype). A class that only travels host->JS has no entry in the
+            // FQN table below; that is not an error, it just carries no bridge dispatch.
+            jsi::Value protoVal = ctor.getProperty(rt, "prototype");
+            if (protoVal.isObject()) {
+                jsi::Value protosVal = rt.global().getProperty(rt, "__zipline_bridgePrototypes");
+                if (!protosVal.isObject()) {
+                    protosVal = jsi::Value(rt, jsi::Object(rt));
+                    rt.global().setProperty(rt, "__zipline_bridgePrototypes", jsi::Value(rt, protosVal));
+                }
+                protosVal.asObject(rt).setProperty(rt, fq.c_str(), jsi::Value(rt, protoVal));
+
+                std::lock_guard<std::mutex> lock(g_iosBridgeMutex);
+                jsi::Object proto = protoVal.asObject(rt);
+                for (auto& entry : g_iosBridgeTable) {
+                    if (entry.first == fq) {
+                        intptr_t ptr = reinterpret_cast<intptr_t>(entry.second);
+                        int32_t low  = static_cast<int32_t>(ptr & 0xFFFFFFFF);
+                        int32_t high = static_cast<int32_t>((ptr >> 32) & 0xFFFFFFFF);
+                        proto.setProperty(rt, "bridge_dispatch_low",  jsi::Value(static_cast<double>(low)));
+                        proto.setProperty(rt, "bridge_dispatch_high", jsi::Value(static_cast<double>(high)));
+                        break;
+                    }
                 }
             }
             return jsi::Value::undefined();
         });
 
     rt.global().setProperty(rt, "__bridgeRegister", std::move(bridgeRegisterFn));
+
+    // The guest's module-load hook hands its host2js runtime factories (newLong, newArrayList,
+    // newLinkedHashMap) to the host. They are keyed by globalThis.__zipline_bridgeFactories
+    // because jsi::Value is runtime-local: the map cannot live in a file-static table.
+    auto bridgeRegisterRuntimeFn = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forUtf8(rt, "__bridgeRegisterRuntime"),
+        1,
+        [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
+            if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
+            rt.global().setProperty(rt, "__zipline_bridgeFactories", jsi::Value(rt, args[0]));
+            return jsi::Value::undefined();
+        });
+
+    rt.global().setProperty(rt, "__bridgeRegisterRuntime", std::move(bridgeRegisterRuntimeFn));
+}
+
+int HermesBridge_newObjectWithPrototype(void* context, const char* fq) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !fq) return bridgeFailure(ctx, "host2js: invalid context");
+    jsi::Runtime& rt = *ctx->runtime;
+    try {
+        jsi::Value protoVal = jsi::Value::undefined();
+        jsi::Value protosVal = rt.global().getProperty(rt, "__zipline_bridgePrototypes");
+        if (protosVal.isObject()) {
+            protoVal = protosVal.asObject(rt).getProperty(rt, fq);
+        }
+        if (!protoVal.isObject()) {
+            return bridgeFailure(ctx,
+                std::string("host2js: no registered prototype for ") + fq +
+                "; the guest module did not call __bridgeRegister for this class");
+        }
+        jsi::Object instance = jsi::Object::create(rt, protoVal);
+        return bridgeAppendHandle(ctx, rt, jsi::Value(rt, instance));
+    } catch (const jsi::JSError& e) {
+        return bridgeFailure(ctx, e.getMessage());
+    } catch (const std::exception& e) {
+        return bridgeFailure(ctx, e.what());
+    }
+}
+
+void HermesBridge_defineProperty(void* context, int objHandle, const char* name, int valueHandle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !name) return;
+    jsi::Runtime& rt = *ctx->runtime;
+    jsi::Value* objVal = bridgeHandleValue(ctx, objHandle);
+    jsi::Value* val = bridgeHandleValue(ctx, valueHandle);
+    if (!objVal || !val || !objVal->isObject()) return;
+    try {
+        // jsi has no defineProperty: go through Object.defineProperty so the property is an own
+        // data property (writable/enumerable/configurable) rather than a [[Set]] that could
+        // invoke a getter-only accessor on the class prototype.
+        jsi::Value objectCtorVal = rt.global().getProperty(rt, "Object");
+        if (!objectCtorVal.isObject()) return;
+        jsi::Object objectCtor = objectCtorVal.asObject(rt);
+        jsi::Value definePropertyVal = objectCtor.getProperty(rt, "defineProperty");
+        if (!definePropertyVal.isObject()) return;
+        jsi::Function defineProperty = definePropertyVal.asObject(rt).getFunction(rt);
+
+        jsi::Object descriptor(rt);
+        descriptor.setProperty(rt, "value", jsi::Value(rt, *val));
+        descriptor.setProperty(rt, "writable", jsi::Value(true));
+        descriptor.setProperty(rt, "enumerable", jsi::Value(true));
+        descriptor.setProperty(rt, "configurable", jsi::Value(true));
+
+        jsi::Value args[3] = {
+            jsi::Value(rt, *objVal),
+            jsi::String::createFromUtf8(rt, name),
+            jsi::Value(rt, descriptor),
+        };
+        // Cast explicitly: the variadic callWithThis template otherwise beats the
+        // (Value*, size_t) overload when the count needs a conversion.
+        defineProperty.callWithThis(
+            rt, objectCtor, static_cast<const jsi::Value*>(args), static_cast<size_t>(3));
+    } catch (const jsi::JSError& e) {
+        ctx->lastError = e.getMessage();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.getMessage().c_str());
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.what());
+    }
+}
+
+int HermesBridge_createInt(void* context, int value) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    return bridgeAppendHandle(ctx, *ctx->runtime, jsi::Value(static_cast<double>(value)));
+}
+
+int HermesBridge_createDouble(void* context, double value) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    return bridgeAppendHandle(ctx, *ctx->runtime, jsi::Value(value));
+}
+
+int HermesBridge_createBool(void* context, int value) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    return bridgeAppendHandle(ctx, *ctx->runtime, jsi::Value(value != 0));
+}
+
+int HermesBridge_createString(void* context, const char* utf8) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !utf8) return bridgeFailure(ctx, "bridge: invalid string");
+    jsi::Runtime& rt = *ctx->runtime;
+    try {
+        return bridgeAppendHandle(ctx, rt,
+            jsi::Value(rt, jsi::String::createFromUtf8(rt, std::string(utf8))));
+    } catch (const jsi::JSError& e) {
+        return bridgeFailure(ctx, e.getMessage());
+    } catch (const std::exception& e) {
+        return bridgeFailure(ctx, e.what());
+    }
+}
+
+int HermesBridge_createNull(void* context) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    return bridgeAppendHandle(ctx, *ctx->runtime, jsi::Value::null());
+}
+
+int HermesBridge_getProperty(void* context, int parentHandle, const char* name) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !name) return -1;
+    jsi::Runtime& rt = *ctx->runtime;
+    jsi::Value value = jsi::Value::undefined();
+    try {
+        if (parentHandle == 0) {
+            // Same convention as HermesBridge_createHandle: 0 means the global object.
+            value = rt.global().getProperty(rt, name);
+        } else {
+            jsi::Value* parent = bridgeHandleValue(ctx, parentHandle);
+            if (!parent || !parent->isObject()) return -1;
+            value = parent->asObject(rt).getProperty(rt, name);
+        }
+    } catch (const jsi::JSError&) {
+        return -1;
+    } catch (const std::exception&) {
+        return -1;
+    }
+    if (value.isUndefined() || value.isNull()) return -1;
+    return bridgeAppendHandle(ctx, rt, std::move(value));
+}
+
+int HermesBridge_newArray(void* context) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    jsi::Runtime& rt = *ctx->runtime;
+    return bridgeAppendHandle(ctx, rt, jsi::Value(rt, jsi::Array(rt, 0)));
+}
+
+void HermesBridge_setArrayElement(void* context, int arrayHandle, int index, int valueHandle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || index < 0) return;
+    jsi::Runtime& rt = *ctx->runtime;
+    jsi::Value* arrVal = bridgeHandleValue(ctx, arrayHandle);
+    jsi::Value* val = bridgeHandleValue(ctx, valueHandle);
+    if (!arrVal || !val || !arrVal->isObject()) return;
+    try {
+        jsi::Object arrObj = arrVal->asObject(rt);
+        if (!arrObj.isArray(rt)) return;
+        // Not Array::setValueAtIndex: Hermes' implementation *throws* when the index is out of
+        // bounds instead of growing the array. A numeric property write has [[Set]] semantics on
+        // an array, so it appends (and leaves holes for a skipped index) like JS itself does.
+        arrObj.setProperty(rt, std::to_string(index).c_str(), jsi::Value(rt, *val));
+    } catch (const jsi::JSError& e) {
+        ctx->lastError = e.getMessage();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.getMessage().c_str());
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.what());
+    }
+}
+
+namespace {
+
+// Shared body of the callFunction* entry points: -1 (and no table change) unless [fnHandle]
+// holds a callable, the result handle otherwise.
+int bridgeCallFunction(ContextNative* ctx, int fnHandle, const jsi::Value* args, size_t argc) {
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    jsi::Runtime& rt = *ctx->runtime;
+    jsi::Value* fnVal = bridgeHandleValue(ctx, fnHandle);
+    if (!fnVal || !fnVal->isObject() || !fnVal->asObject(rt).isFunction(rt)) {
+        return bridgeFailure(ctx, "bridge: value is not a function");
+    }
+    try {
+        jsi::Value result = fnVal->asObject(rt).asFunction(rt).call(rt, args, argc);
+        return bridgeAppendHandle(ctx, rt, std::move(result));
+    } catch (const jsi::JSError& e) {
+        return bridgeFailure(ctx, e.getMessage());
+    } catch (const std::exception& e) {
+        return bridgeFailure(ctx, e.what());
+    }
+}
+
+} // namespace
+
+int HermesBridge_callFunction(void* context, int fnHandle, int argsArrayHandle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    jsi::Runtime& rt = *ctx->runtime;
+    std::vector<jsi::Value> args;
+    jsi::Value* argsVal = bridgeHandleValue(ctx, argsArrayHandle);
+    if (argsVal && argsVal->isObject()) {
+        try {
+            jsi::Object argsObj = argsVal->asObject(rt);
+            if (argsObj.isArray(rt)) {
+                jsi::Array argsArray = argsObj.getArray(rt);
+                size_t count = argsArray.length(rt);
+                args.reserve(count);
+                for (size_t i = 0; i < count; i++) {
+                    args.emplace_back(argsArray.getValueAtIndex(rt, i));
+                }
+            }
+        } catch (const jsi::JSError& e) {
+            return bridgeFailure(ctx, e.getMessage());
+        } catch (const std::exception& e) {
+            return bridgeFailure(ctx, e.what());
+        }
+    }
+    return bridgeCallFunction(ctx, fnHandle, args.data(), args.size());
+}
+
+int HermesBridge_callFunctionWithArg(void* context, int fnHandle, int argHandle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    jsi::Value* arg = bridgeHandleValue(ctx, argHandle);
+    if (!arg) return bridgeFailure(ctx, "bridge: invalid argument handle");
+    jsi::Value args[1] = { jsi::Value(*ctx->runtime, *arg) };
+    return bridgeCallFunction(ctx, fnHandle, args, 1);
+}
+
+int HermesBridge_callFunctionWithArgs2(void* context, int fnHandle, int arg1Handle, int arg2Handle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
+    jsi::Value* arg1 = bridgeHandleValue(ctx, arg1Handle);
+    jsi::Value* arg2 = bridgeHandleValue(ctx, arg2Handle);
+    if (!arg1 || !arg2) return bridgeFailure(ctx, "bridge: invalid argument handle");
+    jsi::Value args[2] = { jsi::Value(*ctx->runtime, *arg1), jsi::Value(*ctx->runtime, *arg2) };
+    return bridgeCallFunction(ctx, fnHandle, args, 2);
+}
+
+int HermesBridge_isFunction(void* context, int handle) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return 0;
+    jsi::Value* val = bridgeHandleValue(ctx, handle);
+    if (!val || !val->isObject()) return 0;
+    return val->asObject(*ctx->runtime).isFunction(*ctx->runtime) ? 1 : 0;
+}
+
+int HermesBridge_hasGlobalFunction(void* context, const char* name) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !name) return 0;
+    jsi::Runtime& rt = *ctx->runtime;
+    try {
+        jsi::Value val = rt.global().getProperty(rt, name);
+        if (!val.isObject()) return 0;
+        return val.asObject(rt).isFunction(rt) ? 1 : 0;
+    } catch (const jsi::JSError&) {
+        return 0;
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
+
+int HermesBridge_warmUpModule(void* context, const char* moduleId, const char* functionName) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx) return 0;
+    char* errorOut = NULL;
+    int result = HermesCore_warmUpModule(ctx, moduleId, functionName, &errorOut);
+    if (errorOut) {
+        // The hook itself threw: report it as a failure, not as "no such export".
+        ctx->lastError = errorOut;
+        snprintf(g_lastError, sizeof(g_lastError), "%s", errorOut);
+        free(errorOut);
+        return -1;
+    }
+    return result;
 }
 
 // ---------------------------------------------------------------------------

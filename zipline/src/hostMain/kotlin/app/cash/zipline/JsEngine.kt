@@ -101,6 +101,31 @@ expect class JsEngine : AutoCloseable {
   fun callRequireMethod(moduleId: String, methodName: String)
   fun installModuleLoader()
 
+  /**
+   * Whether `globalThis[name]` is a function.
+   *
+   * The host probes with this before it takes a path that needs the guest to accept a call, so a
+   * guest that cannot receive it falls back to the serialized path instead of failing.
+   */
+  fun hasGlobalFunction(name: String): Boolean
+
+  /**
+   * Call `globalThis[name]` with [args], converting each argument host -> JS and the result
+   * JS -> host. A value with no counterpart is an error, never a silent null.
+   *
+   * @throws JsException if the global is missing or not a function, or if the call throws.
+   */
+  fun callGuestFunction(name: String, args: List<Any?> = emptyList()): Any?
+
+  /**
+   * Calls [functionName] on the exports of module [moduleId] when that module exports such a
+   * function, and does nothing when it does not. This is how the host triggers a module's
+   * bridge warm-up: Kotlin/JS cannot run a module's file-level initializers eagerly, so the
+   * generated hook is the only thing that can register a module's host->JS prototypes before the
+   * application runs.
+   */
+  internal fun warmUpModule(moduleId: String, functionName: String)
+
   internal fun initOutboundChannel(outboundChannel: CallChannel)
 
   internal fun getInboundChannel(): CallChannel

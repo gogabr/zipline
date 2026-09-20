@@ -221,8 +221,60 @@ void HermesBridge_clearHandles(void* context);
 void HermesBridge_addBridgeEntry(const char* fqn, void* fn);
 
 /** Install the __bridgeRegister JS function on the global object.
- *  Called once after Hermes runtime creation. */
+ *  Called once after Hermes runtime creation. Also installs __bridgeRegisterRuntime,
+ *  which retains the guest's host2js runtime factories. */
 void HermesBridge_installBridgeRegister(void* jsiRuntime);
+
+// -- Host-to-JS conversion (host writes values into the guest) --
+// Each function returning an int handle appends to the context's handle table and returns the
+// new (positive) handle; on failure it returns -1 and leaves the table unchanged. -1 is the
+// failure marker, NOT 0: handle 0 is reserved for the global object.
+
+/** Create an instance of the guest prototype registered for [fq].
+ *  Returns -1 when no prototype is registered (the guest module did not call __bridgeRegister)
+ *  or the instance cannot be allocated. Never returns a JS sentinel. */
+int HermesBridge_newObjectWithPrototype(void* context, const char* fq);
+
+/** Define [name] on the object at [objHandle] as an OWN DATA property (writable, enumerable,
+ *  configurable) with the value at [valueHandle]. Defining - not assigning - shadows any
+ *  getter-only accessor the class prototype carries. */
+void HermesBridge_defineProperty(void* context, int objHandle, const char* name, int valueHandle);
+
+int HermesBridge_createInt(void* context, int value);
+int HermesBridge_createDouble(void* context, double value);
+int HermesBridge_createBool(void* context, int value);
+/** Create a string handle from UTF-8 bytes. */
+int HermesBridge_createString(void* context, const char* utf8);
+int HermesBridge_createNull(void* context);
+
+/** Read the property [name] of the object at [parentHandle] as a new handle.
+ *  parentHandle 0 reads from the global object (same convention as HermesBridge_createHandle).
+ *  Returns -1 when the parent is not an object or the property is absent/undefined/null. */
+int HermesBridge_getProperty(void* context, int parentHandle, const char* name);
+
+/** Create an empty JS array. */
+int HermesBridge_newArray(void* context);
+/** Set arrayHandle[index] = valueHandle. */
+void HermesBridge_setArrayElement(void* context, int arrayHandle, int index, int valueHandle);
+
+/** Call the function at [fnHandle] with the elements of the JS array at [argsArrayHandle].
+ *  Returns the result handle, or -1 when [fnHandle] is not a function or the call threw. */
+int HermesBridge_callFunction(void* context, int fnHandle, int argsArrayHandle);
+/** Call the function at [fnHandle] with one argument. Returns the result handle, or -1. */
+int HermesBridge_callFunctionWithArg(void* context, int fnHandle, int argHandle);
+/** Call the function at [fnHandle] with two arguments. Returns the result handle, or -1. */
+int HermesBridge_callFunctionWithArgs2(void* context, int fnHandle, int arg1Handle, int arg2Handle);
+
+/** 1 when the value at [handle] is a function, 0 otherwise. */
+int HermesBridge_isFunction(void* context, int handle);
+/** 1 when globalThis[name] is a function, 0 otherwise. */
+int HermesBridge_hasGlobalFunction(void* context, const char* name);
+
+/** Call `require(moduleId)[functionName]()` when the module exports that function.
+ *  Returns 1 when the hook was called, 0 when the module or the export is absent (not an
+ *  error: a module compiled without the bridge plugin has no hook), and -1 when the hook itself
+ *  threw (the message is then available via HermesContext_getLastError). */
+int HermesBridge_warmUpModule(void* context, const char* moduleId, const char* functionName);
 
 #ifdef __cplusplus
 }

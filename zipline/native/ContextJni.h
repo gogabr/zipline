@@ -53,6 +53,15 @@ class ContextJni : public ContextBase {
   jsi::Value throwJavaExceptionFromJs(JNIEnv* env);
 
   bool hasPendingPlatformException() override;
+
+  // ----- Host to guest calls (direct events).
+  // Whether globalThis[name] is a callable function. The host probes before it takes a direct
+  // path, so a guest that cannot receive direct events falls back to serialization.
+  jboolean hasGlobalFunction(JNIEnv* env, jstring name);
+  // Call globalThis[name](args...), converting each argument host->JS and the result JS->host.
+  // [argsList] is a java.util.List of arguments, or null for a no-argument call.
+  jobject callGuestFunction(JNIEnv* env, jstring name, jobject argsList);
+
   // Stashed Java throwable from a host-function call. Set by
   // throwJavaExceptionFromJs (after ExceptionClear), consumed and reset
   // by throwJsException when the wrapping JS error is observed.

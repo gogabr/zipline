@@ -74,6 +74,8 @@ public final class app/cash/zipline/JsEngine : java/io/Closeable, java/lang/Auto
 	public synthetic fun <init> (JLkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun callGlobalFunctionWithStringArg (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
 	public final fun callGlobalMethod (Ljava/lang/String;Ljava/lang/String;)V
+	public final fun callGuestFunction (Ljava/lang/String;Ljava/util/List;)Ljava/lang/Object;
+	public static synthetic fun callGuestFunction$default (Lapp/cash/zipline/JsEngine;Ljava/lang/String;Ljava/util/List;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun callRequireMethod (Ljava/lang/String;Ljava/lang/String;)V
 	public fun close ()V
 	public final fun compile (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)[B
@@ -93,6 +95,7 @@ public final class app/cash/zipline/JsEngine : java/io/Closeable, java/lang/Auto
 	public final fun getMemoryLimit ()J
 	public final fun getMemoryUsage ()Lapp/cash/zipline/MemoryUsage;
 	public final fun getRdmaChangeSink ()Lapp/cash/zipline/RdmaChangeSink;
+	public final fun hasGlobalFunction (Ljava/lang/String;)Z
 	public final fun initRdmaChangesChannel ()V
 	public final fun installModuleLoader ()V
 	public final fun setGcThreshold (J)V

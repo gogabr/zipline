@@ -506,6 +506,64 @@ actual class JsEngine private constructor(
     }
   }
 
+  actual fun hasGlobalFunction(name: String): Boolean {
+    checkNotClosed()
+    return HermesBridge_hasGlobalFunction(contextPointer, name) != 0
+  }
+
+  /**
+   * Convert each element of [args] host -> JS and call `globalThis[name]` with them, then convert
+   * the result back JS -> host through the bridge readers.
+   *
+   * @throws JsException when [name] is not a callable global, an argument has no JS counterpart
+   *   (the message names the offending class), or the call itself throws.
+   */
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? {
+    checkNotClosed()
+    val context = requireNotNull(contextPointer) { "Engine has no native context" }
+
+    val fnHandle = HermesBridge_getProperty(context, 0, name)
+    if (fnHandle < 0 || HermesBridge_isFunction(context, fnHandle) == 0) {
+      if (fnHandle >= 0) HermesBridge_freeHandle(context, fnHandle)
+      throw JsException("callGuestFunction: no callable function '$name' on globalThis")
+    }
+
+    val argsHandle = HermesBridge_newArray(context)
+    try {
+      args.forEachIndexed { index, element ->
+        val valueHandle = try {
+          anyToJs(context, element)
+        } catch (t: Throwable) {
+          val cls = element?.let { it::class.qualifiedName } ?: "null"
+          throw JsException(
+            "callGuestFunction: cannot convert argument $index of class $cls to JS: ${t.message}",
+          )
+        }
+        HermesBridge_setArrayElement(context, argsHandle, index, valueHandle)
+        HermesBridge_freeHandle(context, valueHandle)
+      }
+      val resultHandle = HermesBridge_callFunction(context, fnHandle, argsHandle)
+      if (resultHandle < 0) throw JsException("callGuestFunction: call to '$name' failed")
+      try {
+        return bridgeForAny(context, resultHandle)
+      } finally {
+        HermesBridge_freeHandle(context, resultHandle)
+      }
+    } finally {
+      HermesBridge_freeHandle(context, argsHandle)
+      HermesBridge_freeHandle(context, fnHandle)
+    }
+  }
+
+  internal actual fun warmUpModule(moduleId: String, functionName: String) {
+    checkNotClosed()
+    // 1 = called, 0 = the module exports no such hook (not an error), -1 = the hook threw.
+    val result = HermesBridge_warmUpModule(contextPointer, moduleId, functionName)
+    if (result < 0) {
+      throw JsException("Failed to warm up the bridge of module '$moduleId'")
+    }
+  }
+
   internal actual fun initOutboundChannel(outboundChannel: CallChannel) {
     checkNotClosed()
     val context = requireNotNull(contextPointer) { "Engine has no native context" }

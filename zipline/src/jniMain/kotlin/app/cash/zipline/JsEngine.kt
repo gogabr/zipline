@@ -210,6 +210,18 @@ actual class JsEngine private constructor(
     installModuleLoader(context)
   }
 
+  actual fun hasGlobalFunction(name: String): Boolean {
+    return hasGlobalFunction(context, name)
+  }
+
+  actual fun callGuestFunction(name: String, args: List<Any?>): Any? {
+    return callGuestFunction(context, name, args)
+  }
+
+  internal actual fun warmUpModule(moduleId: String, functionName: String) {
+    warmUpModule(context, moduleId, functionName)
+  }
+
   /**
    * Starts a CDP debug session on this engine. Returns false when the engine was built without
    * debugger support. [listener] receives outbound CDP messages from arbitrary threads.
@@ -270,6 +282,9 @@ actual class JsEngine private constructor(
   private external fun callGlobalFunctionWithStringArg(context: Long, functionName: String, arg: String): String?
   private external fun callRequireMethod(context: Long, moduleId: String, methodName: String)
   private external fun installModuleLoader(context: Long)
+  private external fun hasGlobalFunction(context: Long, name: String): Boolean
+  private external fun callGuestFunction(context: Long, name: String, args: List<Any?>): Any?
+  private external fun warmUpModule(context: Long, moduleId: String, functionName: String)
   private external fun cdpAttach(context: Long, listener: CdpListener): Boolean
   private external fun cdpHandleCommand(context: Long, json: String)
   private external fun cdpDrainTasks(context: Long)

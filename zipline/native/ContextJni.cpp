@@ -33,6 +33,22 @@ namespace jsi = facebook::jsi;
 static std::vector<std::pair<std::string, jobject(*)(JNIEnv*,jsi::Runtime&,const jsi::Value&)>> bridgeTable;
 static std::vector<void(*)(JNIEnv*)> bridgeInits;
 
+namespace {
+
+// The guest's class prototypes and runtime factories are kept in JS globals (named by
+// bridge_dispatch.h, which the converters read) so that a converter compiled into a consumer
+// library - a separate .so - can reach them with nothing but the runtime. They are
+// per-runtime by construction: each Hermes runtime has its own global object.
+jsi::Object globalBridgeMap(jsi::Runtime &rt, const char *name) {
+  jsi::Value existing = rt.global().getProperty(rt, name);
+  if (existing.isObject()) return existing.asObject(rt);
+  jsi::Object created(rt);
+  rt.global().setProperty(rt, name, created);
+  return created;
+}
+
+}  // namespace
+
 extern "C" __attribute__((used, visibility("default"))) void addBridgeEntry(const char* fq, jobject(*fn)(JNIEnv*,jsi::Runtime&,const jsi::Value&)) {
     bridgeTable.push_back({fq, fn});
 }
@@ -58,11 +74,20 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
             auto fq = args[0].asString(rt).utf8(rt);
             if (!args[1].isObject()) return jsi::Value::undefined();
             jsi::Object ctor = args[1].asObject(rt);
+            jsi::Object proto = ctor.getPropertyAsObject(rt, "prototype");
+
+            // Retain the prototype: the host needs it to build instances of this class for a
+            // host->JS conversion, including for classes that only ever originate host-side.
+            globalBridgeMap(rt, HOST2JS_PROTOTYPES_GLOBAL)
+                .setProperty(rt, fq.c_str(), jsi::Value(rt, proto));
+
+            // Attach the JS->host converter when one is registered. A class that only travels
+            // host->JS has none, which is not an error; a class the host cannot convert either way
+            // fails later, by name, at the conversion.
             for (auto& entry : bridgeTable) {
                 if (strcmp(entry.first.c_str(), fq.c_str()) == 0) {
                     JniBridgeDispatch *disp = new JniBridgeDispatch();
                     disp->toJavaObject = entry.second;
-                    jsi::Object proto = ctor.getPropertyAsObject(rt, "prototype");
                     // Store pointer as two int32 halves (JS double has 53-bit mantissa;
                     // ARM64 pointers need 64 bits, so split into two 32-bit values).
                     intptr_t ptr = reinterpret_cast<intptr_t>(disp);
@@ -70,14 +95,29 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
                     int32_t high = static_cast<int32_t>((ptr >> 32) & 0xFFFFFFFF);
                     proto.setProperty(rt, "bridge_dispatch_low",  jsi::Value(static_cast<double>(low)));
                     proto.setProperty(rt, "bridge_dispatch_high", jsi::Value(static_cast<double>(high)));
-                    return jsi::Value::undefined();
+                    break;
                 }
             }
-            throw jsi::JSError(rt, std::string("bridge_register_js: FQN '") + fq + "' not found in bridge_table");
             return jsi::Value::undefined();
         });
+
+    auto bridgeRegisterRuntimeFn = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forUtf8(rt, "__bridgeRegisterRuntime"),
+        1,
+        [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
+            if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
+            // The factories build real Kotlin/JS Long/ArrayList/LinkedHashMap instances; they are
+            // the guest's own stdlib calls, so nothing here relies on Kotlin/JS internals. The
+            // instance carries newLong/newArrayList/newLinkedHashMap through its prototype, so
+            // the host can read them off it directly.
+            rt.global().setProperty(rt, HOST2JS_FACTORIES_GLOBAL, args[0]);
+            return jsi::Value::undefined();
+        });
+
     jsi::Object globalObject = rt.global();
     globalObject.setProperty(rt, "__bridgeRegister", std::move(bridgeRegisterFn));
+    globalObject.setProperty(rt, "__bridgeRegisterRuntime", std::move(bridgeRegisterRuntimeFn));
 }
 
 namespace jsi = facebook::jsi;
@@ -549,6 +589,69 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
 bool ContextJni::hasPendingPlatformException() {
   JNIEnv* env = getEnv();
   return env != nullptr && env->ExceptionCheck();
+}
+
+jboolean ContextJni::hasGlobalFunction(JNIEnv* env, jstring name) {
+  if (env->ExceptionCheck()) return JNI_FALSE;
+  std::string functionName = toCppString(env, name);
+  if (env->ExceptionCheck()) return JNI_FALSE;
+  try {
+    jsi::Value value = runtime->global().getProperty(*runtime, functionName.c_str());
+    if (!value.isObject() || !value.asObject(*runtime).isFunction(*runtime)) return JNI_FALSE;
+    return JNI_TRUE;
+  } catch (const jsi::JSError& e) {
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return JNI_FALSE;
+  }
+}
+
+jobject ContextJni::callGuestFunction(JNIEnv* env, jstring name, jobject argsList) {
+  if (env->ExceptionCheck()) return nullptr;
+  std::string functionName = toCppString(env, name);
+  if (env->ExceptionCheck()) return nullptr;
+  try {
+    jsi::Runtime& rt = *runtime;
+    jsi::Value function = rt.global().getProperty(rt, functionName.c_str());
+    if (!function.isObject() || !function.asObject(rt).isFunction(rt)) {
+      throwJavaException(env, "java/lang/IllegalStateException",
+                         "JavaScript global function %s was not found",
+                         functionName.c_str());
+      return nullptr;
+    }
+
+    // Arguments cross host->JS one by one; a value that has no counterpart fails loudly here
+    // rather than arriving as undefined on the guest side.
+    std::vector<jsi::Value> args;
+    if (argsList != nullptr) {
+      jclass listClass = env->FindClass("java/util/List");
+      jmethodID sizeMethod = env->GetMethodID(listClass, "size", "()I");
+      jmethodID getMethod = env->GetMethodID(listClass, "get", "(I)Ljava/lang/Object;");
+      jint size = env->CallIntMethod(argsList, sizeMethod);
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(listClass);
+        return nullptr;
+      }
+      for (jint i = 0; i < size && !env->ExceptionCheck(); i++) {
+        jobject arg = env->CallObjectMethod(argsList, getMethod, i);
+        if (env->ExceptionCheck()) {
+          if (arg) env->DeleteLocalRef(arg);
+          break;
+        }
+        args.push_back(jsiHost2JsAnyToJs(env, rt, arg));
+        if (arg) env->DeleteLocalRef(arg);
+        if (env->ExceptionCheck()) break;
+      }
+      env->DeleteLocalRef(listClass);
+      if (env->ExceptionCheck()) return nullptr;
+    }
+
+    jsi::Value result = function.asObject(rt).asFunction(rt).call(
+        rt, static_cast<const jsi::Value *>(args.data()), args.size());
+    return toJavaObject(env, result, true);
+  } catch (const jsi::JSError& e) {
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return nullptr;
+  }
 }
 
 void ContextJni::throwJsException(JNIEnv* env, jsi::JSError& error) {

@@ -441,6 +441,87 @@ int HermesCore_callRequireMethod(void* context, const char* moduleId, const char
   }
 }
 
+namespace {
+
+/**
+ * Depth-first search for a named function inside a module's export namespace, bounded so a large
+ * namespace cannot make module loading expensive. Kotlin/JS exports a module's top-level
+ * declarations under their package path, so the bridge plugin's module-load hook sits one or
+ * more namespace objects below the exports root.
+ */
+bool findExportedFunction(
+    jsi::Runtime& rt, const jsi::Value& node, const char* name, int depth,
+    std::optional<jsi::Function>& out) {
+  constexpr int kMaxDepth = 8;
+  if (depth > kMaxDepth || !node.isObject()) return false;
+  jsi::Object obj = node.asObject(rt);
+  // Only plain namespace objects are descended into: a function is a leaf, and an array's own
+  // properties are its indices.
+  if (obj.isFunction(rt) || obj.isArray(rt)) return false;
+
+  jsi::Value direct = obj.getProperty(rt, name);
+  if (direct.isObject() && direct.asObject(rt).isFunction(rt)) {
+    out = direct.asObject(rt).asFunction(rt);
+    return true;
+  }
+
+  jsi::Array names = obj.getPropertyNames(rt);
+  size_t count = names.length(rt);
+  for (size_t i = 0; i < count; i++) {
+    jsi::Value key = names.getValueAtIndex(rt, i);
+    if (!key.isString()) continue;
+    std::string keyName = key.asString(rt).utf8(rt);
+    jsi::Value child = obj.getProperty(rt, keyName.c_str());
+    if (!child.isObject()) continue;
+    if (findExportedFunction(rt, child, name, depth + 1, out)) return true;
+  }
+  return false;
+}
+
+}  // namespace
+
+int HermesCore_warmUpModule(void* context, const char* moduleId, const char* functionName, char** errorOut) {
+  ContextBase* ctx = static_cast<ContextBase*>(context);
+  if (!ctx || !ctx->runtime) {
+    if (errorOut) *errorOut = strdup("Invalid context");
+    return 0;
+  }
+
+  try {
+    jsi::Runtime& rt = *ctx->runtime;
+
+    jsi::Value requireVal = rt.global().getProperty(rt, "require");
+    if (!requireVal.isObject() || !requireVal.asObject(rt).isFunction(rt)) {
+      return 0;
+    }
+
+    jsi::Value exports = requireVal.asObject(rt).asFunction(rt).call(
+      rt, jsi::String::createFromUtf8(rt, moduleId ? moduleId : ""), 1);
+    if (!exports.isObject()) {
+      return 0;
+    }
+
+    std::string name(functionName ? functionName : "");
+    jsi::Value hook = exports.asObject(rt).getProperty(rt, name.c_str());
+    if (!hook.isObject() || !hook.asObject(rt).isFunction(rt)) {
+      // Kotlin/JS exports a module's top-level declarations under their package path, so the
+      // hook is usually one or more namespace objects deep. Search for it rather than making the
+      // generator depend on the export layout.
+      std::optional<jsi::Function> found;
+      if (!findExportedFunction(rt, exports, name.c_str(), 0, found)) return 0;
+      found->call(rt, nullptr, 0);
+      return 1;
+    }
+
+    hook.asObject(rt).asFunction(rt).call(rt, nullptr, 0);
+    return 1;
+  } catch (const std::exception& e) {
+    ctx->lastError = e.what();
+    if (errorOut) *errorOut = strdup(e.what());
+    return 0;
+  }
+}
+
 int HermesCore_installModuleLoader(void* context, char** errorOut) {
   ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {

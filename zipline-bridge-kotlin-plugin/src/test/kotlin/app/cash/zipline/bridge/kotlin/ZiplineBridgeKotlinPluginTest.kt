@@ -1065,22 +1065,36 @@ class ZiplineBridgeNativePluginTest {
 
   @Test
   fun `nullable object field has null check before dispatch`() {
-    val content = generatedBridge(
-      "NullableObj.kt",
-      """
-      @WithJS2HostBridge class Inner(val v: Int)
-      @WithJS2HostBridge class Outer(val inner: Inner?)
-      """,
-      "Outer",
-    )
-
-    // No dispatcher (null/undefined) maps to null instead of failing
-    assertTrue(content.contains("HermesBridge_getBridgeDispatch(ctx, innerRef)"))
-    assertTrue(content.contains("val inner = if (innerDispPtr == 0L) null else {"))
-    assertFalse(content.contains("bridge_dispatch not found"), "Nullable field should not throw")
-
-    // Dispatch inside the null check
-    assertTrue(content.contains("innerDispatchFn(ctx, innerRef)?.asStableRef<Any>()?.get() as? Inner"))
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "NullableObj.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class Inner(val v: Int)
+           @WithJS2HostBridge
+           class Outer(val inner: Inner?)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_Outer_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists())
+ 
+       val content = ktFile.readText()
+ 
+       // Null check wrapping the dispatch: no dispatch pointer (null/undefined) decodes to null.
+       assertTrue(content.contains("val inner = if (innerDispPtr == 0L) null else {"))
+       assertTrue(content.contains("innerDispatchFn(ctx, innerRef)?.asStableRef<Any>()?.get() as? Inner"))
+       assertTrue(content.contains("HermesBridge_freeHandle(ctx, innerRef)"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test

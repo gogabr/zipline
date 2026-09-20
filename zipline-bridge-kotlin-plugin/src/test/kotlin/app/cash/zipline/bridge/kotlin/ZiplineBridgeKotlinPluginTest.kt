@@ -908,35 +908,34 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // Function signature returns Any (not COpaquePointer?)
-      assertTrue(content.contains("public fun Simple_toKotlin("))
-      assertTrue(content.contains("): Any {"))
+      // Function signature returns the bridge handle (a COpaquePointer StableRef).
+      assertTrue(content.contains("public fun com_example_Simple_toKotlin("))
+      assertTrue(content.contains("): COpaquePointer? {"))
 
       // Imports
       assertTrue(content.contains("import kotlinx.cinterop.*"))
-      assertTrue(content.contains("import app.cash.zipline.quickjs.*"))
+      assertTrue(content.contains("import app.cash.zipline.hermes.*"))
 
       // Field extraction from JS object
-      assertTrue(content.contains("JS_GetPropertyStr(ctx, jsVal, \"name\")"))
-      assertTrue(content.contains("JS_GetPropertyStr(ctx, jsVal, \"age\")"))
+      assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"name\")"))
+      assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"age\")"))
 
       // String conversion
-      assertTrue(content.contains("JS_ToCString(ctx, nameRaw)"))
+      assertTrue(content.contains("HermesBridge_getValueString(ctx, nameRef)"))
       assertTrue(content.contains("toKStringFromUtf8"))
 
       // Int extraction
-      assertTrue(content.contains("JsValueGetInt(ageRaw)"))
+      assertTrue(content.contains("HermesBridge_getValueDouble(ctx, ageRef).toInt()"))
 
-      // JS value cleanup
-      assertTrue(content.contains("JS_FreeValue(ctx,"))
+      // Handle cleanup
+      assertTrue(content.contains("HermesBridge_freeHandle(ctx,"))
 
       // Constructor call with params
       assertTrue(content.contains("Simple(name = name, age = age)"))
 
-      // Return without StableRef wrapping
-      assertTrue(content.contains("return _obj"))
-      assertFalse(content.contains("StableRef.create"), "Should not use StableRef.create")
-      assertFalse(content.contains("COpaquePointer"), "Should not return COpaquePointer")
+      // Return as a StableRef handle (the engine's registerBridge takes a CFunction pointer)
+      assertTrue(content.contains("return StableRef.create(_obj).asCPointer()"))
+      assertTrue(content.contains("registerBridge(\"com.example.Simple\", staticCFunction(::com_example_Simple_toKotlin))"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
@@ -968,19 +967,17 @@ class ZiplineBridgeNativePluginTest {
       val content = ktFile.readText()
 
       // Object field gets bridge_dispatch lookup
-      assertTrue(content.contains("JS_GetPropertyStr(ctx, jsVal, \"child\")"))
-      assertTrue(content.contains("JS_GetPropertyStr(ctx, childRef, \"bridge_dispatch\")"))
+      assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"child\")"))
+      assertTrue(content.contains("HermesBridge_getBridgeDispatch(ctx, childRef)"))
 
-      // StableRef dispatch pattern (not CFunction)
-      assertTrue(content.contains("asStableRef<(CPointer<JSContext>, CValue<JSValue>) -> Any>()"))
-      assertTrue(content.contains(".get()(ctx, childRef) as Child"))
+      // The registered converter is called through the dispatch pointer; an object without one
+      // (a plain JS object) falls back to bridgeForAny.
+      assertTrue(content.contains("childDispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!"))
+      assertTrue(content.contains("childDispatchFn(ctx, childRef)!!.asStableRef<Any>().get() as Child"))
+      assertTrue(content.contains("bridgeForAny(ctx, childRef) as Child"))
 
-      // Dispatch cleanup
-      assertTrue(content.contains("JS_FreeValue(ctx, childDispatch)"))
-
-      // No old CFunction pattern
-      assertFalse(content.contains("CFunction<"), "Should not use CFunction")
-      assertFalse(content.contains("COpaquePointer"), "Should not use COpaquePointer")
+      // Handle cleanup
+      assertTrue(content.contains("HermesBridge_freeHandle(ctx, childRef)"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
@@ -1047,17 +1044,23 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // Null check: JS null/undefined is guarded BEFORE JS_ToCString, since String(null) is "null"
-      assertTrue(content.contains("if (JS_IsUndefined(nameRaw) != 0 || JS_IsNull(nameRaw) != 0) null else"))
+      // Null check: JS null/undefined is guarded BEFORE the string conversion, since
+      // String(null) is "null"
+      assertTrue(
+        content.contains(
+          "val name = if (HermesBridge_getValueTag(ctx, nameRef) == TAG_UNDEFINED || " +
+            "HermesBridge_getValueTag(ctx, nameRef) == TAG_NULL) null else",
+        ),
+      )
       assertTrue(content.contains("toKStringFromUtf8"))
-      assertTrue(content.contains("JS_FreeCString"))
+      assertTrue(content.contains("platform.posix.free(nameStr)"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
   }
 
   @Test
-  fun `list field uses bridgeForAny`() {
+  fun `list field uses the guest-driven collection decoder`() {
     val outputDir = createTempDirectory("zipline-bridge-native-test")
     try {
       val result = compileWithNativeOutputDir(
@@ -1079,14 +1082,14 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // bridgeForAny import
-      assertTrue(content.contains("import app.cash.zipline.bridgeForAny"))
-
-      // List extraction pattern
-      assertTrue(content.contains("bridgeForAny(ctx, elem) as String"))
-      assertTrue(content.contains("while (i < len.toInt())"))
-      assertTrue(content.contains("JS_GetPropertyUint32"))
-      assertTrue(content.contains("mutableListOf"))
+      // List extraction: the guest drives the iteration and identifies the collection kind
+      // (Kotlin/JS mangles the stdlib member names), and the list is unwrapped from the
+      // array-backed ArrayList before the decode.
+      assertTrue(content.contains("HermesBridge_createHandle(ctx, itemsRef, \"array_1\")"))
+      assertTrue(content.contains("conv_items(ctx, itemsArrRef)"))
+      assertTrue(content.contains("jsCollectionToKotlin(ctx, jsArrHandle, CollectionKind.LIST)"))
+      assertTrue(content.contains("HermesBridge_getValueString(ctx, element)"))
+      assertTrue(content.contains("toKStringFromUtf8"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
@@ -1115,11 +1118,15 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(bridgeFile.exists(), "Expected per-class bridge file")
       val bridgeContent = bridgeFile.readText()
       assertTrue(bridgeContent.contains("@kotlin.native.EagerInitialization"))
-      assertTrue(bridgeContent.contains("registerBridge(\"com.example.Foo\", ::Foo_toKotlin)"))
-      assertFalse(bridgeContent.contains("staticCFunction"), "Should not use staticCFunction")
+      // Converter names come from the FQN, so same-simple-name classes cannot collide.
+      assertTrue(
+        bridgeContent.contains(
+          "registerBridge(\"com.example.Foo\", staticCFunction(::com_example_Foo_toKotlin))",
+        ),
+      )
 
 
-      // No centralized retain file — each class self-registers
+      // No centralized retain file - each class self-registers
       val retainFile = outputDir.resolve("_BridgeRetainAll.kt").toFile()
       assertFalse(retainFile.exists(), "_BridgeRetainAll.kt should not be generated")
     } finally {
@@ -1150,11 +1157,11 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // Enum ordinal extraction
-      assertTrue(content.contains("ordinal_1"))
-      assertTrue(content.contains("JsValueGetInt(ordinalRaw)"))
-      assertTrue(content.contains(".entries[ordinal]"))
-      assertTrue(content.contains("Color.entries[ordinal]"))
+      // Enum ordinal extraction: the guest reports it (Kotlin/JS mangles the ordinal field), and
+      // an out-of-range ordinal fails loudly instead of throwing an index exception.
+      assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
+      assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
+      assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for Color"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }

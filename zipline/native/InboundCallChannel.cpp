@@ -55,6 +55,9 @@ jsi::Value invokeServiceMethod(
 InboundCallChannel::InboundCallChannel(std::string name) : name_(std::move(name)) {}
 
 std::string InboundCallChannel::call(ContextBase* context, const std::string& callJson) const {
+  // A platform exception thrown from inside guest code is already pending (routine on the
+  // direct-event path); calling into the platform again would abort the VM.
+  if (context->hasPendingPlatformException()) return "";
   jsi::Value result;
   try {
     result = invokeServiceMethod(context, name_, "call", callJson);
@@ -70,6 +73,7 @@ std::string InboundCallChannel::call(ContextBase* context, const std::string& ca
 }
 
 bool InboundCallChannel::disconnect(ContextBase* context, const std::string& instanceName) const {
+  if (context->hasPendingPlatformException()) return false;
   jsi::Value result;
   try {
     result = invokeServiceMethod(context, name_, "disconnect", instanceName);

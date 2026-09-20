@@ -61,8 +61,14 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
   val bodyFields = fields.filter { !it.isConstructorParam }
 
   val targetFqn = resolveTargetFqn(annotatedClass)
-  val jniClassName = targetFqn ?: buildJniClassName(annotatedClass)
+  // Everything emitted for the JVM side - FindClass, JNI symbol mangling, field and method
+  // signatures - needs the *internal* name; a dotted name is rejected by ART as an illegal class
+  // name. The dotted form ([protoFqn]) remains the bridge key shared with the guest's registration.
+  val jniClassName = targetFqn?.replace('.', '/') ?: buildJniClassName(annotatedClass)
   val jsClassName = fqName.asString()
+  // Prototype lookup key: identical to the JS-side module-load registration key.
+  val protoFqn = targetFqn ?: fqName.asString()
+
 
   val nullablePrimitiveFields = fields.filter { it.isNullable && isKnownType(it.ktType) && isJniPrimitive(it.ktType) }
   val hasAnyField = fields.any { it.ktType == "kotlin.Any" }
@@ -72,7 +78,7 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
   val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
   val constructorSig = if (isObject || constructorFields.isEmpty()) "()V"
     else "(" + constructorFields.joinToString("") { it.jniTypeChar } + ")V"
-  val instanceSig = if (isObject) "L${jniClassName.replace(".", "/")};" else ""
+  val instanceSig = if (isObject) "L$jniClassName;" else ""
 
   val cSource = buildString {
     appendLine("#include <jni.h>")

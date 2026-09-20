@@ -214,4 +214,12 @@ class BridgeEndToEndTest {
     assertEquals(mapOf("outer" to listOf(mapOf(1.0 to "one", 2.0 to "two"))), complexNested)
   }
 
+  @Test
+  fun bridgedLongBoxHolder() {
+    println("guest wire shape: " + evalOne("stringifyBridgedLongBoxHolder"))
+    val actual = evalOne("provideBridgedLongBoxHolder") as BridgedLongBoxHolder
+    assertEquals(BridgedTestValues.longBoxSolid, actual.solid)
+    assertContentEquals(BridgedTestValues.longBoxHolder.gradient, actual.gradient)
+  }
+
 }

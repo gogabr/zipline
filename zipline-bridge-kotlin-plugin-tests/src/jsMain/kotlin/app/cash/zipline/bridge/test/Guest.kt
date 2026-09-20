@@ -87,3 +87,9 @@ fun provideBridgedBoundedGenericClass(): BridgedBoundedGenericClass<BridgedBound
 
 @JsExport
 fun provideBridgedNestedGeneric(): BridgedNestedGeneric = BridgedTestValues.nestedGeneric
+fun provideBridgedLongBoxHolder(): BridgedLongBoxHolder = BridgedTestValues.longBoxHolder
+
+/** The guest's own JS view of the holder: shows whether value-class instances arrive boxed. */
+@JsExport
+fun stringifyBridgedLongBoxHolder(): String = JSON.stringify(BridgedTestValues.longBoxHolder)
+

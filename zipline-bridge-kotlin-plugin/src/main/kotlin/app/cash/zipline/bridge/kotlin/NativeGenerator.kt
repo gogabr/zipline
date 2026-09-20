@@ -71,12 +71,16 @@ private fun collectRuntimeImports(
   type: IrType?,
   needsBridgeForAny: MutableSet<Unit>,
   needsJsLong: MutableSet<Unit>,
+  needsJsBoxed: MutableSet<Unit>,
 ) {
   val ktType = effectiveClassFqn(type)
-  // Inline value class backed by Long (e.g. Color) converts via JsNumberToLong.
   val elemClass = (type as? IrSimpleType)?.getClass()
-  if (elemClass != null && isInlineClass(elemClass) && unwrapInlineUnderlying(elemClass) == "kotlin.Long") {
-    needsJsLong.add(Unit)
+  // Inline value class: an inlined Long converts via JsNumberToLong; a BOXED instance (Kotlin/JS
+  // boxes a value class used as a type argument — a List<Color> element, not just a field) reads
+  // its payload through the JsBoxedNumberTo* scanners.
+  if (elemClass != null && isInlineClass(elemClass)) {
+    needsJsBoxed.add(Unit)
+    if (unwrapInlineUnderlying(elemClass) == "kotlin.Long") needsJsLong.add(Unit)
     return
   }
   when {
@@ -84,13 +88,13 @@ private fun collectRuntimeImports(
     ktType == "kotlin.Long" -> needsJsLong.add(Unit)
     ktType in MAP_KOTLIN_TYPES -> {
       (type as? IrSimpleType)?.arguments?.forEach { arg ->
-        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong)
+        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong, needsJsBoxed)
       }
     }
     ktType == "kotlin.collections.List" || ktType == "kotlin.Array" -> {
       needsBridgeForAny.add(Unit)
       (type as? IrSimpleType)?.arguments?.forEach { arg ->
-        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong)
+        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong, needsJsBoxed)
       }
     }
     ktType in PRIMITIVE_ARRAY_ELEMENT_TYPE -> {
@@ -148,13 +152,12 @@ internal fun generateNativeBridgeFile(
     val needsJsLong = mutableSetOf<Unit>()
     val needsJsBoxed = mutableSetOf<Unit>()
     for (field in fields) {
-      collectRuntimeImports(field.type, needsBridgeForAny, needsJsLong)
-      if (field.isInline && field.underlyingKtType == "kotlin.Long") needsJsLong.add(Unit)
-      if (field.isInline) needsJsBoxed.add(Unit)
+      collectRuntimeImports(field.type, needsBridgeForAny, needsJsLong, needsJsBoxed)
     }
-    if (needsBridgeForAny.isNotEmpty()) {
-      appendLine("import app.cash.zipline.bridgeForAny")
-    }
+    // bridgeForAny is the fallback decoder for object fields and untyped elements.
+    appendLine("import app.cash.zipline.bridgeForAny")
+    // Enums read their ordinal through the guest's value ops (Kotlin/JS mangles `ordinal`), and
+    // collections are decoded by the guest's own iteration.
     appendLine("import app.cash.zipline.jsEnumOrdinal")
     appendLine("import app.cash.zipline.jsCollectionToKotlin")
     appendLine("import app.cash.zipline.jsMapToKotlin")
@@ -597,10 +600,14 @@ private fun emitElementConversion(
 
   return when {
     ktType == "kotlin.String" -> "HermesBridge_getValueString(ctx, $expr)?.let { s -> s.toKStringFromUtf8()?.also { platform.posix.free(s) } } ?: \"\""
-    isInlineElem && underlying == "kotlin.Int" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr).toInt())"
-    isInlineElem && underlying == "kotlin.Double" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr))"
-    isInlineElem && underlying == "kotlin.Long" -> "${ktType.substringAfterLast(".")}(JsNumberToLong(ctx, $expr))"
-    isInlineElem && underlying == "kotlin.Float" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr).toFloat())"
+    // A value class in a collection arrives BOXED when Kotlin/JS boxes it as a type argument (see
+    // the BridgedLongBoxHolder case: `{"value_1":{"low_1":..,"high_1":..}}`), so its payload must be
+    // scanned out of the instance first and the unboxed read kept as the fallback — the rule the
+    // field branches apply. Reading such an element numerically loses the payload outright.
+    isInlineElem && underlying == "kotlin.Int" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toInt() ?: HermesBridge_getValueDouble(ctx, $expr).toInt())"
+    isInlineElem && underlying == "kotlin.Double" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr) ?: HermesBridge_getValueDouble(ctx, $expr))"
+    isInlineElem && underlying == "kotlin.Long" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToLong(ctx, $expr) ?: JsNumberToLong(ctx, $expr))"
+    isInlineElem && underlying == "kotlin.Float" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toFloat() ?: HermesBridge_getValueDouble(ctx, $expr).toFloat())"
     ktType == "kotlin.Int" -> "HermesBridge_getValueDouble(ctx, $expr).toInt()"
     ktType == "kotlin.Long" -> "JsNumberToLong(ctx, $expr)"
     ktType == "kotlin.Float" -> "HermesBridge_getValueDouble(ctx, $expr).toFloat()"

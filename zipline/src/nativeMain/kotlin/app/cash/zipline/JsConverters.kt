@@ -89,6 +89,8 @@ private fun jsLongValue(ctx: COpaquePointer?, handle: Int): Long {
  * Long) is read through the guest's value ops first. Returns null when the value is not an object
  * or has no numeric payload.
  *
+ * Still reachable: the Kotlin/Native generator emits this for inline value-class fields and for
+ * value-class elements of collections (a List<Color> arrives boxed element by element).
  */
 fun JsBoxedNumberToDouble(context: COpaquePointer?, handle: Int): Double? {
   if (context == null) return null
@@ -128,6 +130,8 @@ fun JsBoxedNumberToDouble(context: COpaquePointer?, handle: Int): Double? {
  * payload, which is read through the guest's value ops. Returns null when there is no numeric
  * payload.
  *
+ * Still reachable: the Kotlin/Native generator emits this for inline value-class fields and for
+ * value-class elements of collections (a List<Color> arrives boxed element by element).
  */
 fun JsBoxedNumberToLong(context: COpaquePointer?, handle: Int): Long? {
   if (context == null) return null

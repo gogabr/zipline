@@ -10,10 +10,12 @@
  */
 package app.cash.zipline.bridge.test
 
+import app.cash.zipline.bridge.support.WithHost2JSBridge
 import app.cash.zipline.bridge.support.WithJS2HostBridge
 import kotlin.jvm.JvmInline
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedData(
   val id: Int,
   val name: String,
@@ -268,6 +270,27 @@ data class BridgedNestedGeneric(
   val complexNested: Map<String, List<Map<Int, String>>>
 )
 
+/**
+ * The compose-live Color shape (io.composelive.nodes.foundation.common.Color): a Long-backed value
+ * class the guest BOXES, so a `List<BridgedLongBox>` arrives as an array of instances carrying their
+ * registered converter rather than as inlined Longs. `solid` covers the field read, `gradient` the
+ * element read; reading a boxed instance numerically loses the payload (zero -> transparent).
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+@JvmInline
+value class BridgedLongBox(val value: Long) {
+  companion object {
+    val Unspecified = BridgedLongBox(Int.MAX_VALUE.toLong())
+  }
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedLongBoxHolder(
+  val solid: BridgedLongBox,
+  val gradient: List<BridgedLongBox>,
+)
 /** Canonical values used both by the guest providers and the host assertions. */
 
 object BridgedTestValues {
@@ -331,5 +354,10 @@ object BridgedTestValues {
     mapOfLists = mapOf("list1" to listOf(1, 2, 3)),
     listOfMaps = listOf(mapOf("a" to 1, "b" to 2)),
     complexNested = mapOf("outer" to listOf(mapOf(1 to "one", 2 to "two")))
+  )
+  val longBoxSolid = BridgedLongBox(value = 0xFF11223344L)
+  val longBoxHolder = BridgedLongBoxHolder(
+    solid = longBoxSolid,
+    gradient = listOf(BridgedLongBox(0xFF00FF00L), BridgedLongBox(0x80000000FFL)),
   )
 }

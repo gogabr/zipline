@@ -77,6 +77,9 @@ internal fun injectCompanionInitBlocks(
   // tolerant `registerBridge` when it is on the classpath, otherwise the raw `__bridgeRegister`
   // external. See findOrCreateBridgeRegister.
   val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  // Null when the annotations artifact on the compile classpath predates registerFieldAlias; alias
+  // emission is then skipped (see findFieldAliasRegister).
+  val fieldAliasSymbol = findFieldAliasRegister(finder)
 
   for (clazz in dispatchClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
@@ -89,6 +92,7 @@ internal fun injectCompanionInitBlocks(
         clazz,
         kclassJsGetterSymbol,
         bridgeRegisterSymbol,
+        fieldAliasSymbol,
         pluginContext,
       )
       continue
@@ -106,6 +110,7 @@ internal fun injectCompanionInitBlocks(
       clazz,
       kclassJsGetterSymbol,
       bridgeRegisterSymbol,
+      fieldAliasSymbol,
       pluginContext,
     )
   }
@@ -117,6 +122,10 @@ internal fun injectCompanionInitBlocks(
  *
  * IrClassReferenceImpl is used directly as the extension receiver for kClass.js —
  * no deprecated IrGetValue or parameter references needed.
+ *
+ * When [fieldAliasSymbol] is non-null, one registerFieldAlias call per `@HostName`-renamed field
+ * of [clazz] follows, installing the old JS name on the class prototype so an already-shipped host
+ * still reads it.
  */
 internal fun injectBridgeIntoConstructor(
   companion: IrClass,
@@ -124,35 +133,50 @@ internal fun injectBridgeIntoConstructor(
   clazz: IrClass,
   kclassJsGetterSymbol: IrSimpleFunctionSymbol,
   bridgeRegisterSymbol: IrSimpleFunctionSymbol,
+  fieldAliasSymbol: IrSimpleFunctionSymbol?,
   pluginContext: IrPluginContext,
 ) {
   val ctor = companion.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary } ?: return
   val builder = pluginContext.irBuiltIns.createIrBuilder(ctor.symbol)
 
-  // Foo::class
-  val classRef = IrClassReferenceImpl(
-    UNDEFINED_OFFSET,
-    UNDEFINED_OFFSET,
-    pluginContext.irBuiltIns.kClassClass.starProjectedType,
-    clazz.symbol,
-    clazz.defaultType,
-  )
-
-  // Foo::class.js — calls the KClass.js extension property getter at IR level
-  val jsCtorCall = builder.irCall(kclassJsGetterSymbol).apply {
-    insertExtensionReceiver(classRef)
+  // Foo::class.js — calls the KClass.js extension property getter at IR level. A fresh node per
+  // call: IR nodes must not be shared between expressions.
+  val jsCtor = {
+    val classRef = IrClassReferenceImpl(
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.kClassClass.starProjectedType,
+      clazz.symbol,
+      clazz.defaultType,
+    )
+    builder.irCall(kclassJsGetterSymbol).apply {
+      insertExtensionReceiver(classRef)
+    }
   }
 
   // __bridgeRegister("targetFqn", Foo::class.js)
   val bridgeCall = builder.irCall(bridgeRegisterSymbol).apply {
     arguments[0] = builder.irString(targetFqn)
-    arguments[1] = jsCtorCall
+    arguments[1] = jsCtor()
+  }
+
+  val aliasCalls = if (fieldAliasSymbol != null) {
+    hostNameAliases(clazz).map { (alias, target) ->
+      builder.irCall(fieldAliasSymbol).apply {
+        arguments[0] = jsCtor()
+        arguments[1] = builder.irString(alias)
+        arguments[2] = builder.irString(target)
+      }
+    }
+  } else {
+    emptyList()
   }
 
   val body = ctor.body
   if (body is IrBlockBody) {
     body.statements.add(1, bridgeCall)
+    body.statements.addAll(2, aliasCalls)
   } else {
     val superCall = (body as? IrExpressionBody)?.expression
       ?: builder.irDelegatingConstructorCall(
@@ -163,6 +187,7 @@ internal fun injectBridgeIntoConstructor(
     ctor.body = builder.irBlockBody {
       +superCall
       +bridgeCall
+      aliasCalls.forEach { +it }
     }
   }
 }
@@ -265,6 +290,9 @@ internal fun injectModuleLoadBridgeRegistration(
 
   val kclassJsGetterSymbol = findKClassJsGetter(finder)
   val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  // Null when the annotations artifact on the compile classpath predates registerFieldAlias; alias
+  // emission is then skipped (see findFieldAliasRegister).
+  val fieldAliasSymbol = findFieldAliasRegister(finder)
   val bridgeRegisterRuntimeSymbol =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
   val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
@@ -301,6 +329,19 @@ internal fun injectModuleLoadBridgeRegistration(
   }
 
   val builder = pluginContext.irBuiltIns.createIrBuilder(warmUpFn.symbol)
+  // Foo::class.js — a fresh node per call: IR nodes must not be shared between expressions.
+  val jsCtor = { clazz: IrClass ->
+    val classRef = IrClassReferenceImpl(
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.kClassClass.starProjectedType,
+      clazz.symbol,
+      clazz.defaultType,
+    )
+    builder.irCall(kclassJsGetterSymbol).apply {
+      insertExtensionReceiver(classRef)
+    }
+  }
   warmUpFn.body = builder.irBlockBody {
     if (valueOpsSymbol != null) {
       // Guest answers the value-type question and drives the access for the host; see
@@ -311,17 +352,20 @@ internal fun injectModuleLoadBridgeRegistration(
     for (clazz in host2JsClasses) {
       val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
       val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
-      val classRef = IrClassReferenceImpl(
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET,
-        pluginContext.irBuiltIns.kClassClass.starProjectedType,
-        clazz.symbol,
-        clazz.defaultType,
-      )
       +irCall(bridgeRegisterSymbol).apply {
         arguments[0] = irString(targetFqn)
-        arguments[1] = irCall(kclassJsGetterSymbol).apply {
-          insertExtensionReceiver(classRef)
+        arguments[1] = jsCtor(clazz)
+      }
+      // The prototype alias serves the host's JS->host reader, so only classes a host reads
+      // through the @WithJS2HostBridge converter need it; a host2js-only payload class never
+      // travels that way.
+      if (fieldAliasSymbol != null && hasWithJS2HostBridgeAnnotation(clazz)) {
+        for ((alias, aliasTarget) in hostNameAliases(clazz)) {
+          +irCall(fieldAliasSymbol).apply {
+            arguments[0] = jsCtor(clazz)
+            arguments[1] = irString(alias)
+            arguments[2] = irString(aliasTarget)
+          }
         }
       }
     }
@@ -560,6 +604,16 @@ private fun resolveExtensionFun(
     .firstOrNull { it.parameters.firstOrNull()?.kind == IrParameterKind.ExtensionReceiver && predicate(it) }
     ?: error("$packageName.$name extension not found")
 }
+
+/**
+ * The zipline `registerFieldAlias` helper (jsMain of the annotations artifact), or null when the
+ * annotations artifact on the compile classpath predates it. Null skips alias emission entirely:
+ * a synthesized external would have no JS implementation to call, and the reader fallback plus the
+ * host writer alias still cover the pairs where the guest carries no alias.
+ */
+private fun findFieldAliasRegister(finder: DeclarationFinder): IrSimpleFunctionSymbol? = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("registerFieldAlias")),
+  ).firstOrNull()
 
 /** The KClass.js property getter (kotlin.js.KClass.js → JsClass<T>). */
 private fun findKClassJsGetter(finder: DeclarationFinder): IrSimpleFunctionSymbol {

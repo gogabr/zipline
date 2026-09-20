@@ -20,6 +20,11 @@ internal val WITH_JS2HOST_BRIDGE_CLASS_ID = ClassId(
   Name.identifier("WithJS2HostBridge"),
 )
 
+internal val WITH_HOST2JS_BRIDGE_CLASS_ID = ClassId(
+  FqName("app.cash.zipline.bridge.support"),
+  Name.identifier("WithHost2JSBridge"),
+)
+
 class ZiplineBridgeIrGenerationExtension(
   internal val cOutputDir: String?,
   internal val nativeOutputDir: String? = null,
@@ -31,7 +36,14 @@ class ZiplineBridgeIrGenerationExtension(
     finder.findClass(WITH_JS2HOST_BRIDGE_CLASS_ID) ?: return
 
     val annotatedClasses = findAnnotatedClasses(moduleFragment)
-    if (annotatedClasses.isEmpty()) return
+
+    // Host2JS classes (both-annotated included): same abstract/sealed/interface filter.
+    val host2JsClasses = findHost2JsAnnotatedClasses(moduleFragment).filter {
+      it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
+      it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
+      it.kind != ClassKind.INTERFACE
+    }
+    if (annotatedClasses.isEmpty() && host2JsClasses.isEmpty()) return
 
     // Include all annotated classes except abstract/sealed (no JS constructor to export)
     val dispatchClasses = annotatedClasses.filter {
@@ -50,13 +62,35 @@ class ZiplineBridgeIrGenerationExtension(
 
     // -- C/JNI bridge generation (Android) --
     if (cOutputDir != null) {
-      generateCBridges(cOutputDir, annotatedClasses)
+      generateCBridges(cOutputDir, annotatedClasses, host2JsClasses)
       generateKeepNames(cOutputDir, annotatedClasses)
+      // JVM member injection: the external convertToJs(J)J native method, implemented by the
+      // generated C. Injected with the C generation so the member and its implementation exist
+      // together.
+      injectJvmConvertToJsMembers(pluginContext, host2JsClasses)
+    }
+
+    // -- Kotlin/Native host2js member injection (override + Host2JsConvertible supertype) --
+    if (pluginContext.platform?.componentPlatforms?.any { it is org.jetbrains.kotlin.platform.NativePlatform } == true) {
+      injectNativeConvertToJsMembers(finder, pluginContext, host2JsClasses)
     }
 
     // -- JS bridge dispatch injection (Kotlin/JS) --
     if (isJsTarget) {
-      injectCompanionInitBlocks(finder, moduleFragment, dispatchClasses, pluginContext)
+      // JS2Host-only classes keep the companion __bridgeRegister injection.
+      injectCompanionInitBlocks(
+        finder, moduleFragment,
+        dispatchClasses.filterNot { it in host2JsClasses },
+        pluginContext,
+      )
+      // Host2JS classes register at module load (prototypes + runtime factories), so the host
+      // can build payload objects for classes the guest never constructs. Modules with only
+      // JS2Host classes still need the value ops: their collections/Longs/enums reach the host
+      // through the same untyped path.
+      injectModuleLoadBridgeRegistration(
+        finder, pluginContext, moduleFragment, host2JsClasses,
+        js2HostOnlyClasses = dispatchClasses.filterNot { it in host2JsClasses },
+      )
     }
   }
 

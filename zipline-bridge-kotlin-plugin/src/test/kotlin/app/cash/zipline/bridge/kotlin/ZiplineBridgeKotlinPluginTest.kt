@@ -933,8 +933,6 @@ class ZiplineBridgeNativePluginTest {
 
   @Test
   fun `simple class generates native bridge`() {
-<<<<<<< conflict 1 of 6
-+++++++ ltxvwpsr 9b904c76 "[B] host2js plugin support and the guest module-load registration hook" (rebased revision)
     val content = generatedBridge(
       "Simple.kt",
       "@WithJS2HostBridge class Simple(val name: String, val age: Int)",

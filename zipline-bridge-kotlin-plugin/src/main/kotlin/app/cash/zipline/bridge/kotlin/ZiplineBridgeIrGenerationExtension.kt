@@ -57,7 +57,7 @@ class ZiplineBridgeIrGenerationExtension(
 
     // -- Kotlin/Native bridge generation (iOS) --
     if (nativeOutputDir != null) {
-      generateNativeBridges(nativeOutputDir, dispatchClasses)
+      generateNativeBridges(nativeOutputDir, dispatchClasses, pluginContext.messageCollector)
     }
 
     // -- C/JNI bridge generation (Android) --

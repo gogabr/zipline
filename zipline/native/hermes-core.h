@@ -90,6 +90,13 @@ int HermesCore_callRequireMethod(void* context, const char* moduleId, const char
 // Install AMD-style module loader (define/require)
 int HermesCore_installModuleLoader(void* context, char** errorOut);
 
+// Calls `require(moduleId)[functionName]()` when the module exports that function, and does
+// nothing when it does not (a module compiled without the bridge plugin has no hook, which is not
+// an error). Returns 1 when the hook was called, 0 when there was no such export, no such module,
+// or the require machinery is absent. A hook that throws is not swallowed: errorOut carries the
+// message and the caller reports it.
+int HermesCore_warmUpModule(void* context, const char* moduleId, const char* functionName, char** errorOut);
+
 // Memory management (currently stubs)
 void HermesCore_setMemoryLimit(void* context, int64_t limitBytes);
 void HermesCore_setGcThreshold(void* context, int64_t thresholdBytes);

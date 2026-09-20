@@ -364,6 +364,13 @@ internal fun generateBridgeFile(
           val javaVar = "java_${field.name}"
   
           appendLine("    jsi::Value js_${field.name} = jsObj.asObject(rt).getProperty(rt, \"${field.jsPropertyName}\");")
+          // The guest bundle and this host are deployed independently: a guest that predates a
+          // @HostName rename still carries only the old name, and the current one reads undefined.
+          if (field.legacyJsName != null) {
+            appendLine("    if (js_${field.name}.isUndefined()) {")
+            appendLine("        js_${field.name} = jsObj.asObject(rt).getProperty(rt, \"${field.legacyJsName}\");")
+            appendLine("    }")
+          }
           // For Long-backed inline classes (e.g. Color), the JS object may be unboxed —
           // *jsObj IS the Long {low_1, high_1} with no .value wrapper. If .value is
           // undefined, fall back to using the object directly as the Long representation.
@@ -885,6 +892,13 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
   sb.appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"), \"host2js: no cached field id for $fieldName\");")
   sb.appendLine("        return 0;")
   sb.appendLine("    }")
+
+  // Define the pre-rename name as an accessor beside the current one, so guest code that predates
+  // the rename keeps reading the payload field it knows. Defined before the value branches (whose
+  // arms return early) and once per field.
+  field.legacyJsName?.let {
+    sb.appendLine("    jsiHost2JsDefineFieldAlias(rt, result, \"$it\", \"$jsName\");")
+  }
 
   val nonNullablePrimitive = !field.isNullable && isKnownType(effective) && isJniPrimitive(effective)
   if (nonNullablePrimitive) {

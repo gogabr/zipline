@@ -204,8 +204,16 @@ internal fun generateNativeBridgeFile(
       val propName = field.jsPropertyName
 
       // Helpers to emit the common Hermes read/free preamble/suffix.
-      fun readProperty(): String =
-        "val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")"
+      fun readProperty(): String {
+        val read = "HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")"
+        val legacy = field.legacyJsName ?: return "val ${field.name}Ref = $read"
+        // The guest bundle and this host are deployed independently: a guest that predates a
+        // @HostName rename still carries only the old name, and the current one reads undefined.
+        return "var ${field.name}Ref = $read; " +
+          "if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED) { " +
+          "HermesBridge_freeHandle(ctx, ${field.name}Ref); " +
+          "${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$legacy\") }"
+      }
       fun freeRef(): String = "HermesBridge_freeHandle(ctx, ${field.name}Ref)"
 
       when {
@@ -309,7 +317,7 @@ internal fun generateNativeBridgeFile(
           // Map relies on mangled member names, which production builds drop.
           val renderedKey = renderedTypeName(typeArgument(field.type, 0))
           val renderedValue = renderedTypeName(typeArgument(field.type, 1))
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           appendLine("    val ${field.name}Tag = HermesBridge_getValueTag(ctx, ${field.name}Ref)")
           val conv = emitMapHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref")
           if (field.isNullable) {
@@ -321,7 +329,7 @@ internal fun generateNativeBridgeFile(
         }
         field.effectiveKtType == "kotlin.collections.List" -> {
           val renderedElement = renderedTypeName(field.arrayElementIrType)
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           // Kotlin/JS ArrayList wraps the JS array in a name-mangled 'array_1' property.
           appendLine("    var ${field.name}ArrRef = ${field.name}Ref")
           appendLine("    val _tmpArrRef_${field.name} = HermesBridge_createHandle(ctx, ${field.name}Ref, \"array_1\")")
@@ -339,7 +347,7 @@ internal fun generateNativeBridgeFile(
         }
         field.effectiveKtType in PRIMITIVE_ARRAY_ELEMENT_TYPE -> {
           val arrayType = field.effectiveKtType.substringAfterLast(".")
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           val conv = emitPrimitiveArrayHelper(helpers, "conv_${field.name}", field.effectiveKtType, "ctx", "${field.name}Ref")
           if (field.isNullable) {
             appendLine("    val ${field.name}: $arrayType? = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else $conv")
@@ -350,7 +358,7 @@ internal fun generateNativeBridgeFile(
         }
         field.effectiveKtType == "kotlin.Array" -> {
           val renderedElement = renderedTypeName(field.arrayElementIrType)
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           val conv = emitArrayHelper(helpers, "conv_${field.name}", field.arrayElementIrType, "ctx", "${field.name}Ref")
           if (field.isNullable) {
             appendLine("    val ${field.name}: Array<$renderedElement>? = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else $conv")
@@ -367,7 +375,7 @@ internal fun generateNativeBridgeFile(
         }
         field.isObjectType && field.ktType != "kotlin.Any" -> {
           val typeName = field.ktType.substringAfterLast(".")
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           appendLine("    val ${field.name}DispPtr = HermesBridge_getBridgeDispatch(ctx, ${field.name}Ref)")
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (${field.name}DispPtr == 0L) null else {")
@@ -388,7 +396,7 @@ internal fun generateNativeBridgeFile(
           appendLine("    ${freeRef()}")
         }
         field.ktType == "kotlin.Any" -> {
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           if (field.isNullable) {
             appendLine("    val ${field.name}: Any? = bridgeForAny(ctx, ${field.name}Ref)")
           } else {
@@ -399,7 +407,7 @@ internal fun generateNativeBridgeFile(
         else -> {
           // Anything left is decoded generically: the shared decoder handles scalars, strings,
           // collections and bridged objects, and names the class when it can decode nothing.
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           appendLine("    val ${field.name} = bridgeForAny(ctx, ${field.name}Ref)")
           appendLine("    ${freeRef()}")
         }

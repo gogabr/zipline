@@ -75,6 +75,7 @@ _HermesBridge_createDouble
 _HermesBridge_createInt
 _HermesBridge_createNull
 _HermesBridge_createString
+_HermesBridge_defineAlias
 _HermesBridge_defineProperty
 _HermesBridge_getProperty
 _HermesBridge_hasGlobalFunction

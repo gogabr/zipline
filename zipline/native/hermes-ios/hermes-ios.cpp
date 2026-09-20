@@ -1193,6 +1193,64 @@ void HermesBridge_defineProperty(void* context, int objHandle, const char* name,
     }
 }
 
+void HermesBridge_defineAlias(void* context, int objHandle, const char* alias, const char* source) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime || !alias || !source) return;
+    jsi::Runtime& rt = *ctx->runtime;
+    jsi::Value* objVal = bridgeHandleValue(ctx, objHandle);
+    if (!objVal || !objVal->isObject()) return;
+    try {
+        // jsi has no defineProperty: go through Object.defineProperty so the alias is an own
+        // accessor (enumerable/configurable) forwarding to the property the payload carries under
+        // its current name. An accessor rather than a copied value, so a guest write through either
+        // name lands in the same property.
+        std::string sourceName(source);
+        jsi::Function getter = jsi::Function::createFromHostFunction(
+            rt, jsi::PropNameID::forUtf8(rt, "get"), 0,
+            [sourceName](jsi::Runtime& runtime, const jsi::Value& thisVal,
+                         const jsi::Value*, size_t) -> jsi::Value {
+                if (!thisVal.isObject()) return jsi::Value::undefined();
+                return thisVal.asObject(runtime).getProperty(runtime, sourceName.c_str());
+            });
+        jsi::Function setter = jsi::Function::createFromHostFunction(
+            rt, jsi::PropNameID::forUtf8(rt, "set"), 1,
+            [sourceName](jsi::Runtime& runtime, const jsi::Value& thisVal,
+                         const jsi::Value* args, size_t count) -> jsi::Value {
+                if (thisVal.isObject() && count > 0) {
+                    thisVal.asObject(runtime).setProperty(runtime, sourceName.c_str(), args[0]);
+                }
+                return jsi::Value::undefined();
+            });
+
+        jsi::Value objectCtorVal = rt.global().getProperty(rt, "Object");
+        if (!objectCtorVal.isObject()) return;
+        jsi::Object objectCtor = objectCtorVal.asObject(rt);
+        jsi::Value definePropertyVal = objectCtor.getProperty(rt, "defineProperty");
+        if (!definePropertyVal.isObject()) return;
+        jsi::Function defineProperty = definePropertyVal.asObject(rt).getFunction(rt);
+
+        jsi::Object descriptor(rt);
+        descriptor.setProperty(rt, "get", getter);
+        descriptor.setProperty(rt, "set", setter);
+        descriptor.setProperty(rt, "enumerable", jsi::Value(true));
+        descriptor.setProperty(rt, "configurable", jsi::Value(true));
+
+        jsi::Value args[3] = {
+            jsi::Value(rt, *objVal),
+            jsi::String::createFromUtf8(rt, alias),
+            jsi::Value(rt, descriptor),
+        };
+        defineProperty.callWithThis(
+            rt, objectCtor, static_cast<const jsi::Value*>(args), static_cast<size_t>(3));
+    } catch (const jsi::JSError& e) {
+        ctx->lastError = e.getMessage();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.getMessage().c_str());
+    } catch (const std::exception& e) {
+        ctx->lastError = e.what();
+        snprintf(g_lastError, sizeof(g_lastError), "%s", e.what());
+    }
+}
+
 int HermesBridge_createInt(void* context, int value) {
     ContextNative* ctx = asNativeContext(context);
     if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");

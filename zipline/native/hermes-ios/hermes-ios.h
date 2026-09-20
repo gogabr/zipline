@@ -240,6 +240,11 @@ int HermesBridge_newObjectWithPrototype(void* context, const char* fq);
  *  getter-only accessor the class prototype carries. */
 void HermesBridge_defineProperty(void* context, int objHandle, const char* name, int valueHandle);
 
+/** Define [alias] on the object at [objHandle] as an own accessor forwarding to the property
+ *  [source], so guest code that predates a rename keeps reading the payload field it knows. The
+ *  accessor (not a copied value) keeps the two names in sync for a written field. */
+void HermesBridge_defineAlias(void* context, int objHandle, const char* alias, const char* source);
+
 int HermesBridge_createInt(void* context, int value);
 int HermesBridge_createDouble(void* context, double value);
 int HermesBridge_createBool(void* context, int value);

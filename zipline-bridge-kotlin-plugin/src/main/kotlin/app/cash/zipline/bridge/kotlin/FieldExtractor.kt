@@ -117,8 +117,46 @@ private fun extractField(property: IrProperty, primaryConstructorParamNames: Set
     type = type,
     isConstructorParam = isConstructorParam,
     jsPropertyName = property.jsName(),
+    legacyJsName = property.hostNameAlias(),
   )
 }
+
+/** The raw `@HostName` value of [property], empty string included; null when the annotation is absent. */
+internal fun hostNameRaw(property: IrProperty): String? {
+  val annotation = property.annotations.firstOrNull {
+    it.symbol.owner.returnType.getClass()?.classId == HOST_NAME_CLASS_ID
+  } ?: return null
+  val argument = annotation.arguments.getOrNull(0) ?: return null
+  return (argument as? org.jetbrains.kotlin.ir.expressions.IrConst)?.value as? String
+}
+
+/** The `@HostName("old")` value of [property]; null when absent or empty. */
+internal fun hostName(property: IrProperty): String? =
+  hostNameRaw(property)?.takeIf { it.isNotEmpty() }
+
+/**
+ * The JS name [property] carried before `@HostName` renamed it, or null when it was never renamed
+ * (or the annotated value is its current name, where the alias would be the property itself).
+ *
+ * Mangled for the same reason [jsName] is: a private or value-class-backed property carries the
+ * old name in its mangled JS spelling on both sides.
+ */
+internal fun IrProperty.hostNameAlias(): String? {
+  val old = hostName(this) ?: return null
+  val current = jsName()
+  val legacy = jsName(old)
+  return legacy.takeIf { it != current }
+}
+
+/**
+ * The `alias to target` JS name pairs of [clazz]: for every property renamed by `@HostName`, the
+ * name it carried before and the name it carries now. Empty when nothing was renamed.
+ */
+internal fun hostNameAliases(clazz: IrClass): List<Pair<String, String>> =
+  clazz.properties.mapNotNull { property ->
+    val alias = property.hostNameAlias() ?: return@mapNotNull null
+    alias to property.jsName()
+  }.toList()
 
 private fun IrProperty.hasBackingField(): Boolean =
     backingField != null ||
@@ -130,11 +168,10 @@ private fun IrProperty.hasBackingField(): Boolean =
 // backing fields to name_1, name_2, ... per override level, but the accessor is always the
 // plain name. Only properties without an accessor must be read from their backing field:
 // private properties and value-class boxes (both '_1'-mangled).
-private fun IrProperty.jsName(): String {
-  val kotlinName = name.asString()
+internal fun IrProperty.jsName(name: String = this.name.asString()): String {
   val isPrivate =
     visibility == org.jetbrains.kotlin.descriptors.DescriptorVisibilities.PRIVATE
-  return if (isPrivate || isInlineClass(parentAsClass)) "${kotlinName}_1" else kotlinName
+  return if (isPrivate || isInlineClass(parentAsClass)) "${name}_1" else name
 }
 
 internal fun hasWithJS2HostBridgeAnnotation(irClass: IrClass): Boolean {

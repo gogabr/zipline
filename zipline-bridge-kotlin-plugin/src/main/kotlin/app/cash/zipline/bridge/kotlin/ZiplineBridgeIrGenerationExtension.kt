@@ -3,12 +3,15 @@ package app.cash.zipline.bridge.kotlin
 import org.jetbrains.kotlin.backend.common.extensions.DeclarationFinder
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.classId
+import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.name.ClassId
@@ -23,6 +26,11 @@ internal val WITH_JS2HOST_BRIDGE_CLASS_ID = ClassId(
 internal val WITH_HOST2JS_BRIDGE_CLASS_ID = ClassId(
   FqName("app.cash.zipline.bridge.support"),
   Name.identifier("WithHost2JSBridge"),
+)
+
+internal val HOST_NAME_CLASS_ID = ClassId(
+  FqName("app.cash.zipline.bridge.support"),
+  Name.identifier("HostName"),
 )
 
 class ZiplineBridgeIrGenerationExtension(
@@ -51,6 +59,12 @@ class ZiplineBridgeIrGenerationExtension(
       it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
       it.kind != ClassKind.INTERFACE
     }
+
+    // -- @HostName validation (a bad alias would silently break one side of a mixed deployment) --
+    validateHostNames(
+      (dispatchClasses + host2JsClasses).distinct(),
+      pluginContext.messageCollector,
+    )
 
     // -- @JsName annotations (stable JS property names for all bridge backends) --
     annotateJsNames(finder, dispatchClasses, pluginContext)
@@ -124,6 +138,63 @@ internal val JS_NAME_CLASS_ID = ClassId(
   FqName("kotlin.js"),
   Name.identifier("JsName"),
 )
+
+/**
+ * Reject the `@HostName` declarations an alias cannot honour. Reported as errors, so the build
+ * fails through the normal message path rather than shipping a bridge that silently reads the
+ * wrong name on one side of a mixed deployment.
+ *
+ * A property whose `@HostName` value equals its own name is left alone: it installs nothing and
+ * reads nothing new.
+ */
+private fun validateHostNames(classes: List<IrClass>, messageCollector: MessageCollector) {
+  for (clazz in classes) {
+    val owner = clazz.fqNameWhenAvailable
+    /** Alias already taken in this class, to the property that claimed it. */
+    val claimedAliases = mutableMapOf<String, String>()
+    for (property in clazz.properties) {
+      // hostNameRaw, not hostName: only it keeps the empty string one of these messages is about.
+      val raw = hostNameRaw(property) ?: continue
+      val name = property.name.asString()
+      if (raw.isEmpty()) {
+        messageCollector.report(
+          CompilerMessageSeverity.ERROR,
+          "@HostName(\"\") on $owner.$name: the old name must not be empty",
+        )
+        continue
+      }
+      if (isInlineClass(clazz)) {
+        // Its JS shape is a box/mangled `_1` field the plugin does not control, so an alias there
+        // would not reach the reader on either side.
+        messageCollector.report(
+          CompilerMessageSeverity.ERROR,
+          "@HostName on $owner.$name: inline value class fields cannot carry a name alias",
+        )
+        continue
+      }
+      val alias = property.jsName(raw)
+      // The annotated name is the property's own current name: nothing to alias.
+      if (alias == property.jsName()) continue
+      val shadowed = clazz.properties
+        .firstOrNull { it != property && it.jsName() == alias }
+        ?.name?.asString()
+      if (shadowed != null) {
+        messageCollector.report(
+          CompilerMessageSeverity.ERROR,
+          "@HostName on $owner.$name: '$alias' is the current JS name of $shadowed",
+        )
+        continue
+      }
+      val other = claimedAliases.put(alias, name)
+      if (other != null) {
+        messageCollector.report(
+          CompilerMessageSeverity.ERROR,
+          "@HostName collision in $owner: '$alias' is claimed by both $other and $name",
+        )
+      }
+    }
+  }
+}
 
 /** Reads the optional [WithJS2HostBridge.targetFqn] from a class annotation. */
 internal fun resolveTargetFqn(irClass: IrClass): String? {

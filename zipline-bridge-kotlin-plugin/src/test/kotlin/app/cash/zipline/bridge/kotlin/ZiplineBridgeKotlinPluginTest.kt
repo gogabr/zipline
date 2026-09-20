@@ -910,7 +910,171 @@ class ZiplineBridgeKotlinPluginTest {
       outputDir.toFile().deleteRecursively()
     }
   }
+
+  @Test
+  fun `hostname alias generates the reader fallback and the writer alias`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Renamed.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.HostName
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          @WithHost2JSBridge
+          class Renamed(
+            @HostName("old") val new: Int,
+          )
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Renamed.cpp").toFile().readText()
+
+      // Reader: the current name first, the pre-rename name only when the current one is undefined.
+      assertTrue(content.contains("jsObj.asObject(rt).getProperty(rt, \"new\")"), content)
+      assertTrue(content.contains("if (js_new.isUndefined()) {"), content)
+      assertTrue(content.contains("js_new = jsObj.asObject(rt).getProperty(rt, \"old\");"), content)
+
+      // Writer: the pre-rename name defined as an accessor alias beside the current one.
+      assertTrue(content.contains("jsiHost2JsDefineFieldAlias(rt, result, \"old\", \"new\");"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `unannotated fields emit no alias or fallback`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Plain.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          @WithHost2JSBridge
+          class Plain(val name: String)
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Plain.cpp").toFile().readText()
+
+      // Classes without @HostName keep the generated code they had: no extra read, no alias.
+      assertFalse(content.contains("getProperty(rt, \"old\")"), content)
+      assertFalse(content.contains("jsiHost2JsDefineFieldAlias"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `hostname validation rejects empty, colliding, and shadowing aliases`() {
+    val emptyDir = createTempDirectory("zipline-bridge-test")
+    val collisionDir = createTempDirectory("zipline-bridge-test")
+    val shadowingDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val empty = compileRenamed(
+        emptyDir.toString(),
+        """
+        @WithJS2HostBridge
+        class Empty(@HostName("") val new: Int)
+        """,
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, empty.exitCode, empty.messages)
+      assertTrue(
+        empty.messages.contains("@HostName(\"\") on com.example.Empty.new: the old name must not be empty"),
+        empty.messages,
+      )
+
+      val collision = compileRenamed(
+        collisionDir.toString(),
+        """
+        @WithJS2HostBridge
+        class Dup(@HostName("old") val a: Int, @HostName("old") val b: Int)
+        """,
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, collision.exitCode, collision.messages)
+      assertTrue(
+        collision.messages.contains("@HostName collision in com.example.Dup: 'old' is claimed by both a and b"),
+        collision.messages,
+      )
+
+      val shadowing = compileRenamed(
+        shadowingDir.toString(),
+        """
+        @WithJS2HostBridge
+        class Shadow(@HostName("other") val a: Int, val other: Int)
+        """,
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, shadowing.exitCode, shadowing.messages)
+      assertTrue(
+        shadowing.messages.contains("@HostName on com.example.Shadow.a: 'other' is the current JS name of other"),
+        shadowing.messages,
+      )
+    } finally {
+      emptyDir.toFile().deleteRecursively()
+      collisionDir.toFile().deleteRecursively()
+      shadowingDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `hostname on an inline value class field is rejected`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileRenamed(
+        outputDir.toString(),
+        """
+        @WithJS2HostBridge
+        @JvmInline
+        value class Wrapped(@HostName("old") val new: Int)
+        """,
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+      assertTrue(
+        result.messages.contains(
+          "@HostName on com.example.Wrapped.new: inline value class fields cannot carry a name alias",
+        ),
+        result.messages,
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
+
+/** Compiles one `com.example` source file using `@HostName`, with C generation enabled. */
+@OptIn(ExperimentalCompilerApi::class)
+private fun compileRenamed(cOutputDir: String, body: String): JvmCompilationResult =
+  compileWithCOutputDir(
+    sourceFile = SourceFile.kotlin(
+      "Renamed.kt",
+      """
+      package com.example
+
+      import app.cash.zipline.bridge.support.HostName
+      import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+      $body
+      """,
+    ),
+    cOutputDir = cOutputDir,
+  )
 
 @ExperimentalCompilerApi
 fun compile(
@@ -1288,6 +1452,71 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
       assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
       assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for Color"))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `hostname alias generates the native reader fallback`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Renamed.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.HostName
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+          @WithJS2HostBridge
+          class Renamed(@HostName("old") val new: Int)
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Renamed_bridge_native.kt").toFile().readText()
+
+      // The current name is read first; only an undefined value re-reads under the pre-rename name,
+      // and the surviving handle is the one the field decoder uses and frees.
+      assertTrue(
+        content.contains(
+          "var newRef = HermesBridge_createHandle(ctx, jsValHandle, \"new\"); " +
+            "if (HermesBridge_getValueTag(ctx, newRef) == TAG_UNDEFINED) { " +
+            "HermesBridge_freeHandle(ctx, newRef); " +
+            "newRef = HermesBridge_createHandle(ctx, jsValHandle, \"old\") }",
+        ),
+        content,
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `unannotated native fields read a single name`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Plain.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+          @WithJS2HostBridge
+          class Plain(val name: String)
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Plain_bridge_native.kt").toFile().readText()
+
+      // Classes without @HostName keep the generated code they had: one read, no legacy name.
+      assertTrue(content.contains("val nameRef = HermesBridge_createHandle(ctx, jsValHandle, \"name\")"), content)
+      assertFalse(content.contains("\"old\""), content)
     } finally {
       outputDir.toFile().deleteRecursively()
     }

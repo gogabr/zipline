@@ -9,6 +9,7 @@ import app.cash.zipline.hermes.HermesBridge_createDouble
 import app.cash.zipline.hermes.HermesBridge_createInt
 import app.cash.zipline.hermes.HermesBridge_createNull
 import app.cash.zipline.hermes.HermesBridge_createString
+import app.cash.zipline.hermes.HermesBridge_defineAlias
 import app.cash.zipline.hermes.HermesBridge_defineProperty
 import app.cash.zipline.hermes.HermesBridge_freeHandle
 import app.cash.zipline.hermes.HermesBridge_getProperty
@@ -58,6 +59,15 @@ public fun newJsObject(ctx: COpaquePointer?, fq: String): Int {
  */
 public fun setJsProperty(ctx: COpaquePointer?, objHandle: Int, name: String, valueHandle: Int) {
   HermesBridge_defineProperty(ctx, objHandle, name, valueHandle)
+}
+
+/**
+ * Define [alias] on the object at [objHandle] as an own accessor forwarding to the property
+ * [source], so guest code that predates a rename keeps reading the payload field it knows. An
+ * accessor (not a copied value) keeps the two names in sync for a written field.
+ */
+public fun setJsPropertyAlias(ctx: COpaquePointer?, objHandle: Int, alias: String, source: String) {
+  HermesBridge_defineAlias(ctx, objHandle, alias, source)
 }
 
 /** Build a JS number from [value] as a handle; the caller owns it. */

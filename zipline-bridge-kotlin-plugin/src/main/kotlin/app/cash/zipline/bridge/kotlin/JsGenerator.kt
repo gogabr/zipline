@@ -1,5 +1,6 @@
 package app.cash.zipline.bridge.kotlin
 
+import org.jetbrains.kotlin.backend.common.extensions.DeclarationFinder
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.descriptors.ClassKind
@@ -16,6 +17,7 @@ import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
@@ -40,7 +42,7 @@ import org.jetbrains.kotlin.name.Name
 // -- JS IR transformations (bridge_dispatch injection) --
 
 internal fun injectCompanionInitBlocks(
-  finder: org.jetbrains.kotlin.backend.common.extensions.DeclarationFinder,
+  finder: DeclarationFinder,
   moduleFragment: IrModuleFragment,
   dispatchClasses: List<IrClass>,
   pluginContext: IrPluginContext,
@@ -60,51 +62,10 @@ internal fun injectCompanionInitBlocks(
     } ?: error("KClass.js property getter not found")
   val kclassJsGetterSymbol = kclassJsGetterFn.symbol
 
-  // Generate @JsName("__bridgeRegister") external fun __bridgeRegister(fqn: String, ctor: Any?)
-  // once in the module. Companion constructors call this directly — no bridgeSelfRegister wrapper.
-  var bridgeRegisterFn = fileForModule.declarations
-    .filterIsInstance<IrSimpleFunction>()
-    .firstOrNull { it.name.asString() == "__bridgeRegister" }
-  if (bridgeRegisterFn == null) {
-    bridgeRegisterFn = pluginContext.irFactory.buildFun {
-      name = Name.identifier("__bridgeRegister")
-      returnType = pluginContext.irBuiltIns.unitType
-      visibility = DescriptorVisibilities.INTERNAL
-      origin = IrDeclarationOrigin.DEFINED
-      isExternal = true
-    }
-    bridgeRegisterFn.parent = fileForModule
-    bridgeRegisterFn.addValueParameter {
-      name = Name.identifier("fqn")
-      type = pluginContext.irBuiltIns.stringType
-    }
-    bridgeRegisterFn.addValueParameter {
-      name = Name.identifier("ctor")
-      type = pluginContext.irBuiltIns.anyNType
-    }
-    // @JsName("__bridgeRegister")
-    val jsNameClass = finder.findClass(JS_NAME_CLASS_ID)!!
-    val jsNameCtor = jsNameClass.owner.declarations
-      .filterIsInstance<IrConstructor>()
-      .firstOrNull { it.isPrimary }!!
-    bridgeRegisterFn.annotations += IrConstructorCallImpl(
-      UNDEFINED_OFFSET,
-      UNDEFINED_OFFSET,
-      jsNameCtor.returnType,
-      jsNameCtor.symbol,
-      0,
-      1,
-    ).apply {
-      arguments[0] = IrConstImpl.string(
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET,
-        pluginContext.irBuiltIns.stringType,
-        "__bridgeRegister",
-      )
-    }
-    fileForModule.declarations += bridgeRegisterFn
-  }
-  val bridgeRegisterSymbol = bridgeRegisterFn.symbol
+  // Companion constructors register through the same symbol the module-load hook uses: zipline's
+  // tolerant `registerBridge` when it is on the classpath, otherwise the raw `__bridgeRegister`
+  // external. See findOrCreateBridgeRegister.
+  val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
 
   for (clazz in dispatchClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
@@ -247,4 +208,59 @@ internal fun addJsNameAnnotation(
   )
   annotation.arguments[0] = nameExpr
   property.annotations += annotation
+}
+
+/** Find the synthetic `__bridgeRegister` external fun, creating it (with @JsName) if absent. */
+private fun findOrCreateBridgeRegister(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  fileForModule: IrFile,
+): IrSimpleFunctionSymbol {
+  // Prefer zipline's helper: it no-ops when no host installed `__bridgeRegister` (a bare Kotlin/JS
+  // runtime, e.g. a unit test), where the raw call below would throw at class-initialization time
+  // for every bridged class the runtime touches. Modules that do not have the annotations artifact
+  // on their classpath keep the raw external.
+  finder.findFunctions(CallableId(FqName("app.cash.zipline"), Name.identifier("registerBridge")))
+    .firstOrNull()
+    ?.let { return it }
+
+  val existing = fileForModule.declarations
+    .filterIsInstance<IrSimpleFunction>()
+    .firstOrNull { it.name.asString() == "__bridgeRegister" }
+  if (existing != null) return existing.symbol
+
+  val bridgeRegisterFn = pluginContext.irFactory.buildFun {
+    name = Name.identifier("__bridgeRegister")
+    returnType = pluginContext.irBuiltIns.unitType
+    visibility = DescriptorVisibilities.INTERNAL
+    origin = IrDeclarationOrigin.DEFINED
+    isExternal = true
+  }
+  bridgeRegisterFn.parent = fileForModule
+  bridgeRegisterFn.addValueParameter {
+    name = Name.identifier("fqn")
+    type = pluginContext.irBuiltIns.stringType
+  }
+  bridgeRegisterFn.addValueParameter {
+    name = Name.identifier("ctor")
+    type = pluginContext.irBuiltIns.anyNType
+  }
+  val jsNameClass = finder.findClass(JS_NAME_CLASS_ID)!!
+  val jsNameCtor = jsNameClass.owner.declarations
+    .filterIsInstance<IrConstructor>()
+    .firstOrNull { it.isPrimary }!!
+  bridgeRegisterFn.annotations += IrConstructorCallImpl(
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    jsNameCtor.returnType, jsNameCtor.symbol,
+    0,
+    1,
+  ).apply {
+    arguments[0] = IrConstImpl.string(
+      UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType, "__bridgeRegister",
+    )
+  }
+  fileForModule.declarations += bridgeRegisterFn
+  return bridgeRegisterFn.symbol
 }

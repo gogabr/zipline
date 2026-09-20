@@ -9,6 +9,8 @@ import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.hasAnnotation
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.name.FqName
 import java.io.File
 
@@ -98,7 +100,11 @@ private fun collectRuntimeImports(
   }
 }
 
-internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
+internal fun generateNativeBridgeFile(
+  outputDir: String,
+  clazz: IrClass,
+  messageCollector: MessageCollector? = null,
+) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
   val functionName = "${fqn.replace(".", "_")}_toKotlin"
   val fields = extractFields(clazz)
@@ -110,11 +116,21 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     clazz.hasAnnotation(REDWOOD_CODEGEN_API_FQN) ||
       (clazz.parent as? IrClass)?.hasAnnotation(REDWOOD_CODEGEN_API_FQN) == true
 
-  // Skip classes with unsupported field types (Function* object types).
-  val hasUnsupported = fields.any {
-    (it.isObjectType && it.ktType.startsWith("kotlin.Function"))
+  // zipline has no function bridge, so a NON-NULLABLE function-typed field makes the class
+  // unconvertible. Say so instead of silently generating no converter: the host would otherwise
+  // report a missing converter far from the cause. A nullable function field decodes to null.
+  val nonNullableFunctionField = fields.firstOrNull {
+    it.isObjectType && it.ktType.startsWith("kotlin.Function") && !it.isNullable
   }
-  if (hasUnsupported) return
+  if (nonNullableFunctionField != null) {
+    messageCollector?.report(
+      CompilerMessageSeverity.WARNING,
+      "No bridge generated for ${fqn}: its field '${nonNullableFunctionField.name}' has type " +
+        "'${nonNullableFunctionField.ktType}', which zipline cannot convert. Make the field " +
+        "nullable, or remove the bridge annotation.",
+    )
+    return
+  }
 
   val source = buildString {
     appendLine("@file:Suppress(\"UNUSED_PARAMETER\", \"unused\", \"INVISIBLE_MEMBER\", \"INVISIBLE_REFERENCE\", \"UNCHECKED_CAST\")")
@@ -339,6 +355,12 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
             appendLine("    val ${field.name}: Array<$renderedElement> = $conv")
           }
           appendLine("    ${freeRef()}")
+        }
+        // zipline has no function bridge: a function-typed field cannot cross. A nullable one
+        // decodes to null; a non-nullable one is refused before generation (see above). The local
+        // is intentionally untyped so it takes the constructor parameter's type.
+        field.isObjectType && field.ktType.startsWith("kotlin.Function") -> {
+          appendLine("    val ${field.name} = null")
         }
         field.isObjectType && field.ktType != "kotlin.Any" -> {
           val typeName = field.ktType.substringAfterLast(".")
@@ -598,8 +620,12 @@ private fun emitElementConversion(
 }
 
 /** Generate per-class native bridge files. Each file self-registers via @EagerInitialization. */
-internal fun generateNativeBridges(outputDir: String, dispatchClasses: List<IrClass>) {
+internal fun generateNativeBridges(
+  outputDir: String,
+  dispatchClasses: List<IrClass>,
+  messageCollector: MessageCollector? = null,
+) {
   for (clazz in dispatchClasses) {
-    generateNativeBridgeFile(outputDir, clazz)
+    generateNativeBridgeFile(outputDir, clazz, messageCollector)
   }
 }

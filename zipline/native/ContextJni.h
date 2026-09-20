@@ -93,33 +93,33 @@ class ContextJni : public ContextBase {
   // RDMA Changes support.
   // Stateless JsonElement factories on the RdmaBridge companion (still @JvmStatic).
   jclass rdmaBridgeClass = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveString;
-  jmethodID rdmaBridgeJsonPrimitiveInt;
-  jmethodID rdmaBridgeJsonPrimitiveLong;
-  jmethodID rdmaBridgeJsonPrimitiveDouble;
-  jmethodID rdmaBridgeJsonPrimitiveBoolean;
-  jmethodID rdmaBridgeJsonNull;
-  jmethodID rdmaBridgeCreateJsonArray;
-  jmethodID rdmaBridgeCreateJsonObject;
-  jclass arrayListClass;
-  jmethodID arrayListInit;
-  jmethodID arrayListInitWithCapacity;
-  jmethodID arrayListAdd;
+  jmethodID rdmaBridgeJsonPrimitiveString = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveInt = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveLong = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveDouble = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveBoolean = nullptr;
+  jmethodID rdmaBridgeJsonNull = nullptr;
+  jmethodID rdmaBridgeCreateJsonArray = nullptr;
+  jmethodID rdmaBridgeCreateJsonObject = nullptr;
+  jclass arrayListClass = nullptr;
+  jmethodID arrayListInit = nullptr;
+  jmethodID arrayListInitWithCapacity = nullptr;
+  jmethodID arrayListAdd = nullptr;
 
   // Per-session RdmaChangeSink (global ref owned by this context). All change
   // delivery goes through this instance, so concurrent sessions never route
   // changes into each other's UI.
   jobject rdmaChangeSink = nullptr;
-  jmethodID rdmaSinkCreateCreate;
-  jmethodID rdmaSinkCreatePropertyChange;
-  jmethodID rdmaSinkCreateModifierChange;
-  jmethodID rdmaSinkCreateAdd;
-  jmethodID rdmaSinkCreateRemove;
-  jmethodID rdmaSinkCreateMove;
-  jmethodID rdmaSinkCreateBridgeChange;
-  jmethodID rdmaSinkSetRemoveDetach;
-  jmethodID rdmaSinkSendBatch;
-  jmethodID rdmaSinkSendChanges;
+  jmethodID rdmaSinkCreateCreate = nullptr;
+  jmethodID rdmaSinkCreatePropertyChange = nullptr;
+  jmethodID rdmaSinkCreateModifierChange = nullptr;
+  jmethodID rdmaSinkCreateAdd = nullptr;
+  jmethodID rdmaSinkCreateRemove = nullptr;
+  jmethodID rdmaSinkCreateMove = nullptr;
+  jmethodID rdmaSinkCreateBridgeChange = nullptr;
+  jmethodID rdmaSinkSetRemoveDetach = nullptr;
+  jmethodID rdmaSinkSendBatch = nullptr;
+  jmethodID rdmaSinkSendChanges = nullptr;
 
   // kotlin.Pair for modifier elements.
   jclass pairClass = nullptr;

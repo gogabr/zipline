@@ -202,9 +202,16 @@ ContextJni::ContextJni(JNIEnv* env, bool forceEagerCompilation)
 }
 
 void ContextJni::deleteBridgeRefs(JNIEnv* env) {
+  // Each field is nulled as it is released: these caches are set independently (the JDK
+  // collection classes are cached even when redwood is absent), so a partially populated set must
+  // not leave a stale handle for a second release.
+  if (arrayListClass != nullptr) {
+    env->DeleteGlobalRef(arrayListClass);
+    arrayListClass = nullptr;
+  }
   if (rdmaBridgeClass != nullptr) {
     env->DeleteGlobalRef(rdmaBridgeClass);
-    env->DeleteGlobalRef(arrayListClass);
+    rdmaBridgeClass = nullptr;
   }
   if (rdmaChangeSink != nullptr) {
     env->DeleteGlobalRef(rdmaChangeSink);
@@ -445,37 +452,45 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
       jobjectArray result = env->NewObjectArray(static_cast<jsize>(len), objectClass, nullptr);
       for (size_t i = 0; i < len && !env->ExceptionCheck(); i++) {
         jobject el = toJavaObject(env, arr.getValueAtIndex(*runtime, i), false);
+        if (env->ExceptionCheck()) break;
         env->SetObjectArrayElement(result, static_cast<jsize>(i), el);
         if (el) env->DeleteLocalRef(el);
       }
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(result);
+        return nullptr;
+      }
       return result;
     }
+    // Kotlin/JS collections (map/set/list) are objects, not JS arrays. The guest identifies them
+    // and drives the iteration through its value ops: without this a guest-authored collection
+    // decodes to null.
+    int kind = jsiBridgeCollectionKind(*runtime, value);
+    if (kind != BRIDGE_COLLECTION_NONE) {
+      jobject result = jsiCollectionToJava(
+          env, *runtime, value, kind, jsiValueToBoxedLoud, jsiValueToBoxedLoud);
+      if (env->ExceptionCheck()) return nullptr;
+      if (result != nullptr) return result;
+    }
     // Try bridge_dispatch (bridged Kotlin/JS object → Java).
-    jsi::Value lowVal = obj.getProperty(*runtime, "bridge_dispatch_low");
-    jsi::Value highVal = obj.getProperty(*runtime, "bridge_dispatch_high");
-    if (!lowVal.isUndefined() && !highVal.isUndefined()) {
-      int32_t low = static_cast<int32_t>(lowVal.asNumber());
-      int32_t high = static_cast<int32_t>(highVal.asNumber());
-      intptr_t ptr = (static_cast<intptr_t>(high) << 32) |
-                     static_cast<intptr_t>(static_cast<uint32_t>(low));
+    intptr_t ptr = jsi_get_bridge_dispatch(*runtime, value);
+    if (ptr != 0) {
       JniBridgeDispatch* disp = reinterpret_cast<JniBridgeDispatch*>(ptr);
       jobject result = disp->toJavaObject(env, *runtime, value);
+      if (env->ExceptionCheck()) return nullptr;
       if (result) return result;
     }
-    // Try Kotlin/JS Long ({low_1, high_1}).
-    jsi::Value lo = obj.getProperty(*runtime, "low_1");
-    if (!lo.isUndefined()) {
-      jsi::Value hi = obj.getProperty(*runtime, "high_1");
-      jlong lv = (static_cast<jlong>(static_cast<int32_t>(hi.asNumber())) << 32) |
-                 (static_cast<jlong>(static_cast<uint32_t>(static_cast<int32_t>(lo.asNumber()))));
-      jvalue v;
-      v.j = lv;
-      return env->CallStaticObjectMethodA(longClass, longValueOf, &v);
-    }
+    // Boxed kotlin.Long: the guest reports its 32-bit halves (its own field names are mangled).
+    jobject boxedLong = jsiBridgeTryUnwrapLong(env, *runtime, value);
+    if (env->ExceptionCheck()) return nullptr;
+    if (boxedLong != nullptr) return boxedLong;
   }
   if (throwOnUnsupportedType) {
-    throwJsExceptionFmt(
-        env, this, "Cannot marshal Hermes value of this kind to Java");
+    // Name the offending class when a Kotlin class instance has no converter. Plain data - a plain
+    // JS object, a function, a Kotlin collection or Long, or kotlin.Unit (the value a Unit-returning
+    // guest function, e.g. the direct-event sink, produces) - decodes to null, which is what it did
+    // before and what the Kotlin/Native decoder does; only a class instance is an error.
+    jsiThrowUnbridgedJsObject(env, *runtime, value);
   }
   return nullptr;
 }
@@ -625,6 +640,19 @@ void ContextJni::throwJsException(const std::string& message) {
 }
 
 void ContextJni::cacheRdmaBridgeMethods(JNIEnv* env) {
+  // The JDK collection classes back every change that carries a payload, not just the RDMA
+  // bridge, so cache them before the optional RdmaBridge lookup below can bail out - otherwise a
+  // build with no redwood on the classpath leaves them null and the serialization path crashes.
+  if (this->arrayListClass == nullptr) {
+    jclass alCls = findClassOrNull(env, "java/util/ArrayList");
+    if (alCls != nullptr) {
+      this->arrayListClass = alCls;
+      this->arrayListInit = env->GetMethodID(alCls, "<init>", "()V");
+      this->arrayListInitWithCapacity = env->GetMethodID(alCls, "<init>", "(I)V");
+      this->arrayListAdd = env->GetMethodID(alCls, "add", "(Ljava/lang/Object;)Z");
+    }
+  }
+
   jclass cls = env->FindClass("app/cash/redwood/treehouse/RdmaBridge");
   if (!cls) {
     // RDMA is an optional integration: redwood-treehouse may be absent from
@@ -647,24 +675,17 @@ void ContextJni::cacheRdmaBridgeMethods(JNIEnv* env) {
   this->rdmaBridgeJsonPrimitiveLong = env->GetStaticMethodID(
     cls, "jsonPrimitiveLong", "(J)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonPrimitiveDouble = env->GetStaticMethodID(
-      cls, "jsonPrimitiveDouble", "(D)Lkotlinx/serialization/json/JsonPrimitive;");
+    cls, "jsonPrimitiveDouble", "(D)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonPrimitiveBoolean = env->GetStaticMethodID(
-      cls, "jsonPrimitiveBoolean", "(Z)Lkotlinx/serialization/json/JsonPrimitive;");
+    cls, "jsonPrimitiveBoolean", "(Z)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonNull = env->GetStaticMethodID(
-      cls, "jsonNull", "()Lkotlinx/serialization/json/JsonNull;");
+    cls, "jsonNull", "()Lkotlinx/serialization/json/JsonNull;");
   this->rdmaBridgeCreateJsonArray = env->GetStaticMethodID(
-      cls, "createJsonArray",
-      "(Ljava/util/List;)Lkotlinx/serialization/json/JsonArray;");
+    cls, "createJsonArray",
+    "(Ljava/util/List;)Lkotlinx/serialization/json/JsonArray;");
   this->rdmaBridgeCreateJsonObject = env->GetStaticMethodID(
-      cls, "createJsonObject",
-      "(Ljava/util/List;Ljava/util/List;)Lkotlinx/serialization/json/JsonObject;");
-
-  // ArrayList
-  jclass alCls = env->FindClass("java/util/ArrayList");
-  this->arrayListClass = static_cast<jclass>(env->NewGlobalRef(alCls));
-  this->arrayListInit = env->GetMethodID(alCls, "<init>", "()V");
-  this->arrayListInitWithCapacity = env->GetMethodID(alCls, "<init>", "(I)V");
-  this->arrayListAdd = env->GetMethodID(alCls, "add", "(Ljava/lang/Object;)Z");
+    cls, "createJsonObject",
+    "(Ljava/util/List;Ljava/util/List;)Lkotlinx/serialization/json/JsonObject;");
 
   pendingChanges.reserve(RDMA_BATCH_SIZE);
 }

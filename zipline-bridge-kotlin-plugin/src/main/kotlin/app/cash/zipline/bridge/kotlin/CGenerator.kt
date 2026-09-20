@@ -255,11 +255,25 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
     appendLine()
 
     if (isEnum) {
-      // Enum — read the JS ordinal and return values()[ordinal].
-      appendLine("    jsi::Value ordinalRaw = jsObj.asObject(rt).getProperty(rt, \"ordinal_1\");")
-      appendLine("    jint ordinal = (jint)ordinalRaw.asNumber();")
+        // Enum - the guest reports the ordinal through its value ops: Kotlin/JS mangles the ordinal
+        // field's name and production builds drop it, so a host-side field read would only work in
+        // development. A value that is not an enum instance yields -1 and fails loudly below.
+      appendLine("    jint ordinal = jsiBridgeEnumOrdinal(env, rt, jsObj);")
+      appendLine("    if (env->ExceptionCheck()) return NULL;")
+      appendLine("    if (ordinal < 0) {")
+      appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"),")
+      appendLine("            \"host bridge: the guest value for $jsClassName is not an enum instance\");")
+      appendLine("        return NULL;")
+      appendLine("    }")
       appendLine("    jobjectArray values = (jobjectArray)env->CallStaticObjectMethod(_cls, _valuesMethod);")
       appendLine("    if (env->ExceptionCheck()) return NULL;")
+      appendLine("    // Out-of-range index here would abort the VM inside GetObjectArrayElement.")
+      appendLine("    if (ordinal >= env->GetArrayLength(values)) {")
+      appendLine("        std::string _msg = \"host bridge: ordinal \" + std::to_string(ordinal) +")
+      appendLine("            \" is out of range for $jsClassName\";")
+      appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"), _msg.c_str());")
+      appendLine("        return NULL;")
+      appendLine("    }")
       appendLine("    jobject result = env->GetObjectArrayElement(values, ordinal);")
       appendLine("    if (env->ExceptionCheck()) return NULL;")
       appendLine("    return result;")
@@ -332,12 +346,9 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
             appendLine("        } else if (tag_${field.name} == JS_TAG_INT) {")
             appendLine("            $javaVar = (jlong)jsi_value_get_int(js_${field.name});")
             appendLine("        } else if (tag_${field.name} == JS_TAG_OBJECT) {")
-            appendLine("            /* Kotlin/JS Long: {low_1, high_1} packed representation */")
-            appendLine("            jsi::Value lowVal = jsi_get_property(rt, js_${field.name}, \"low_1\");")
-            appendLine("            jsi::Value highVal = jsi_get_property(rt, js_${field.name}, \"high_1\");")
-            appendLine("            jint low = jsi_value_get_int(lowVal);")
-            appendLine("            jint high = jsi_value_get_int(highVal);")
-            appendLine("            $javaVar = ((jlong)high << 32) | ((jlong)low & 0xFFFFFFFF);")
+            appendLine("            /* Boxed kotlin.Long: the guest reports its 32-bit halves (mangled fields). */")
+            appendLine("            $javaVar = jsiBridgeLongValue(env, rt, js_${field.name});")
+            appendLine("            if (env->ExceptionCheck()) return NULL;")
             appendLine("        } else {")
             appendLine("#ifdef __ANDROID__")
             appendLine("            __android_log_print(ANDROID_LOG_ERROR, \"BRIDGE\", \"Long field ${field.name}: unexpected JS tag %d\", tag_${field.name});")
@@ -381,22 +392,17 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
             appendLine("        $javaVar = ${inlineCPrefix}_fromValue(env, rt, js_${field.name});")
           }
           field.isObjectType -> {
-            appendLine("        // Look up bridge_dispatch on the sub-object to convert it.")
+            appendLine("        // Look up bridge_dispatch on the sub-object to convert it; an object the host")
+            appendLine("        // itself built has none, and the shared decoder handles that shape (and names")
+            appendLine("        // the class when nothing can decode it).")
             appendLine("        intptr_t _bridge_ptr_${field.name} = jsi_get_bridge_dispatch(rt, js_${field.name});")
             appendLine("        if (_bridge_ptr_${field.name} == 0) {")
-            appendLine("#ifdef __ANDROID__")
-            appendLine("            std::string dbgCtorNm_${field.name} = \"(unknown)\";")
-            appendLine("            jsi::Value dbgCtor_${field.name} = jsi_get_property(rt, js_${field.name}, \"constructor\");")
-            appendLine("            if (!dbgCtor_${field.name}.isUndefined() && !dbgCtor_${field.name}.isNull()) {")
-            appendLine("                jsi::Value dbgCtorNmVal_${field.name} = jsi_get_property(rt, dbgCtor_${field.name}, \"name\");")
-            appendLine("                dbgCtorNm_${field.name} = dbgCtorNmVal_${field.name}.asString(rt).utf8(rt);")
-            appendLine("            }")
-            appendLine("            __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"bridge_dispatch not found for field ${field.name} (ctor=%s)\", dbgCtorNm_${field.name}.c_str());")
-            appendLine("#endif")
-            appendLine("            return NULL;")
+            appendLine("            $javaVar = jsi_value_to_boxed(env, rt, js_${field.name});")
+            appendLine("            if (env->ExceptionCheck()) return NULL;")
+            appendLine("        } else {")
+            appendLine("            JniBridgeDispatch *disp_${field.name} = (JniBridgeDispatch *)_bridge_ptr_${field.name};")
+            appendLine("            $javaVar = disp_${field.name}->toJavaObject(env, rt, js_${field.name});")
             appendLine("        }")
-            appendLine("        JniBridgeDispatch *disp_${field.name} = (JniBridgeDispatch *)_bridge_ptr_${field.name};")
-            appendLine("        $javaVar = disp_${field.name}->toJavaObject(env, rt, js_${field.name});")
           }
         }
   
@@ -464,10 +470,9 @@ internal fun generateBridgeFile(outputDir: String, annotatedClass: IrClass) {
       appendLine("            java_v = ($underlyingCType)jsi_value_get_int(jsVal);")
       if (underlyingField.effectiveKtType == "kotlin.Long") {
         appendLine("        } else if (tag_v == JS_TAG_OBJECT) {")
-        appendLine("            /* Kotlin/JS Long: {low_1, high_1} packed representation */")
-        appendLine("            jsi::Value lv = jsi_get_property(rt, jsVal, \"low_1\");")
-        appendLine("            jsi::Value hv = jsi_get_property(rt, jsVal, \"high_1\");")
-        appendLine("            java_v = (($underlyingCType)jsi_value_get_int(hv) << 32) | (($underlyingCType)jsi_value_get_int(lv) & 0xFFFFFFFF);")
+        appendLine("            /* Boxed kotlin.Long: the guest reports its 32-bit halves (mangled fields). */")
+        appendLine("            java_v = ($underlyingCType)jsiBridgeLongValue(env, rt, jsVal);")
+        appendLine("            if (env->ExceptionCheck()) return NULL;")
       }
       appendLine("        } else {")
       appendLine("#ifdef __ANDROID__")
@@ -575,26 +580,9 @@ private fun emitCValueConverter(
       helpers.appendLine(
         """
         static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
-          jclass alc = env->FindClass("java/util/ArrayList");
-          jmethodID alc_init = env->GetMethodID(alc, "<init>", "()V");
-          jmethodID alc_add = env->GetMethodID(alc, "add", "(Ljava/lang/Object;)Z");
-          jobject result = env->NewObject(alc, alc_init);
-          jsi::Value arr = jsi::Value(rt, jsVal);
-          if (arr.isObject()) {
-            jsi::Value wrap = arr.asObject(rt).getProperty(rt, "array_1");
-            if (!wrap.isUndefined()) arr = jsi::Value(rt, wrap);
-          }
-          if (!arr.isObject()) return result;
-          jsi::Value lenVal = arr.asObject(rt).getProperty(rt, "length");
-          if (!lenVal.isNumber()) return result;
-          jint len = (jint)lenVal.asNumber();
-          for (jint i = 0; i < len; i++) {
-            jsi::Value elem = arr.asObject(rt).getProperty(rt, std::to_string(i).c_str());
-            jobject je = $elementName(env, rt, elem);
-            if (je) env->CallBooleanMethod(result, alc_add, je);
-            if (je) env->DeleteLocalRef(je);
-          }
-          return result;
+          // JS arrays are indexed directly; other Kotlin/JS lists (EmptyList, Singletons) go
+          // through the guest's accessors.
+          return jsiCollectionToJava(env, rt, jsVal, BRIDGE_COLLECTION_LIST, NULL, $elementName);
         }
         """.trimIndent(),
       )
@@ -636,39 +624,10 @@ private fun emitCValueConverter(
       helpers.appendLine(
         """
         static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
-          jclass hc = env->FindClass("java/util/HashMap");
-          jmethodID hc_init = env->GetMethodID(hc, "<init>", "()V");
-          jmethodID hc_put = env->GetMethodID(hc, "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
-          jobject result = env->NewObject(hc, hc_init);
-          if (!jsVal.isObject()) return result;
-          jsi::Value entriesFn = jsi_find_method(rt, jsVal, "get_entries_");
-          if (entriesFn.isUndefined() || !entriesFn.isObject()) return result;
-          jsi::Value entries = entriesFn.asObject(rt).asFunction(rt).callWithThis(rt, jsVal.asObject(rt));
-          if (!entries.isObject()) return result;
-          jsi::Value iterFn = jsi_find_method(rt, entries, "iterator_");
-          if (iterFn.isUndefined() || !iterFn.isObject()) return result;
-          jsi::Value iterator = iterFn.asObject(rt).asFunction(rt).callWithThis(rt, entries.asObject(rt));
-          if (!iterator.isObject()) return result;
-          jsi::Value hasNextFn = jsi_find_method(rt, iterator, "hasNext_");
-          jsi::Value nextFn = jsi_find_method(rt, iterator, "next_");
-          if (hasNextFn.isUndefined() || nextFn.isUndefined()) return result;
-          while (true) {
-            jsi::Value hn = hasNextFn.asObject(rt).asFunction(rt).callWithThis(rt, iterator.asObject(rt));
-            if (!hn.isBool() || !hn.asBool()) break;
-            jsi::Value entry = nextFn.asObject(rt).asFunction(rt).callWithThis(rt, iterator.asObject(rt));
-            if (!entry.isObject()) break;
-            jsi::Value keyFn = jsi_find_method(rt, entry, "get_key_");
-            jsi::Value valueFn = jsi_find_method(rt, entry, "get_value_");
-            if (keyFn.isUndefined() || valueFn.isUndefined()) break;
-            jsi::Value keyVal = keyFn.asObject(rt).asFunction(rt).callWithThis(rt, entry.asObject(rt));
-            jsi::Value valueVal = valueFn.asObject(rt).asFunction(rt).callWithThis(rt, entry.asObject(rt));
-            jobject jk = keyVal.isUndefined() ? nullptr : $keyName(env, rt, keyVal);
-            jobject jv = valueVal.isUndefined() ? nullptr : $valueName(env, rt, valueVal);
-            env->CallObjectMethod(result, hc_put, jk, jv);
-            if (jk) env->DeleteLocalRef(jk);
-            if (jv) env->DeleteLocalRef(jv);
-          }
-          return result;
+          // The guest identifies the collection and drives the iteration: Kotlin/JS mangles the
+          // stdlib member names (and production builds drop them), so a host-side walk of a
+          // Kotlin/JS Map works in development and yields an empty map in production.
+          return jsiCollectionToJava(env, rt, jsVal, BRIDGE_COLLECTION_MAP, $keyName, $valueName);
         }
         """.trimIndent(),
       )
@@ -706,7 +665,7 @@ private fun emitCValueConverter(
             JniBridgeDispatch *disp = (JniBridgeDispatch*)ptr;
             return disp->toJavaObject(env, rt, jsVal);
           }
-          return nullptr;
+          return jsi_value_to_boxed(env, rt, jsVal);
         }
         """.trimIndent(),
       )
@@ -775,14 +734,12 @@ internal fun generateKeepNames(outputDir: String, annotatedClasses: List<IrClass
   for (clazz in annotatedClasses) {
     if (clazz.kind == ClassKind.INTERFACE) continue
     val fqName = clazz.fqNameWhenAvailable?.asString() ?: continue
-    if (clazz.kind == ClassKind.ENUM_CLASS) {
-      // Enum ordinals are read by the C bridge via a hardcoded `ordinal_1` (not via extractFields).
-      names += "$fqName.ordinal"
-    } else {
-      for (field in extractFields(clazz, includeValBodyFields = true)) {
-        if (field.jsPropertyName.endsWith("_1")) {
-          names += "$fqName.${field.name}"
-        }
+    // Enums need no kept name: the guest reports the ordinal through its value ops, and an enum
+    // never crosses host -> JS (see CGenerator.emitHost2JsConvertToJs).
+    if (clazz.kind == ClassKind.ENUM_CLASS) continue
+    for (field in extractFields(clazz, includeValBodyFields = true)) {
+      if (field.jsPropertyName.endsWith("_1")) {
+        names += "$fqName.${field.name}"
       }
     }
   }

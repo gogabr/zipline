@@ -52,6 +52,7 @@ class ContextJni : public ContextBase {
   void throwJsException(JNIEnv* env, jsi::JSError& error);
   jsi::Value throwJavaExceptionFromJs(JNIEnv* env);
 
+  bool hasPendingPlatformException() override;
   // Stashed Java throwable from a host-function call. Set by
   // throwJavaExceptionFromJs (after ExceptionClear), consumed and reset
   // by throwJsException when the wrapping JS error is observed.

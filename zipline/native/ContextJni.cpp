@@ -123,6 +123,40 @@ bool tryAsInt64(double d, int64_t& out) {
   return true;
 }
 
+/**
+ * Reports a pending Java exception and clears it. A conversion that failed leaves one pending;
+ * continuing to call JNI with it pending aborts the VM, which hides the original failure, and the
+ * caller is dropping the work item anyway. The message goes to logcat (Android) or stderr (JVM)
+ * so the real cause stays visible.
+ */
+void reportAndClearPendingException(JNIEnv* env, const char* what) {
+  if (!env->ExceptionCheck()) return;
+  jthrowable pending = env->ExceptionOccurred();
+  env->ExceptionClear();
+  std::string description;
+  if (pending != nullptr) {
+    jclass throwableClass = env->FindClass("java/lang/Throwable");
+    if (throwableClass != nullptr) {
+      jmethodID toString = env->GetMethodID(throwableClass, "toString", "()Ljava/lang/String;");
+      if (toString != nullptr) {
+        jstring text = static_cast<jstring>(env->CallObjectMethod(pending, toString));
+        if (!env->ExceptionCheck() && text != nullptr) {
+          description = zipline::jniStringToUtf8(env, text);
+        }
+        env->ExceptionClear();
+      }
+      env->DeleteLocalRef(throwableClass);
+    }
+    env->ExceptionClear();
+    env->DeleteLocalRef(pending);
+  }
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_ERROR, "BRIDGE", "%s: %s", what, description.c_str());
+#else
+  fprintf(stderr, "BRIDGE: %s: %s\n", what, description.c_str());
+#endif
+}
+
 }  // namespace
 
 ContextJni::ContextJni(JNIEnv* env, bool forceEagerCompilation)
@@ -245,6 +279,9 @@ ContextJni::~ContextJni() {
 }
 
 jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) {
+  // Guest code that called into a host bridge may have left a Java exception pending. Every
+  // further JNI call with one pending is undefined and aborts the VM, so report it and stop.
+  if (env->ExceptionCheck()) return nullptr;
   // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
@@ -275,6 +312,9 @@ jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
                      "evaluate() is not available in lean Hermes build");
   return nullptr;
 #else
+  // Guest code that called into a host bridge may have left a Java exception pending. Every
+  // further JNI call with one pending is undefined and aborts the VM, so report it and stop.
+  if (env->ExceptionCheck()) return nullptr;
   // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
@@ -420,10 +460,15 @@ void ContextJni::setOutboundCallChannel(JNIEnv* env, jstring name, jobject callC
 
 jobject
 ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsupportedType) {
+  // A pending Java exception (e.g. a host bridge that threw while guest code ran) makes every
+  // further JNI call undefined; never start a conversion on top of one.
+  if (env->ExceptionCheck()) return nullptr;
   if (value.isBool()) {
     jvalue v;
     v.z = value.asBool() ? JNI_TRUE : JNI_FALSE;
-    return env->CallStaticObjectMethodA(booleanClass, booleanValueOf, &v);
+    jobject boxed = env->CallStaticObjectMethodA(booleanClass, booleanValueOf, &v);
+    if (env->ExceptionCheck()) return nullptr;
+    return boxed;
   }
   if (value.isNumber()) {
     double d = value.asNumber();
@@ -432,14 +477,20 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
     if (tryAsInt32(d, asInt)) {
       jvalue v;
       v.i = asInt;
-      return env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
+      jobject boxed = env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
+      if (env->ExceptionCheck()) return nullptr;
+      return boxed;
     }
     jvalue v;
     v.d = d;
-    return env->CallStaticObjectMethodA(doubleClass, doubleValueOf, &v);
+    jobject boxed = env->CallStaticObjectMethodA(doubleClass, doubleValueOf, &v);
+    if (env->ExceptionCheck()) return nullptr;
+    return boxed;
   }
   if (value.isString()) {
-    return toJavaString(env, value.asString(*runtime));
+    jstring result = toJavaString(env, value.asString(*runtime));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
   }
   if (value.isNull() || value.isUndefined()) {
     return nullptr;
@@ -493,6 +544,11 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
     jsiThrowUnbridgedJsObject(env, *runtime, value);
   }
   return nullptr;
+}
+
+bool ContextJni::hasPendingPlatformException() {
+  JNIEnv* env = getEnv();
+  return env != nullptr && env->ExceptionCheck();
 }
 
 void ContextJni::throwJsException(JNIEnv* env, jsi::JSError& error) {
@@ -880,6 +936,11 @@ void ContextJni::dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch) {
         JniBridgeDispatch* disp = reinterpret_cast<JniBridgeDispatch*>(ptr);
         jobject uiChange = disp->toJavaObject(env, rt, *ch.jsValue);
         if (!uiChange) {
+          // The generated converter failed. Report why and clear it: the change is dropped
+          // either way, and a pending exception left behind would abort the VM at the next JNI
+          // call, far from the cause (and hide it).
+          reportAndClearPendingException(
+              env, "host bridge: cannot decode a bridge change payload");
           return;
         }
         env->CallVoidMethod(rdmaChangeSink, rdmaSinkCreateBridgeChange, ch.id, uiChange);

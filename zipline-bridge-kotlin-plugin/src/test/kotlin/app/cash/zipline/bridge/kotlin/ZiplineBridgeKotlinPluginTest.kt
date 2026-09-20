@@ -933,6 +933,8 @@ class ZiplineBridgeNativePluginTest {
 
   @Test
   fun `simple class generates native bridge`() {
+<<<<<<< conflict 1 of 6
++++++++ ltxvwpsr 9b904c76 "[B] host2js plugin support and the guest module-load registration hook" (rebased revision)
     val content = generatedBridge(
       "Simple.kt",
       "@WithJS2HostBridge class Simple(val name: String, val age: Int)",
@@ -967,33 +969,100 @@ class ZiplineBridgeNativePluginTest {
     // Constructor call with params, returned as a StableRef
     assertTrue(content.contains("Simple(name = name, age = age)"))
     assertTrue(content.contains("return StableRef.create(_obj).asCPointer()"))
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "Simple.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class Simple(val name: String, val age: Int)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_Simple_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists(), "Expected native bridge file at ${ktFile.absolutePath}")
+ 
+       val content = ktFile.readText()
+ 
+       // Function signature returns the bridge handle (a COpaquePointer StableRef).
+       assertTrue(content.contains("public fun com_example_Simple_toKotlin("))
+       assertTrue(content.contains("): COpaquePointer? {"))
+ 
+       // Imports
+       assertTrue(content.contains("import kotlinx.cinterop.*"))
+       assertTrue(content.contains("import app.cash.zipline.hermes.*"))
+ 
+       // Field extraction from JS object
+       assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"name\")"))
+       assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"age\")"))
+ 
+       // String conversion
+       assertTrue(content.contains("HermesBridge_getValueString(ctx, nameRef)"))
+       assertTrue(content.contains("toKStringFromUtf8"))
+ 
+       // Int extraction
+       assertTrue(content.contains("HermesBridge_getValueDouble(ctx, ageRef).toInt()"))
+ 
+       // Handle cleanup
+       assertTrue(content.contains("HermesBridge_freeHandle(ctx,"))
+ 
+       // Constructor call with params
+       assertTrue(content.contains("Simple(name = name, age = age)"))
+ 
+       // Return as a StableRef handle (the engine's registerBridge takes a CFunction pointer)
+       assertTrue(content.contains("return StableRef.create(_obj).asCPointer()"))
+       assertTrue(content.contains("registerBridge(\"com.example.Simple\", staticCFunction(::com_example_Simple_toKotlin))"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test
-  fun `object field dispatches through bridge_dispatch`() {
-    val content = generatedBridge(
-      "Nested.kt",
-      """
-      @WithJS2HostBridge class Child(val x: Int)
-      @WithJS2HostBridge class Parent(val label: String, val child: Child)
-      """,
-      "Parent",
-    )
-
-    // Object field looks up its bridge_dispatch function pointer
-    assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"child\")"))
-    assertTrue(content.contains("HermesBridge_getBridgeDispatch(ctx, childRef)"))
-
-    // A missing dispatcher on a non-nullable field fails loudly
-    assertTrue(content.contains("if (childDispPtr == 0L) {"))
-    assertTrue(content.contains("bridge_dispatch not found"))
-
-    // The dispatcher returns a StableRef to the converted child
-    assertTrue(content.contains("toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()"))
-    assertTrue(content.contains("childDispatchFn(ctx, childRef)!!.asStableRef<Any>().get() as Child"))
-
-    // Handle cleanup
-    assertTrue(content.contains("HermesBridge_freeHandle(ctx, childRef)"))
+   fun `object field uses StableRef dispatch`() {
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "Nested.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class Child(val x: Int)
+           @WithJS2HostBridge
+           class Parent(val label: String, val child: Child)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_Parent_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists(), "Expected native bridge file for Parent")
+ 
+       val content = ktFile.readText()
+ 
+       // Object field gets bridge_dispatch lookup
+       assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"child\")"))
+       assertTrue(content.contains("HermesBridge_getBridgeDispatch(ctx, childRef)"))
+ 
+       // The registered converter is called through the dispatch pointer; an object without one
+       // (a plain JS object) falls back to bridgeForAny.
+       assertTrue(content.contains("childDispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!"))
+       assertTrue(content.contains("childDispatchFn(ctx, childRef)!!.asStableRef<Any>().get() as Child"))
+       assertTrue(content.contains("bridgeForAny(ctx, childRef) as Child"))
+ 
+       // Handle cleanup
+       assertTrue(content.contains("HermesBridge_freeHandle(ctx, childRef)"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test
@@ -1018,70 +1087,147 @@ class ZiplineBridgeNativePluginTest {
 
   @Test
   fun `nullable string field has null check`() {
-    val content = generatedBridge(
-      "OptStr.kt",
-      "@WithJS2HostBridge class OptStr(val name: String?)",
-      "OptStr",
-    )
-
-    // JS null/undefined map to null rather than being read as a string
-    assertTrue(
-      content.contains(
-        "if (HermesBridge_getValueTag(ctx, nameRef) == TAG_UNDEFINED || " +
-          "HermesBridge_getValueTag(ctx, nameRef) == TAG_NULL) null else",
-      ),
-    )
-    assertTrue(content.contains("toKStringFromUtf8()?.also { platform.posix.free(nameStr) }"))
-    assertFalse(content.contains("?: \"\""), "Nullable string should not default to empty")
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "OptStr.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class OptStr(val name: String?)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_OptStr_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists())
+ 
+       val content = ktFile.readText()
+ 
+       // Null check: JS null/undefined is guarded BEFORE the string conversion, since
+       // String(null) is "null"
+       assertTrue(
+         content.contains(
+           "val name = if (HermesBridge_getValueTag(ctx, nameRef) == TAG_UNDEFINED || " +
+             "HermesBridge_getValueTag(ctx, nameRef) == TAG_NULL) null else",
+         ),
+       )
+       assertTrue(content.contains("toKStringFromUtf8"))
+       assertTrue(content.contains("platform.posix.free(nameStr)"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test
-  fun `list field converts each array element`() {
-    val content = generatedBridge(
-      "WithList.kt",
-      "@WithJS2HostBridge class WithList(val items: List<String>)",
-      "WithList",
-    )
-
-    // Kotlin/JS lists keep their elements in array_1; plain JS arrays are used as-is
-    assertTrue(content.contains("HermesBridge_createHandle(ctx, itemsRef, \"array_1\")"))
-    assertTrue(content.contains("val items: List<String> = conv_items(ctx, itemsArrRef)"))
-
-    // Element loop
-    assertTrue(content.contains("private fun conv_items(ctx: COpaquePointer?, jsArrHandle: Int): List<String>"))
-    assertTrue(content.contains("val len = HermesBridge_getArrayLength(ctx, arr)"))
-    assertTrue(content.contains("while (i < len)"))
-    assertTrue(content.contains("HermesBridge_createArrayElementHandle(ctx, arr, i)"))
-    assertTrue(content.contains("mutableListOf<String>()"))
-    assertTrue(content.contains("HermesBridge_freeHandle(ctx, elemRef)"))
+   fun `list field uses the guest-driven collection decoder`() {
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "WithList.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class WithList(val items: List<String>)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_WithList_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists())
+ 
+       val content = ktFile.readText()
+ 
+       // List extraction: the guest drives the iteration and identifies the collection kind
+       // (Kotlin/JS mangles the stdlib member names), and the list is unwrapped from the
+       // array-backed ArrayList before the decode.
+       assertTrue(content.contains("HermesBridge_createHandle(ctx, itemsRef, \"array_1\")"))
+       assertTrue(content.contains("conv_items(ctx, itemsArrRef)"))
+       assertTrue(content.contains("jsCollectionToKotlin(ctx, jsArrHandle, CollectionKind.LIST)"))
+       assertTrue(content.contains("HermesBridge_getValueString(ctx, element)"))
+       assertTrue(content.contains("toKStringFromUtf8"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test
   fun `per-class bridge self-registers via EagerInitialization`() {
-    val content = generatedBridge(
-      "Foo.kt",
-      "@WithJS2HostBridge class Foo(val x: Int)",
-      "Foo",
-    )
-
-    assertTrue(content.contains("@kotlin.native.EagerInitialization"))
-    assertTrue(
-      content.contains(
-        "registerBridge(\"com.example.Foo\", staticCFunction(::com_example_Foo_toKotlin))",
-      ),
-    )
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "Foo.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           class Foo(val x: Int)
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       // Per-class file has @EagerInitialization self-registration
+       val bridgeFile = outputDir.resolve("com_example_Foo_bridge_native.kt").toFile()
+       assertTrue(bridgeFile.exists(), "Expected per-class bridge file")
+       val bridgeContent = bridgeFile.readText()
+       assertTrue(bridgeContent.contains("@kotlin.native.EagerInitialization"))
+       // Converter names come from the FQN, so same-simple-name classes cannot collide.
+       assertTrue(
+         bridgeContent.contains(
+           "registerBridge(\"com.example.Foo\", staticCFunction(::com_example_Foo_toKotlin))",
+         ),
+       )
+ 
+ 
+       // No centralized retain file - each class self-registers
+       val retainFile = outputDir.resolve("_BridgeRetainAll.kt").toFile()
+       assertFalse(retainFile.exists(), "_BridgeRetainAll.kt should not be generated")
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 
   @Test
   fun `enum generates ordinal extraction`() {
-    val content = generatedBridge(
-      "Color.kt",
-      "@WithJS2HostBridge enum class Color { RED, GREEN, BLUE }",
-      "Color",
-    )
-
-    assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"ordinal_1\")"))
-    assertTrue(content.contains("val ordinal = HermesBridge_getValueDouble(ctx, ordinalRef).toInt()"))
-    assertTrue(content.contains("val _obj = Color.entries[ordinal]"))
+     val outputDir = createTempDirectory("zipline-bridge-native-test")
+     try {
+       val result = compileWithNativeOutputDir(
+         sourceFile = SourceFile.kotlin(
+           "Color.kt",
+           """
+           package com.example
+           import app.cash.zipline.bridge.support.WithJS2HostBridge
+           @WithJS2HostBridge
+           enum class Color { RED, GREEN, BLUE }
+           """,
+         ),
+         nativeOutputDir = outputDir.toString(),
+       )
+       assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+ 
+       val ktFile = outputDir.resolve("com_example_Color_bridge_native.kt").toFile()
+       assertTrue(ktFile.exists())
+ 
+       val content = ktFile.readText()
+ 
+       // Enum ordinal extraction: the guest reports it (Kotlin/JS mangles the ordinal field), and
+       // an out-of-range ordinal fails loudly instead of throwing an index exception.
+       assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
+       assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
+       assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for Color"))
+     } finally {
+       outputDir.toFile().deleteRecursively()
+     }
   }
 }

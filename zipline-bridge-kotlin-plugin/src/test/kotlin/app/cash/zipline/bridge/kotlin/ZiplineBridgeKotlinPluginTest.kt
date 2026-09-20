@@ -1008,14 +1008,10 @@ class ZiplineBridgeNativePluginTest {
 
       val content = ktFile.readText()
 
-      // Null check wrapping the dispatch
-      assertTrue(content.contains("JS_IsUndefined(innerRef)"))
-      assertTrue(content.contains("JS_IsNull(innerRef)"))
-      assertTrue(content.contains("null else {"))
-
-      // StableRef dispatch inside null check
-      assertTrue(content.contains("bridge_dispatch"))
-      assertTrue(content.contains(".get()(ctx, innerRef) as Inner"))
+      // Null check wrapping the dispatch: no dispatch pointer (null/undefined) decodes to null.
+      assertTrue(content.contains("val inner = if (innerDispPtr == 0L) null else {"))
+      assertTrue(content.contains("innerDispatchFn(ctx, innerRef)?.asStableRef<Any>()?.get() as? Inner"))
+      assertTrue(content.contains("HermesBridge_freeHandle(ctx, innerRef)"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }

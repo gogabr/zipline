@@ -372,11 +372,15 @@ internal fun generateNativeBridgeFile(
             appendLine("        ${field.name}DispatchFn(ctx, ${field.name}Ref)?.asStableRef<Any>()?.get() as? $typeName")
             appendLine("    }")
           } else {
-            appendLine("    if (${field.name}DispPtr == 0L) {")
-            appendLine("        throw IllegalStateException(\"BRIDGE: non-nullable field ${field.name} ($typeName) — bridge_dispatch not found\")")
+            // An object the HOST built for a host->JS conversion carries no dispatch pointer, so
+            // fall back to the shared decoder - it names the class when nothing can decode it -
+            // rather than dereferencing a null pointer.
+            appendLine("    val ${field.name} = if (${field.name}DispPtr == 0L) {")
+            appendLine("        bridgeForAny(ctx, ${field.name}Ref) as $typeName")
+            appendLine("    } else {")
+            appendLine("        val ${field.name}DispatchFn = ${field.name}DispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!")
+            appendLine("        ${field.name}DispatchFn(ctx, ${field.name}Ref)!!.asStableRef<Any>().get() as $typeName")
             appendLine("    }")
-            appendLine("    val ${field.name}DispatchFn = ${field.name}DispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!")
-            appendLine("    val ${field.name} = ${field.name}DispatchFn(ctx, ${field.name}Ref)!!.asStableRef<Any>().get() as $typeName")
           }
           appendLine("    ${freeRef()}")
         }
@@ -390,9 +394,10 @@ internal fun generateNativeBridgeFile(
           appendLine("    ${freeRef()}")
         }
         else -> {
+          // Anything left is decoded generically: the shared decoder handles scalars, strings,
+          // collections and bridged objects, and names the class when it can decode nothing.
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
-          appendLine("    // TODO: unsupported type ${field.ktType} (isObjectType=${field.isObjectType}, isInline=${field.isInline})")
-          appendLine("    val ${field.name} = ${field.name}Ref  // stub")
+          appendLine("    val ${field.name} = bridgeForAny(ctx, ${field.name}Ref)")
           appendLine("    ${freeRef()}")
         }
       }
@@ -611,9 +616,9 @@ private fun emitElementConversion(
       val typeName = ktType.substringAfterLast(".")
       val isNullableElem = (type as? IrSimpleType)?.isMarkedNullable() ?: false
       if (isNullableElem) {
-        "(HermesBridge_getBridgeDispatch(ctx, $expr).toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)?.asStableRef<Any>()?.get() as? $typeName)"
+        "(run { val d = HermesBridge_getBridgeDispatch(ctx, $expr); if (d == 0L) bridgeForAny(ctx, $expr) else d.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)?.asStableRef<Any>()?.get() } as? $typeName)"
       } else {
-        "(HermesBridge_getBridgeDispatch(ctx, $expr).toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)!!.asStableRef<Any>().get() as $typeName)"
+        "(run { val d = HermesBridge_getBridgeDispatch(ctx, $expr); if (d == 0L) bridgeForAny(ctx, $expr) else d.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)!!.asStableRef<Any>().get() } as $typeName)"
       }
     }
   }

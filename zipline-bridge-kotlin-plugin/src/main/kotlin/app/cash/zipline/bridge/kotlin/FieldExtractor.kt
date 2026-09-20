@@ -5,7 +5,12 @@ import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
+import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.ir.types.IrTypeProjection
+import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.hasAnnotation
@@ -43,6 +48,34 @@ internal fun collectAnnotatedClasses(
   }
 }
 
+/** Collect all classes in the module annotated with @WithHost2JSBridge. */
+internal fun findHost2JsAnnotatedClasses(
+  moduleFragment: IrModuleFragment,
+): List<IrClass> {
+  val result = mutableListOf<IrClass>()
+  for (irFile in moduleFragment.files) {
+    for (declaration in irFile.declarations) {
+      collectHost2JsAnnotatedClasses(declaration, result)
+    }
+  }
+  return result
+}
+
+/** Walk [declaration] and its nested classes, collecting @WithHost2JSBridge-annotated ones. */
+internal fun collectHost2JsAnnotatedClasses(
+  declaration: org.jetbrains.kotlin.ir.declarations.IrDeclaration,
+  acc: MutableList<IrClass>,
+) {
+  if (declaration is IrClass) {
+    if (hasWithHost2JSBridgeAnnotation(declaration)) {
+      acc.add(declaration)
+    }
+    for (nested in declaration.declarations) {
+      collectHost2JsAnnotatedClasses(nested, acc)
+    }
+  }
+}
+
 internal fun importForType(fqName: String): String {
   val lastDot = fqName.lastIndexOf('.')
   if (lastDot < 0) return ""
@@ -51,6 +84,10 @@ internal fun importForType(fqName: String): String {
   return "import $pkg.$shortName"
 }
 
+/**
+ * Generates a single file that retains all bridge functions in the module,
+ * preventing the linker from dead-code eliminating them.
+ */
 /** Emit C code to extract an array field value. */
 internal fun extractFields(annotatedClass: IrClass, includeValBodyFields: Boolean = false): List<FieldInfo> {
   val primaryConstructor = annotatedClass.declarations
@@ -106,6 +143,12 @@ internal fun hasWithJS2HostBridgeAnnotation(irClass: IrClass): Boolean {
   }
 }
 
+internal fun hasWithHost2JSBridgeAnnotation(irClass: IrClass): Boolean {
+  return irClass.annotations.any {
+    it.symbol.owner.returnType.getClass()?.classId == WITH_HOST2JS_BRIDGE_CLASS_ID
+  }
+}
+
 /** Check if an [IrClass] is an inline value class. */
 internal fun isInlineClass(irClass: IrClass): Boolean {
   // value classes have isValue=true in Kotlin 2.x IR; fallback to @JvmInline annotation
@@ -132,3 +175,11 @@ internal fun isJniPrimitive(ktType: String): Boolean =
 
 internal fun isKnownType(ktType: String): Boolean =
   ktType in kotlinToJniFieldType
+
+internal fun isPrimitiveArray(ktType: String): Boolean =
+  ktType in primitiveArrayJniInfo
+
+internal fun isStringElement(elementType: String?): Boolean =
+  elementType == "kotlin.String"
+
+

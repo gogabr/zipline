@@ -489,6 +489,28 @@ Java_app_cash_zipline_JsEngine_callGuestFunction(JNIEnv* env, jobject /*thiz*/,
   return ctx->callGuestFunction(env, name, args);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_app_cash_zipline_JsEngine_warmUpModule(JNIEnv* env, jobject /*thiz*/,
+                                            jlong _context, jstring moduleId,
+                                            jstring functionName) {
+  ContextJni* ctx = toContext(_context);
+  if (!ctx) {
+    throwJavaException(env, "java/lang/IllegalStateException",
+                       "JsEngine instance was closed");
+    return;
+  }
+  std::string modId = jstringToCppString(env, moduleId);
+  std::string fnName = jstringToCppString(env, functionName);
+  char* error = nullptr;
+  // A module without the hook is not an error, so a 0 return is fine; a hook that ran and threw
+  // reports through error.
+  HermesCore_warmUpModule(ctx, modId.c_str(), fnName.c_str(), &error);
+  if (error != nullptr) {
+    throwJavaException(env, "java/lang/IllegalStateException", "%s", error);
+    free(error);
+  }
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_app_cash_zipline_JsEngine_cdpAttach(JNIEnv* env, jobject /*thiz*/,
                                          jlong _context, jobject listener) {

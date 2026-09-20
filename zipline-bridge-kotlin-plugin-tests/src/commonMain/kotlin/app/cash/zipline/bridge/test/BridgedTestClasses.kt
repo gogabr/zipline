@@ -24,26 +24,32 @@ data class BridgedData(
 )
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 @JvmInline
 value class BridgedInline(val raw: Int)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 @JvmInline
 value class BridgedFloat(val raw: Float)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 @JvmInline
 value class BridgedDouble(val raw: Double)
 
 /** Nested inline: a value class whose underlying type is itself a value class (like SpaceArrangement(spacing: Dp)). */
 @WithJS2HostBridge
+@WithHost2JSBridge
 @JvmInline
 value class BridgedNestedInline(val inner: BridgedDouble)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 enum class BridgedEnum { FIRST, SECOND, THIRD }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedEnumHolder(val value: BridgedEnum)
 
 /**
@@ -52,30 +58,52 @@ data class BridgedEnumHolder(val value: BridgedEnum)
  * bridge_dispatch property.
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedInlineHolder(val inlineValue: BridgedInline)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedFloatHolder(val floatValue: BridgedFloat)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedDoubleHolder(val doubleValue: BridgedDouble)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedNestedInlineHolder(val nested: BridgedNestedInline?)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedListHolder(val items: List<Int>)
 
+/**
+ * A function-typed field cannot cross the bridge - a guest lambda has no host representation - so
+ * it decodes to null. Regression for the native generator dropping such classes entirely, which
+ * left the host without a converter for a class the author annotated.
+ */
 @WithJS2HostBridge
+data class BridgedCallbackHolder(
+  val name: String,
+  val onDone: (() -> Unit)? = null,
+)
+
+@WithJS2HostBridge
+data class BridgedFloatListHolder(val items: List<Float>)
+
+@WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedNested(val outer: BridgedData)
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedNullable(val text: String?, val count: Int?)
 
 /**
  * Test class for arrays and lists of primitives
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedArray(
   val intArray: IntArray,
   val stringArray: Array<String>,
@@ -93,6 +121,7 @@ data class BridgedArray(
  * Test class for nested arrays/lists
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedNestedStructure(
   val nestedArray: Array<Array<Int>>,
   val nestedList: List<List<String>>,
@@ -103,6 +132,7 @@ data class BridgedNestedStructure(
  * Test class for empty collections
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedEmptyCollections(
   val emptyArray: IntArray,
   val emptyList: List<String>,
@@ -113,6 +143,7 @@ data class BridgedEmptyCollections(
  * Test class for inheritance scenarios including overrides
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 open class BridgedBaseClass {
   open val baseProperty: String = "base"
   val baseField: Int = 10
@@ -131,6 +162,7 @@ open class BridgedBaseClass {
 }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 open class BridgedInheritanceChild : BridgedBaseClass() {
   val childField: Int = 1
 
@@ -144,6 +176,7 @@ open class BridgedInheritanceChild : BridgedBaseClass() {
 }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 class BridgedDeepInheritance : BridgedInheritanceChild() {
   val deepField: Double = 3.14
 
@@ -160,6 +193,7 @@ class BridgedDeepInheritance : BridgedInheritanceChild() {
  * Test class for property overrides with backing fields
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 open class BridgedOverrideBase {
   open val overriddenProperty: String = "base"
   open var overriddenVar: Int = 5
@@ -182,6 +216,7 @@ open class BridgedOverrideBase {
 }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 class BridgedOverrideChild : BridgedOverrideBase() {
   override val overriddenProperty: String = "overridden"
   override var overriddenVar: Int = 10
@@ -200,12 +235,14 @@ class BridgedOverrideChild : BridgedOverrideBase() {
  * Test class for interfaces and interface implementation
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 interface BridgedInterface {
   val interfaceProperty: String
   fun interfaceMethod(): Int
 }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 class BridgedInterfaceImplementation : BridgedInterface {
   override val interfaceProperty: String = "implemented"
   override fun interfaceMethod(): Int = 42
@@ -223,6 +260,7 @@ class BridgedInterfaceImplementation : BridgedInterface {
  * Test class for generic types with type parameters
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedGenericClass<T>(
   val value: T,
   val list: List<T>
@@ -232,6 +270,7 @@ data class BridgedGenericClass<T>(
  * Test class for multiple type parameters
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedMultiGenericClass<T, U>(
   val first: T,
   val second: U,
@@ -242,6 +281,7 @@ data class BridgedMultiGenericClass<T, U>(
  * Test class for bounded generics (where T : SomeClass)
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 open class BridgedBoundedGenericBase {
   open val baseProperty: String = "base"
 
@@ -255,6 +295,7 @@ open class BridgedBoundedGenericBase {
 }
 
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedBoundedGenericClass<T : BridgedBoundedGenericBase>(
   val value: T,
   val list: List<T>
@@ -264,11 +305,29 @@ data class BridgedBoundedGenericClass<T : BridgedBoundedGenericBase>(
  * Test class for nested generics
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class BridgedNestedGeneric(
   val mapOfLists: Map<String, List<Int>>,
   val listOfMaps: List<Map<String, Int>>,
   val complexNested: Map<String, List<Map<Int, String>>>
 )
+
+/**
+ * Host2JS Long coverage: a Long-backed inline class, a holder with a plain Long field, and a
+ * holder of the Long inline class. The Long must round-trip as a real kotlin.Long (via the
+ * guest's newLong factory), including negative values (low/high wire format handles any Long).
+ */
+@WithHost2JSBridge
+@JvmInline
+value class BridgedLongInline(val raw: Long)
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedLongHolder(val v: Long)
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedLongInlineHolder(val inline: BridgedLongInline)
 
 /**
  * The compose-live Color shape (io.composelive.nodes.foundation.common.Color): a Long-backed value
@@ -291,6 +350,84 @@ data class BridgedLongBoxHolder(
   val solid: BridgedLongBox,
   val gradient: List<BridgedLongBox>,
 )
+
+/**
+ * Phase 0 spike types: sealed payloads shaped exactly like the compose-live event args that
+ * need direct host->guest transport (BridgedImageState mirrors io.composelive AsyncImageState;
+ * BridgedLottieState mirrors wb LottieAnimationLoadState, whose children are `data object`s;
+ * the BridgedAnnotation* family mirrors AnnotatedStringRange/StringAnnotation/TextStyle
+ * nesting: a data class child of a sealed interface whose payload contains another bridged
+ * data class). Proves the plugin host2js path handles object-kind declarations, sealed-interface
+ * children, and data classes nested inside sealed children.
+ */
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedImageState {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Empty : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Loading : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  object Success : BridgedImageState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Error(val message: String?) : BridgedImageState
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedLottieState {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data object Loading : BridgedLottieState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data object Success : BridgedLottieState
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Error(val message: String?) : BridgedLottieState
+}
+
+/** Data class with structured (non-primitive) fields, mirroring compose-live TextStyle reachable from StringAnnotation children. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedTextStyle(
+  val bold: Boolean,
+  val fontSize: BridgedFloat,
+  val raw: Long,
+  val align: BridgedEnum?,
+)
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+public sealed interface BridgedStringAnnotation {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Link(val url: String, val style: BridgedTextStyle?) : BridgedStringAnnotation
+
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Style(val style: BridgedTextStyle) : BridgedStringAnnotation
+}
+
+/** Mirrors compose-live AnnotatedStringRange: top-level data class whose payload is a sealed-interface child value. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedAnnotationRange(
+  val start: Int,
+  val end: Int,
+  val annotation: BridgedStringAnnotation,
+)
+
 /** Canonical values used both by the guest providers and the host assertions. */
 
 object BridgedTestValues {
@@ -307,6 +444,8 @@ object BridgedTestValues {
   val enumSecond = BridgedEnum.SECOND
   val enumHolder = BridgedEnumHolder(value = enumSecond)
   val listHolder = BridgedListHolder(items = listOf(1, 2, 3))
+  val callbackHolder = BridgedCallbackHolder(name = "done", onDone = null)
+  val floatList = BridgedFloatListHolder(items = listOf(0, 1).map { it.toFloat() } + listOf(0.5f))
   val nested = BridgedNested(outer = data)
   val nullableNull = BridgedNullable(text = null, count = null)
   val nullableValue = BridgedNullable(text = "x", count = 1)
@@ -316,8 +455,8 @@ object BridgedTestValues {
     intArray = intArrayOf(1, 2, 3),
     stringArray = arrayOf("a", "b", "c"),
     booleanArray = booleanArrayOf(true, false),
-    doubleArray = doubleArrayOf(1.0, 2.0, 3.0),
-    floatArray = floatArrayOf(1.5f, 2.5f, 3.5f),
+    doubleArray = doubleArrayOf(0.0, 1.0, 2.5),
+    floatArray = floatArrayOf(0f, 1.5f, 1f),
     byteArray = byteArrayOf(1, 2, 3),
     shortArray = shortArrayOf(10, 20, 30),
     charArray = charArrayOf('a', 'b', 'c'),
@@ -355,9 +494,34 @@ object BridgedTestValues {
     listOfMaps = listOf(mapOf("a" to 1, "b" to 2)),
     complexNested = mapOf("outer" to listOf(mapOf(1 to "one", 2 to "two")))
   )
+
+  // Long values: a large positive (needs both low/high halves) and a negative.
+  val longInline = BridgedLongInline(raw = 1234567890123L)
+  val longHolder = BridgedLongHolder(v = -5L)
+  val longInlineHolder = BridgedLongInlineHolder(inline = longInline)
+
+  // Color-like payloads: values that need both halves of the Long and are far apart, so a
+  // truncated or zeroed read is not mistaken for a pass.
   val longBoxSolid = BridgedLongBox(value = 0xFF11223344L)
   val longBoxHolder = BridgedLongBoxHolder(
     solid = longBoxSolid,
     gradient = listOf(BridgedLongBox(0xFF00FF00L), BridgedLongBox(0x80000000FFL)),
   )
+
+  // Phase 0 spike values: sealed payloads with object/data-object/data-class children.
+  val imageEmpty = BridgedImageState.Empty
+  val imageLoading = BridgedImageState.Loading
+  val imageSuccess = BridgedImageState.Success
+  val imageError = BridgedImageState.Error(message = "load failed")
+  val imageErrorNull = BridgedImageState.Error(message = null)
+  val lottieLoading = BridgedLottieState.Loading
+  val lottieError = BridgedLottieState.Error(message = "nope")
+  // `align` stays null: a non-null enum cannot cross host -> JS (see
+  // Host2JsBridgeEndToEndTest.enumCannotCrossToGuest), and this payload exists to pin the
+  // Long/inline/nullable-structured field shapes.
+  val textStyle = BridgedTextStyle(bold = true, fontSize = BridgedFloat(raw = 16f), raw = 0x0F00L, align = null)
+  val annotationLink = BridgedStringAnnotation.Link(url = "https://example.com", style = textStyle)
+  val annotationLinkNullStyle = BridgedStringAnnotation.Link(url = "https://example.com", style = null)
+  val annotationStyle = BridgedStringAnnotation.Style(style = textStyle)
+  val annotationRange = BridgedAnnotationRange(start = 1, end = 5, annotation = annotationLink)
 }

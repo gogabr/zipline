@@ -183,7 +183,7 @@ class ZiplineBridgeKotlinPluginTest {
       assertTrue(betaContent.contains("__attribute__((used, constructor))"))
       assertTrue(betaContent.contains("addBridgeEntry(\"com.example.Beta\""))
 
-      // No aggregate init file — per-class constructors handle registration.
+      // No aggregate init file - per-class constructors handle registration.
       val initFile = outputDir.resolve("bridge_module_init.cpp").toFile()
       assertFalse(initFile.exists(), "bridge_module_init.cpp should not be generated")
     } finally {
@@ -779,6 +779,136 @@ class ZiplineBridgeKotlinPluginTest {
       ),
     )
     assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `host2js annotated class gets convertToJs member on JVM`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      // The member the host-side converter dispatch calls: it must exist on the class itself
+      // (so bridgeAnyToJs can find it) with the handle-in/handle-out signature.
+      val clazz = result.classLoader.loadClass("com.example.Bridged")
+      val convertToJs = clazz.getDeclaredMethod("convertToJs", Long::class.javaPrimitiveType)
+      assertEquals(Long::class.javaPrimitiveType, convertToJs.returnType)
+      assertTrue(
+        convertToJs.modifiers and java.lang.reflect.Modifier.NATIVE != 0,
+        "convertToJs should be native (its body is the generated C)",
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `remapped target FQN uses internal name for JNI, dotted name for the bridge key`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "RemappedHolder.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge("com.example.protocol.TargetImpl")
+          @WithHost2JSBridge
+          class RemappedHolder {
+            val name: String = "test"
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.toFile().listFiles { f -> f.extension == "cpp" }!!.single()
+      val content = cFile.readText()
+
+      // JNI takes the internal class name; a dotted one is an illegal class name on ART.
+      assertTrue(content.contains("FindClass(\"com/example/protocol/TargetImpl\")"), content)
+      assertFalse(content.contains("FindClass(\"com.example.protocol.TargetImpl\")"))
+      assertTrue(content.contains("JNIEXPORT jlong JNICALL Java_com_example_protocol_TargetImpl_convertToJs"), content)
+
+      // The bridge key is the resolved target FQN, dotted - the same name the guest passes to
+      // __bridgeRegister at module load. Keying the JNI table or the retained prototype on the
+      // annotated class's own FQN would leave the two directions looking each other up under
+      // different names.
+      assertTrue(content.contains("addBridgeEntry(\"com.example.protocol.TargetImpl\""), content)
+      assertFalse(content.contains("addBridgeEntry(\"com.example.RemappedHolder\""))
+      assertTrue(content.contains("jsiHost2JsNewObject(env, rt, \"com.example.protocol.TargetImpl\")"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `host2js annotated class generates convertToJs JNI impl`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Bridged.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class Bridged {
+            val name: String = "test"
+            val age: Int = 42
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val cFile = outputDir.resolve("com_example_Bridged.cpp").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+
+      val content = cFile.readText()
+
+      // JNI implementation of the injected external member, prototype-based object creation.
+      // extern "C" is what makes the JVM's short-name lookup find the symbol: this file is
+      // compiled as C++, so without it the name is mangled and the native method cannot bind.
+      assertTrue(
+        content.contains(
+          "extern \"C\" JNIEXPORT jlong JNICALL Java_com_example_Bridged_convertToJs(JNIEnv *env, jobject self, jlong rtPtr)",
+        ),
+        content,
+      )
+      assertTrue(content.contains("jsiHost2JsNewObject(env, rt, \"com.example.Bridged\")"), content)
+
+      // Every field is defined as an own data property on the new instance.
+      assertTrue(content.contains("jsiHost2JsDefineProperty(rt, result, \"name\", "), content)
+      assertTrue(content.contains("jsiHost2JsDefineProperty(rt, result, \"age\", "), content)
+
+      // A host2js-only class has no JS-to-host converter, so it is not in the dispatch table.
+      assertFalse(content.contains("addBridgeEntry("), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
   }
 }
 

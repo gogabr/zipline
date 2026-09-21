@@ -54,6 +54,7 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
         2,
         [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
             if (argc < 2) return jsi::Value::undefined();
+            if (bridgeTable.empty()) return jsi::Value::undefined();
             auto fq = args[0].asString(rt).utf8(rt);
             if (!args[1].isObject()) return jsi::Value::undefined();
             jsi::Object ctor = args[1].asObject(rt);

@@ -110,6 +110,16 @@ fun provideBridgedLongBoxHolder(): BridgedLongBoxHolder = BridgedTestValues.long
 @JsExport
 fun stringifyBridgedLongBoxHolder(): String = JSON.stringify(BridgedTestValues.longBoxHolder)
 
+/**
+ * The two classes that share a simple name, provided separately: each bundle emits its own
+ * registration for both, and the host's decoder must resolve each to its own class.
+ */
+@JsExport
+fun provideAlignmentTopLevel(): Alignment = BridgedTestValues.alignmentTopLevel
+
+@JsExport
+fun provideAlignmentNested(): LineHeightStyle.Alignment = BridgedTestValues.alignmentNested
+
 /** Returns kotlin.Unit, the shape a Unit-returning guest function (e.g. an event sink) produces. */
 @JsExport
 fun provideUnit(): Unit = Unit

@@ -910,6 +910,75 @@ class ZiplineBridgeKotlinPluginTest {
       outputDir.toFile().deleteRecursively()
     }
   }
+
+  @Test
+  fun `same simple name in another nesting level gets its own C bridge`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "SameSimpleName.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          @WithHost2JSBridge
+          data class Alignment(val value: Int)
+
+          class LineHeightStyle {
+            @WithJS2HostBridge
+            @WithHost2JSBridge
+            data class Alignment(val value: Int)
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      // One file per class, named after the FQN, so the two never share a converter.
+      val topLevel = outputDir.resolve("com_example_Alignment.cpp").toFile()
+      val nested = outputDir.resolve("com_example_LineHeightStyle_Alignment.cpp").toFile()
+      assertTrue(topLevel.exists(), "Expected ${topLevel.absolutePath}")
+      assertTrue(nested.exists(), "Expected ${nested.absolutePath}")
+
+      val topContent = topLevel.readText()
+      val nestedContent = nested.readText()
+
+      // Distinct bridge keys: the guest registers under the same FQN, so a shared key would make
+      // one class's payloads decode as the other.
+      assertTrue(topContent.contains("addBridgeEntry(\"com.example.Alignment\""), topContent)
+      assertTrue(
+        nestedContent.contains("addBridgeEntry(\"com.example.LineHeightStyle.Alignment\""),
+        nestedContent,
+      )
+
+      // FindClass needs the JVM internal name: '$' for the nested class, never the dotted FQN.
+      assertTrue(topContent.contains("FindClass(\"com/example/Alignment\")"), topContent)
+      assertTrue(
+        nestedContent.contains("FindClass(\"com/example/LineHeightStyle\$Alignment\")"),
+        nestedContent,
+      )
+
+      // The two generated C files must not define the same symbol, or the linker keeps one of them
+      // and the other class's native method never binds.
+      assertTrue(topContent.contains("Java_com_example_Alignment_convertToJs"), topContent)
+      assertTrue(
+        nestedContent.contains("Java_com_example_LineHeightStyle_00024Alignment_convertToJs"),
+        nestedContent,
+      )
+      assertTrue(topContent.contains("com_example_Alignment_bridge_register("), topContent)
+      assertTrue(
+        nestedContent.contains("com_example_LineHeightStyle_Alignment_bridge_register("),
+        nestedContent,
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
 
 @ExperimentalCompilerApi
@@ -1288,6 +1357,62 @@ class ZiplineBridgeNativePluginTest {
       assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
       assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
       assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for Color"))
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+  @Test
+  fun `same simple name in another nesting level gets its own native bridge`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "SameSimpleName.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+          @WithJS2HostBridge
+          data class Alignment(val value: Int)
+          class LineHeightStyle {
+            @WithJS2HostBridge
+            data class Alignment(val value: Int)
+          }
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val topLevel = outputDir.resolve("com_example_Alignment_bridge_native.kt").toFile()
+      val nested = outputDir.resolve("com_example_LineHeightStyle_Alignment_bridge_native.kt").toFile()
+      assertTrue(topLevel.exists(), "Expected ${topLevel.absolutePath}")
+      assertTrue(nested.exists(), "Expected ${nested.absolutePath}")
+
+      val topContent = topLevel.readText()
+      val nestedContent = nested.readText()
+
+      // Distinct converter functions...
+      assertTrue(topContent.contains("public fun com_example_Alignment_toKotlin("), topContent)
+      assertTrue(nestedContent.contains("public fun com_example_LineHeightStyle_Alignment_toKotlin("), nestedContent)
+
+      // ...registered under distinct FQNs, which is also the key the guest's registration uses.
+      assertTrue(
+        topContent.contains(
+          "registerBridge(\"com.example.Alignment\", staticCFunction(::com_example_Alignment_toKotlin))",
+        ),
+        topContent,
+      )
+      assertTrue(
+        nestedContent.contains(
+          "registerBridge(\"com.example.LineHeightStyle.Alignment\", " +
+            "staticCFunction(::com_example_LineHeightStyle_Alignment_toKotlin))",
+        ),
+        nestedContent,
+      )
+
+      // The nested class is built through its enclosing class name, which the import must bring in.
+      assertTrue(nestedContent.contains("import com.example.LineHeightStyle"), nestedContent)
+      assertTrue(nestedContent.contains("LineHeightStyle.Alignment("), nestedContent)
     } finally {
       outputDir.toFile().deleteRecursively()
     }

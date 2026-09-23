@@ -125,6 +125,14 @@ class Host2JsBridgeEndToEndTest {
   }
 
   @Test
+  fun sameSimpleName() {
+    // Both classes cross host -> JS and back; the payload class for each is looked up by its own
+    // bridge key, so a simple-name collision would decode one as the other (or fail loudly).
+    assertEquals(BridgedTestValues.alignmentTopLevel, roundTrip(BridgedTestValues.alignmentTopLevel))
+    assertEquals(BridgedTestValues.alignmentNested, roundTrip(BridgedTestValues.alignmentNested))
+  }
+
+  @Test
   fun nullableNull() {
     assertEquals(BridgedTestValues.nullableNull, roundTrip(BridgedTestValues.nullableNull))
   }

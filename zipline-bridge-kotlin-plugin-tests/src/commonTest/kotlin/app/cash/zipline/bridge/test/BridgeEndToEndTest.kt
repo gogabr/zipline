@@ -105,6 +105,14 @@ class BridgeEndToEndTest {
   }
 
   @Test
+  fun bridgedSameSimpleName() {
+    // Two annotated classes share the simple name `Alignment` (one nested in an unannotated class).
+    // Distinct values, so decoding either as the other fails.
+    assertEquals(BridgedTestValues.alignmentTopLevel, evalOne("provideAlignmentTopLevel"))
+    assertEquals(BridgedTestValues.alignmentNested, evalOne("provideAlignmentNested"))
+  }
+
+  @Test
   fun bridgedNullableNull() {
     assertEquals(BridgedTestValues.nullableNull, evalOne("provideBridgedNullableNull"))
   }

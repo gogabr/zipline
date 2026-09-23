@@ -428,8 +428,24 @@ data class BridgedAnnotationRange(
   val annotation: BridgedStringAnnotation,
 )
 
-/** Canonical values used both by the guest providers and the host assertions. */
+/**
+ * Two bridged classes that share a simple name, one at the top level and one nested inside an
+ * unannotated class — the compose-live `Alignment` / `LineHeightStyle.Alignment` shape.
+ *
+ * Nothing may key a converter, a bridge key, a generated file or a JNI symbol on the simple name:
+ * both classes are annotated, both cross the wire, and each must decode as itself.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class Alignment(val value: Int)
 
+class LineHeightStyle {
+  @WithJS2HostBridge
+  @WithHost2JSBridge
+  data class Alignment(val value: Int)
+}
+
+/** Canonical values used both by the guest providers and the host assertions. */
 object BridgedTestValues {
   val data = BridgedData(id = 7, name = "seven", active = true, ratio = 1.5)
   val inline = BridgedInline(raw = 42)
@@ -524,4 +540,8 @@ object BridgedTestValues {
   val annotationLinkNullStyle = BridgedStringAnnotation.Link(url = "https://example.com", style = null)
   val annotationStyle = BridgedStringAnnotation.Style(style = textStyle)
   val annotationRange = BridgedAnnotationRange(start = 1, end = 5, annotation = annotationLink)
+
+  // Distinct values, so a decode that resolves to the wrong class (or to both names) cannot pass.
+  val alignmentTopLevel = Alignment(value = 1)
+  val alignmentNested = LineHeightStyle.Alignment(value = 2)
 }

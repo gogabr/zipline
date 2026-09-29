@@ -1,0 +1,21 @@
+name: Set up build
+description: JDK, Gradle and the toolchains needed to build Hermes for every published target.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v5
+      with:
+        distribution: 'zulu'
+        java-version-file: .github/workflows/.java-version
+
+    - uses: gradle/actions/setup-gradle@v6
+
+    # Ninja drives every Hermes CMake build. The Linux cross toolchain is needed for
+    # jni/amd64/libhermesvm.so in the JVM jar (see buildHermesHostLinuxX64 in zipline/build.gradle.kts).
+    - name: Install Hermes toolchains
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'
+        HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      run: brew install ninja messense/macos-cross-toolchains/x86_64-unknown-linux-gnu

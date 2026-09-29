@@ -1,269 +1,245 @@
 name: build
 
+# Pull requests: build, lint, unit tests and an optional (manually approved) -SNAPSHOT publication
+# to GitHub Packages.
+# Pushes to tret9_trunk_hermes: bump library_version.txt, build, lint, unit tests, then publish to
+# Maven Central. Cancel the run while it builds to skip publishing a version.
 on:
   pull_request: {}
   workflow_dispatch: {}
   push:
     branches:
-      - 'trunk'
+      - 'tret9_trunk_hermes'
     tags-ignore:
       - '**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Supersede stale PR runs, but never interrupt a release in progress.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 env:
   GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false -Dkotlin.incremental=false -Dorg.gradle.logging.stacktrace=full"
 
 jobs:
-  zig:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.0
-
-      - run: zig build -p src/jvmMain/resources/jni
-        working-directory: zipline
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: jni-binaries
-          path: zipline/src/jvmMain/resources/jni
-          if-no-files-found: error
-
-  jvm-test-binary:
-    needs:
-      - zig
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: jni-binaries
-          path: zipline/src/jvmMain/resources/jni
-
-      - run: ./gradlew :zipline:installJvmTestDistribution
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: jvm-tests
-          path: zipline/build/install/jvmTest
-          if-no-files-found: error
-
-  jvm-tests:
-    needs:
-      - jvm-test-binary
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - macos-15-intel
-          - macos-15
-          - ubuntu-24.04
-          - ubuntu-24.04-arm
-          - windows-2025
-          - windows-11-arm
-    runs-on: ${{ matrix.platform }}
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.version.outputs.sha }}
+      version-suffix: ${{ steps.version.outputs.version-suffix }}
     steps:
       - uses: actions/checkout@v6
         with:
-          sparse-checkout: .github/workflows/.java-version
-          sparse-checkout-cone-mode: false
-      - uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
+          # Pushes use the branch tip rather than github.sha so the bump lands on top of everything
+          # merged so far. A PAT/App token is only needed if branch protection blocks GITHUB_TOKEN.
+          ref: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          token: ${{ github.event_name == 'push' && secrets.RELEASE_BOT_TOKEN || github.token }}
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: jvm-tests
-
-      - name: Run JVM tests
+      - name: Bump version
+        if: ${{ github.event_name == 'push' }}
         run: |
-          chmod +x bin/zipline-test
-          bin/zipline-test
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            git fetch origin "$GITHUB_REF_NAME"
+            git reset --hard "origin/$GITHUB_REF_NAME"
+            version=$(.github/scripts/bump-version.sh)
+            # [skip ci] keeps a PAT-authored push from starting another release.
+            git commit -am "Bump library version to $version" -m '[skip ci]'
+            if git push origin "HEAD:$GITHUB_REF_NAME"; then
+              exit 0
+            fi
+          done
+          echo "Could not push the version bump" >&2
+          exit 1
 
-  native-tests:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - os: macos-15-intel
-            task: macosX64Test
-          - os: macos-latest
-            task: macosArm64Test
-          - os: ubuntu-latest
-            task: linuxX64Test
-          - os: macos-latest
-            task: iosSimulatorArm64Test
-          - os: macos-latest
-            task: tvosSimulatorArm64Test
-    runs-on: ${{ matrix.platform.os }}
+      # Releases use the bumped version as-is; everything else is a snapshot of the current one.
+      - name: Resolve version
+        id: version
+        env:
+          # For PRs github.sha is a merge commit that exists only in CI; name snapshots after the
+          # PR's head commit instead.
+          SNAPSHOT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            echo "version-suffix=-${SNAPSHOT_SHA:0:7}-SNAPSHOT" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Builds every publication into a local Maven repository. The publish jobs upload that repository
+  # as-is, so what gets published is exactly what was built here.
+  build:
+    needs:
+      - version
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.published.outputs.version }}
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
         with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
+          ref: ${{ needs.version.outputs.sha }}
+          submodules: recursive
 
-      - run: ./gradlew ${{ matrix.platform.task }}
+      - uses: ./.github/actions/setup-build
+
+      - run: ./gradlew publishAllPublicationsToTestMavenRepository -PversionSuffix=${{ needs.version.outputs.version-suffix }}
+
+      # The full version is assembled by build.gradle.kts; read it back from the built repository.
+      - name: Read published version
+        id: published
+        run: |
+          version=$(basename "$(dirname "$(ls build/testMaven/io/github/tret9/zipline/*/*.pom)")")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Built \`$version\`" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
-        if: ${{ always() }}
         with:
-          name: test-report-native-${{ matrix.platform.task }}
-          path: '**/build/reports/tests/**'
-          retention-days: 1
+          name: maven-repository
+          path: build/testMaven
+          if-no-files-found: error
+          retention-days: 7
 
-  check:
-    runs-on: macos-latest
+  lint:
     needs:
-      - zig
+      - version
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          # zipline/build.gradle.kts reads the Hermes revision while configuring.
+          submodules: recursive
+
       - uses: actions/setup-java@v5
         with:
           distribution: 'zulu'
           java-version-file: .github/workflows/.java-version
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: jni-binaries
-          path: zipline/src/jvmMain/resources/jni
+      - uses: gradle/actions/setup-gradle@v6
 
-      # Disable Zipline jvmTest and native tests because they're run in jvm-tests and native-tests.
+      - run: ./gradlew spotlessCheck
+
+  test:
+    needs:
+      - version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          submodules: recursive
+
+      - uses: ./.github/actions/setup-build
+
+      # x64 Apple targets are skipped: this runner is arm64. tvOS is skipped: there is no tvOS
+      # Hermes build, so tvOS test binaries can't link. --continue reports every failing module in
+      # one run. -PhermesProd=false: the lean Apple engine can't compile JS source, which the tests
+      # do.
       - run: >
           ./gradlew
-          check
-          -x allTests
-          -x iosSimulatorArm64Test
+          --continue
+          -PhermesProd=false
+          apiCheck
+          allTests
+          test
           -x iosX64Test
-          -x :zipline:jvmTest
-          -x linuxX64Test
-          -x macosArm64Test
           -x macosX64Test
-          -x tvosSimulatorArm64Test
           -x tvosX64Test
+          -x tvosX64ReleaseTest
+          -x tvosSimulatorArm64Test
+          -x tvosSimulatorArm64ReleaseTest
 
-  sample-check:
-    runs-on: macos-latest
-    needs:
-      - zig
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
+      - uses: actions/upload-artifact@v7
+        if: ${{ failure() }}
         with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
+          name: test-reports
+          path: '**/build/reports/tests/**'
+          retention-days: 7
 
-      - uses: actions/download-artifact@v8
-        with:
-          name: jni-binaries
-          path: zipline/src/jvmMain/resources/jni
-
-      - run: ./gradlew -p samples check
-
-  android-tests:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
-
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - run: ./gradlew assembleAndroidTest
-
-      - uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 29
-          emulator-boot-timeout: 20000
-          script: ./gradlew connectedCheck
-
-  ios-app:
-    runs-on: macos-15
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
-        with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
-
-      - name: Build Xcode samples
-        run: |
-          cd samples/world-clock/ios/app
-          pod install
-          xcodebuild -workspace WorldClock.xcworkspace -scheme WorldClock -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest'
-
+  # The single check to mark as required in branch protection.
   final-status:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     needs:
-      - jvm-tests
-      - native-tests
-      - check
-      - sample-check
-      - android-tests
-      - ios-app
+      - version
+      - build
+      - lint
+      - test
     steps:
       - name: Check
         run: |
           results=$(tr -d '\n' <<< '${{ toJSON(needs.*.result) }}')
-          if ! grep -q -v -E '(failure|cancelled)' <<< "$results"; then
+          # A skipped job means something it depends on failed.
+          if grep -q -E '(failure|cancelled|skipped)' <<< "$results"; then
             echo "One or more required jobs failed"
             exit 1
           fi
 
-  publish:
-    if: ${{ github.ref == 'refs/heads/trunk' && github.repository == 'cashapp/zipline' }}
-    runs-on: macos-latest
+  # Manual: runs only after approval in the 'github-packages-snapshot' environment (configure it
+  # with required reviewers). Doesn't wait for lint or tests.
+  publish-snapshot:
+    if: ${{ github.event_name != 'push' }}
     needs:
-      - final-status
+      - version
+      - build
+    runs-on: ubuntu-latest
+    environment: github-packages-snapshot
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-java@v5
         with:
-          distribution: 'zulu'
-          java-version-file: .github/workflows/.java-version
+          sparse-checkout: .github/scripts
 
       - uses: actions/download-artifact@v8
         with:
-          name: jni-binaries
-          path: zipline/src/jvmMain/resources/jni
+          name: maven-repository
+          path: maven-repository
 
-      - run: ./gradlew publishToMavenCentral
+      - run: .github/scripts/publish-to-github-packages.sh maven-repository
         env:
-          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_CENTRAL_USERNAME }}
-          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
-          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SECRET_KEY }}
-          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SECRET_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ github.token }}
 
-      - run: ./gradlew :dokkaHtmlMultiModule
+      - name: Summary
+        run: |
+          {
+            echo "Published \`${{ needs.build.outputs.version }}\` to GitHub Packages:"
+            echo '```kotlin'
+            echo 'maven("https://maven.pkg.github.com/${{ github.repository }}") {'
+            echo '  credentials { username = "<github user>"; password = "<token with read:packages>" }'
+            echo '}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v7
+  publish:
+    if: ${{ github.event_name == 'push' && github.repository == 'tret9/zipline' }}
+    needs:
+      - version
+      - build
+      - lint
+      - test
+    runs-on: ubuntu-latest
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v6
         with:
-          name: html-docs
-          path: build/dokka/htmlMultiModule/
-          if-no-files-found: error
+          sparse-checkout: .github/scripts
 
-      - name: Deploy docs to website
-        uses: JamesIves/github-pages-deploy-action@releases/v3
+      - uses: actions/download-artifact@v8
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: site
-          FOLDER: build/dokka/htmlMultiModule/
-          TARGET_FOLDER: docs/latest/
-          CLEAN: true
+          name: maven-repository
+          path: maven-repository
+
+      - run: .github/scripts/publish-to-maven-central.sh maven-repository "zipline ${{ needs.build.outputs.version }}"
+        env:
+          SONATYPE_CENTRAL_USERNAME: ${{ secrets.SONATYPE_CENTRAL_USERNAME }}
+          SONATYPE_CENTRAL_PASSWORD: ${{ secrets.SONATYPE_CENTRAL_PASSWORD }}
+          GPG_SECRET_KEY: ${{ secrets.GPG_SECRET_KEY }}
+          GPG_SECRET_PASSPHRASE: ${{ secrets.GPG_SECRET_PASSPHRASE }}
+

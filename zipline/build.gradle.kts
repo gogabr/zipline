@@ -927,11 +927,15 @@ android {
     }
   }
 
-  // Make sure the host-side hermesc is built before AGP's externalNativeBuild
-  // task. AGP configures+builds in one task, and the host build is a
-  // separate Gradle task.
-  tasks.matching { it.name.startsWith("externalNativeBuild") }
-    .configureEach { dependsOn(preBuildHermesHost) }
+  // Make sure the host-side hermesc is built before AGP's native build. AGP
+  // runs CMake configure (configureCMake*) as its own task, before
+  // buildCMake*/externalNativeBuild*, and configure already includes
+  // ImportHostCompilers.cmake.
+  tasks.matching {
+    it.name.startsWith("configureCMake") ||
+      it.name.startsWith("buildCMake") ||
+      it.name.startsWith("externalNativeBuild")
+  }.configureEach { dependsOn(preBuildHermesHost) }
   // JAVA_HOME is passed to AGP's CMake invocation via -DJAVA_HOME=... on
   // the externalNativeBuild { cmake { arguments(...) } } block above. We
   // don't need to set it on the Gradle JVM itself.

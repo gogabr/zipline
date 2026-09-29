@@ -49,9 +49,22 @@ tasks.named("dokkaHtmlMultiModule", DokkaMultiModuleTask::class.java).configure 
   moduleName.set("Zipline")
 }
 
+// <upstream Zipline version>-composelive-hermes-<library_version.txt>, plus "-debuggable" for
+// -PhermesProd=false builds and -PversionSuffix (CI uses it for "-<short commit sha>-SNAPSHOT").
+val ziplineUpstreamVersion = "1.28.0"
+val libraryVersion = providers.fileContents(layout.projectDirectory.file("library_version.txt"))
+  .asText.get().trim()
+val hermesProd = providers.gradleProperty("hermesProd").orNull?.toBooleanStrictOrNull() ?: true
+val versionSuffix = providers.gradleProperty("versionSuffix").orNull.orEmpty()
+val publishedVersion = buildString {
+  append("$ziplineUpstreamVersion-composelive-hermes-$libraryVersion")
+  if (!hermesProd) append("-debuggable")
+  append(versionSuffix)
+}
+
 allprojects {
   group = "io.github.tret9"
-  version = project.property("VERSION_NAME") as String
+  version = publishedVersion
 
   repositories {
     mavenCentral()

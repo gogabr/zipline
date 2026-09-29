@@ -16,8 +16,7 @@
 package app.cash.zipline.testing
 
 import app.cash.zipline.ZiplineService
-import kotlinx.serialization.Contextual
 
 interface EncodingService : ZiplineService {
-  fun echoLong(request: @Contextual Long): Long
+  fun echoLong(request: Long): Long
 }

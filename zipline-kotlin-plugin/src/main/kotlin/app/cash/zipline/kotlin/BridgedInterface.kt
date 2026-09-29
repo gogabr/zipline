@@ -51,6 +51,7 @@ import org.jetbrains.kotlin.ir.util.isInterface
 import org.jetbrains.kotlin.ir.util.isSuspend
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.substitute
+import org.jetbrains.kotlin.name.StandardClassIds
 
 /**
  * A user-defined interface (like `EchoService` or `Callback<String>`) and support for generating
@@ -222,7 +223,7 @@ internal class BridgedInterface(
         )
       }
 
-      hasTypeParameter || contextual || type.isFlow || type.isStateFlow -> {
+      hasTypeParameter || contextual || type.isFlow || type.isStateFlow || type.isLong -> {
         // serializersModule.requireContextual<T>(root KClass, recurse on type args)
         val contextualSerializerExpression = irCall(
           callee = ziplineApis.requireContextual,
@@ -265,6 +266,9 @@ internal class BridgedInterface(
 
   private val IrType.isStateFlow
     get() = getClass()?.classId == ZiplineApis.stateFlowClassId
+
+  private val IrType.isLong
+    get() = getClass()?.classId == StandardClassIds.Long
 
   /** Call this on any declaration returned by [classSymbol] to fill in the generic parameters. */
   fun resolveTypeParameters(type: IrType): IrType {

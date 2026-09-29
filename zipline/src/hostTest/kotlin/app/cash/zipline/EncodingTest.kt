@@ -44,8 +44,8 @@ class EncodingTest {
    * Unfortunately this breaks high valued longs (greater than 2^53) because they don't all have an
    * exact representation as a double.
    *
-   * We work around this by using `@Contextual` on Longs, plus an encoder that wraps very
-   * these high-valued longs in strings.
+   * `Long` values are serialized automatically: the bridge routes them through a serializer that
+   * wraps these high-valued longs in strings, with no `@Contextual` annotation required.
    */
   @Test fun encodeLongs() = runBlocking(dispatcher) {
     zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareEncodingJsBridges()")

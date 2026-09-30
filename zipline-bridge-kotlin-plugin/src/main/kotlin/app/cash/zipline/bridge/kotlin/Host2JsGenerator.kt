@@ -12,15 +12,15 @@ import org.jetbrains.kotlin.ir.builders.declarations.buildFun
 import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCall
-import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.builders.irVararg
 import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
+import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
@@ -28,9 +28,9 @@ import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.starProjectedType
 import org.jetbrains.kotlin.ir.util.createDispatchReceiverParameter
-import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
+import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
@@ -254,14 +254,21 @@ private fun addOptInAnnotation(
 
   val kClassType = pluginContext.irBuiltIns.kClassClass.starProjectedType
   val markerRef = IrClassReferenceImpl(
-    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-    kClassType, markerClass.symbol, markerClass.defaultType,
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    kClassType,
+    markerClass.symbol,
+    markerClass.defaultType,
   )
   val builder = pluginContext.irBuiltIns.createIrBuilder(function.symbol)
   val vararg = builder.irVararg(kClassType, listOf(markerRef))
   function.annotations += IrConstructorCallImpl(
-    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-    ctor.returnType, ctor.symbol, 0, 1,
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    ctor.returnType,
+    ctor.symbol,
+    0,
+    1,
   ).apply {
     arguments[0] = vararg
   }

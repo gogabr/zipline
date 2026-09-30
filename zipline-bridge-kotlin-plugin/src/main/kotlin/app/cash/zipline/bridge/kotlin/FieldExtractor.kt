@@ -6,8 +6,8 @@ import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.types.IrSimpleType
-import org.jetbrains.kotlin.ir.types.IrTypeProjection
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.IrTypeProjection
 import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
@@ -88,7 +88,6 @@ internal fun importForType(fqName: String): String {
  * Generates a single file that retains all bridge functions in the module,
  * preventing the linker from dead-code eliminating them.
  */
-/** Emit C code to extract an array field value. */
 internal fun extractFields(annotatedClass: IrClass, includeValBodyFields: Boolean = false): List<FieldInfo> {
   val primaryConstructor = annotatedClass.declarations
     .filterIsInstance<IrConstructor>()
@@ -171,11 +170,8 @@ internal fun jniFieldDescriptor(ktType: String): String {
 
 internal fun isJniPrimitive(ktType: String): Boolean = kotlinToJniFieldType[ktType]?.let { it.length == 1 } ?: false
 
-internal fun isKnownType(ktType: String): Boolean =
-  ktType in kotlinToJniFieldType
+internal fun isKnownType(ktType: String): Boolean = ktType in kotlinToJniFieldType
 
-internal fun isPrimitiveArray(ktType: String): Boolean =
-  ktType in primitiveArrayJniInfo
+internal fun isPrimitiveArray(ktType: String): Boolean = ktType in primitiveArrayJniInfo
 
-internal fun isStringElement(elementType: String?): Boolean =
-  elementType == "kotlin.String"
+internal fun isStringElement(elementType: String?): Boolean = elementType == "kotlin.String"

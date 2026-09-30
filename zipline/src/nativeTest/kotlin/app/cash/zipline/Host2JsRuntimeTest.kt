@@ -13,17 +13,17 @@ import app.cash.zipline.hermes.HermesContext_getLastError
 import app.cash.zipline.hermes.HermesRuntime_create
 import app.cash.zipline.hermes.HermesRuntime_destroy
 import app.cash.zipline.hermes.HermesRuntime_getJsiRuntime
-import kotlinx.cinterop.COpaquePointer
-import kotlinx.cinterop.ExperimentalForeignApi
-import kotlinx.cinterop.toKString
-import kotlinx.cinterop.toKStringFromUtf8
-import kotlinx.cinterop.useContents
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlinx.cinterop.COpaquePointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
+import kotlinx.cinterop.toKStringFromUtf8
+import kotlinx.cinterop.useContents
 
 /**
  * Runtime tests for the host2js helpers (anyToJs, kotlinLongToJs, newJsObject, setJsProperty)

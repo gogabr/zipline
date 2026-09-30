@@ -28,11 +28,14 @@ private const val GUEST_MODULE = "./zipline-root-zipline-bridge-kotlin-plugin-te
 expect class TestHost2Js() {
   fun loadGuest()
   fun roundTrip(value: Any): Any? // host object -> JS (convertToJs) -> back (bridgeForAny)
-  fun toJson(value: Any): String  // host object -> JS -> JSON.stringify (debugging/triage aid)
+  fun toJson(value: Any): String // host object -> JS -> JSON.stringify (debugging/triage aid)
+
   /** True if [name] names a callable function on globalThis. */
   fun hasGlobalFunction(name: String): Boolean
+
   /** Convert [args] host->JS and call globalThis[name] with them; converts the result back. */
   fun callGuestFunction(name: String, args: List<Any?>): Any?
+
   /** Evaluate [script] in the guest runtime, dispatching any result through the bridge. */
   fun evaluateForBridge(script: String): Any?
   fun close()

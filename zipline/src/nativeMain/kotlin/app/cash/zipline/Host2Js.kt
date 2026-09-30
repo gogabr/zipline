@@ -170,8 +170,11 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
     is Boolean -> newJsBool(ctx, value)
 
     is Int -> newJsInt(ctx, value)
+
     is Byte -> newJsInt(ctx, value.toInt())
+
     is Short -> newJsInt(ctx, value.toInt())
+
     is Char -> newJsInt(ctx, value.code)
 
     is Float -> {
@@ -179,6 +182,7 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
       if (handle < 0) error("HOST2JS: failed to create a JS number")
       handle
     }
+
     is Double -> {
       val handle = HermesBridge_createDouble(ctx, value)
       if (handle < 0) error("HOST2JS: failed to create a JS number")
@@ -217,16 +221,23 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
     }
 
     is IntArray -> jsArrayFrom(ctx, value.size) { newJsInt(ctx, value[it]) }
+
     is BooleanArray -> jsArrayFrom(ctx, value.size) { newJsBool(ctx, value[it]) }
+
     is CharArray -> jsArrayFrom(ctx, value.size) { newJsInt(ctx, value[it].code) }
+
     is ShortArray -> jsArrayFrom(ctx, value.size) { newJsInt(ctx, value[it].toInt()) }
+
     is ByteArray -> jsArrayFrom(ctx, value.size) { newJsInt(ctx, value[it].toInt()) }
+
     is LongArray -> jsArrayFrom(ctx, value.size) { kotlinLongToJs(ctx, value[it]) }
+
     is FloatArray -> jsArrayFrom(ctx, value.size) {
       val handle = HermesBridge_createDouble(ctx, value[it].toDouble())
       if (handle < 0) error("HOST2JS: failed to create a JS number")
       handle
     }
+
     is DoubleArray -> jsArrayFrom(ctx, value.size) {
       val handle = HermesBridge_createDouble(ctx, value[it])
       if (handle < 0) error("HOST2JS: failed to create a JS number")
@@ -249,5 +260,4 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
  * could not use the value as an enum at all. Sending such a lookalike hides that, so nothing is
  * sent: the conversion fails where the mistake is.
  */
-public fun host2JsRefuseEnum(fqName: String): Nothing =
-  error("HOST2JS: '$fqName' is an enum; the guest would only see a lookalike, not an enum instance")
+public fun host2JsRefuseEnum(fqName: String): Nothing = error("HOST2JS: '$fqName' is an enum; the guest would only see a lookalike, not an enum instance")

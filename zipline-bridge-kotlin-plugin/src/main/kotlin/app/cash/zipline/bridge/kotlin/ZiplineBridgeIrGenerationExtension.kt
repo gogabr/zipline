@@ -79,7 +79,8 @@ class ZiplineBridgeIrGenerationExtension(
     if (isJsTarget) {
       // JS2Host-only classes keep the companion __bridgeRegister injection.
       injectCompanionInitBlocks(
-        finder, moduleFragment,
+        finder,
+        moduleFragment,
         dispatchClasses.filterNot { it in host2JsClasses },
         pluginContext,
       )
@@ -88,7 +89,10 @@ class ZiplineBridgeIrGenerationExtension(
       // JS2Host classes still need the value ops: their collections/Longs/enums reach the host
       // through the same untyped path.
       injectModuleLoadBridgeRegistration(
-        finder, pluginContext, moduleFragment, host2JsClasses,
+        finder,
+        pluginContext,
+        moduleFragment,
+        host2JsClasses,
         js2HostOnlyClasses = dispatchClasses.filterNot { it in host2JsClasses },
       )
     }

@@ -83,7 +83,9 @@ internal fun generateBridgeFile(
   val host2JsUnboxFields = if (host2JsImpl) fields.filter { it.isInline && it.isNullable } else emptyList()
   val host2JsJniFunctionName = if (host2JsImpl) {
     "Java_" + jniClassName.replace("/", "_").replace("$", "_00024") + "_convertToJs"
-  } else null
+  } else {
+    null
+  }
 
   val nullablePrimitiveFields = fields.filter { it.isNullable && isKnownType(it.ktType) && isJniPrimitive(it.ktType) }
   val hasAnyField = fields.any { it.ktType == "kotlin.Any" }
@@ -252,7 +254,9 @@ internal fun generateBridgeFile(
         val unboxSig = when {
           underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) ->
             "()" + kotlinToJniFieldType[underlying]
+
           underlying == "kotlin.String" -> "()Ljava/lang/String;"
+
           else -> "()Ljava/lang/Object;"
         }
         // unbox-impl lives on the INLINE class, not the holder (the field's JVM type is the boxed
@@ -352,7 +356,7 @@ internal fun generateBridgeFile(
         if (fields.isNotEmpty()) {
           appendLine("    // Extract field values from JS object")
         }
-  
+
         // Extract each field from the JS object
         for (field in fields) {
           val nullablePrimitive = field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType)
@@ -362,10 +366,13 @@ internal fun generateBridgeFile(
             field.effectiveKtType == "kotlin.collections.List" ||
             field.effectiveKtType == "kotlin.collections.MutableList" ||
             field.effectiveKtType in MAP_C_TYPES
-          val cType = if (nullablePrimitive || isCollectionField) "jobject"
-            else kotlinToCType[field.effectiveKtType] ?: "jobject"
+          val cType = if (nullablePrimitive || isCollectionField) {
+            "jobject"
+          } else {
+            kotlinToCType[field.effectiveKtType] ?: "jobject"
+          }
           val javaVar = "java_${field.name}"
-  
+
           appendLine("    jsi::Value js_${field.name} = jsObj.asObject(rt).getProperty(rt, \"${field.jsPropertyName}\");")
           // For Long-backed inline classes (e.g. Color), the JS object may be unboxed —
           // *jsObj IS the Long {low_1, high_1} with no .value wrapper. If .value is
@@ -387,28 +394,33 @@ internal fun generateBridgeFile(
           }
           appendLine("    $cType $javaVar;")
           appendLine("    {")
-  
+
           // Open null check for nullable fields
           if (field.isNullable) {
             appendLine("        if (!js_${field.name}.isUndefined() && !js_${field.name}.isNull()) {")
           }
-  
+
           when {
             field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType) -> {
               emitNullablePrimitiveExtraction(this, field)
             }
+
             field.effectiveKtType == "kotlin.Boolean" -> {
               appendLine("        $javaVar = (jboolean)js_${field.name}.asBool();")
             }
+
             field.effectiveKtType == "kotlin.Byte" -> {
               appendLine("        $javaVar = (jbyte)jsi_value_get_int(js_${field.name});")
             }
+
             field.effectiveKtType == "kotlin.Short" -> {
               appendLine("        $javaVar = (jshort)jsi_value_get_int(js_${field.name});")
             }
+
             field.effectiveKtType == "kotlin.Int" -> {
               appendLine("        $javaVar = (jint)jsi_value_get_int(js_${field.name});")
             }
+
             field.effectiveKtType == "kotlin.Long" -> {
               appendLine("        int tag_${field.name} = jsi_value_tag(rt, js_${field.name});")
               appendLine("        if (tag_${field.name} == JS_TAG_FLOAT64) {")
@@ -426,6 +438,7 @@ internal fun generateBridgeFile(
               appendLine("            $javaVar = 0;")
               appendLine("        }")
             }
+
             field.effectiveKtType == "kotlin.Float" || field.effectiveKtType == "kotlin.Double" -> {
               val cast = if (field.effectiveKtType == "kotlin.Float") "(jfloat)" else "(jdouble)"
               appendLine("        int tag_${field.name}_d = jsi_value_tag(rt, js_${field.name});")
@@ -441,26 +454,32 @@ internal fun generateBridgeFile(
               appendLine("            $javaVar = 0;")
               appendLine("        }")
             }
+
             field.effectiveKtType == "kotlin.Char" -> {
               appendLine("        $javaVar = (jchar)jsi_value_get_int(js_${field.name});")
             }
+
             field.effectiveKtType == "kotlin.String" -> {
               appendLine("        std::string str_${field.name} = js_${field.name}.asString(rt).utf8(rt);")
               appendLine("        $javaVar = env->NewStringUTF(str_${field.name}.c_str());")
             }
+
             field.effectiveKtType in MAP_C_TYPES ||
               field.effectiveKtType == "kotlin.collections.List" ||
               field.effectiveKtType == "kotlin.collections.MutableList" ||
               field.isArray -> {
               appendLine("        $javaVar = conv_${field.name}(env, rt, js_${field.name});")
             }
+
             field.effectiveKtType == "kotlin.Any" -> {
               emitAnyFieldExtraction(this, field)
             }
+
             field.isInline && field.isNullable -> {
               val inlineCPrefix = cFunctionPrefix(FqName(field.ktType))
               appendLine("        $javaVar = ${inlineCPrefix}_fromValue(env, rt, js_${field.name});")
             }
+
             field.isObjectType -> {
               appendLine("        // Look up bridge_dispatch on the sub-object to convert it; an object the host")
               appendLine("        // itself built has none, and the shared decoder handles that shape (and names")
@@ -475,18 +494,18 @@ internal fun generateBridgeFile(
               appendLine("        }")
             }
           }
-  
+
           // Close null check for nullable fields
           if (field.isNullable) {
             appendLine("        } else {")
             appendLine("            $javaVar = NULL;")
             appendLine("        }")
           }
-  
+
           appendLine("    }")
           appendLine()
         }
-  
+
         // Create instance using cached class/constructor/field refs.
         appendLine("    // Create instance using cached JNI references")
         if (isCompanion) {
@@ -503,7 +522,7 @@ internal fun generateBridgeFile(
         }
         appendLine("    if (env->ExceptionCheck()) return NULL;")
         appendLine()
-  
+
         // Set body fields using cached field IDs
         if (!isEnum && bodyFields.isNotEmpty()) {
           appendLine("    // Set non-constructor fields")
@@ -519,7 +538,7 @@ internal fun generateBridgeFile(
           }
           appendLine()
         }
-  
+
         appendLine("    return result;")
         appendLine("}")
       } // end else (non-enum)
@@ -560,8 +579,14 @@ internal fun generateBridgeFile(
 
     if (host2JsImpl) {
       emitHost2JsConvertToJs(
-        this, host2JsJniFunctionName!!, functionPrefix, annotatedClass,
-        host2JsFields, host2JsUnboxFields, protoFqn, jniClassName,
+        this,
+        host2JsJniFunctionName!!,
+        functionPrefix,
+        annotatedClass,
+        host2JsFields,
+        host2JsUnboxFields,
+        protoFqn,
+        jniClassName,
       )
     }
 
@@ -822,7 +847,8 @@ internal fun generateCBridges(
     // Interfaces have no JS constructor to export; skip them.
     if (clazz.kind == ClassKind.INTERFACE) continue
     generateBridgeFile(
-      outputDir, clazz,
+      outputDir,
+      clazz,
       js2Host = clazz in js2HostSet,
       host2Js = clazz in host2JsSet,
     )
@@ -946,6 +972,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
         sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", std::move(_v));")
       }
+
       underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) -> {
         val call = when (underlying) {
           "kotlin.Boolean" -> "CallBooleanMethod"
@@ -973,6 +1000,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
         sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", $build);")
       }
+
       else -> {
         // Reference-backed value class: unbox to the underlying reference and convert it.
         sb.appendLine("            jobject u = env->CallObjectMethod(b, _h2j_unbox_$fieldName);")

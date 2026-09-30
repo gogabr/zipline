@@ -516,6 +516,7 @@ object BridgedTestValues {
   val imageErrorNull = BridgedImageState.Error(message = null)
   val lottieLoading = BridgedLottieState.Loading
   val lottieError = BridgedLottieState.Error(message = "nope")
+
   // `align` stays null: a non-null enum cannot cross host -> JS (see
   // Host2JsBridgeEndToEndTest.enumCannotCrossToGuest), and this payload exists to pin the
   // Long/inline/nullable-structured field shapes.

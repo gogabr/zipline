@@ -23,11 +23,11 @@ public fun registerBridge(fqn: String, jsClass: JsClass<*>) {
   // globalThis explicitly: the host installs __bridgeRegister as a property of the global object,
   // and a bare reference can be shadowed by this module's own declaration of the same name.
   if (js("typeof globalThis.__bridgeRegister === 'function'") as Boolean) {
-    __bridgeRegister(fqn, jsClass)
+    bridgeRegister(fqn, jsClass)
   }
 }
 
 // @JsName pins the JS name: an internal/private declaration is mangled otherwise (see the
 // plugin's own external declaration, which carries the same annotation).
 @JsName("__bridgeRegister")
-private external fun __bridgeRegister(fqn: String, jsClass: JsClass<*>)
+private external fun bridgeRegister(fqn: String, jsClass: JsClass<*>)

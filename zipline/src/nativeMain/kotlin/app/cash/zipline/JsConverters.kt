@@ -41,7 +41,6 @@ fun JsNumberToLong(context: COpaquePointer?, handle: Int): Long {
   if (context == null) return 0L
   return when (HermesBridge_getValueTag(context, handle)) {
     TAG_INT -> HermesBridge_getValueDouble(context, handle).toInt().toLong()
-
     TAG_DOUBLE -> HermesBridge_getValueDouble(context, handle).toLong()
     else -> jsLongValue(context, handle)
   }
@@ -180,8 +179,7 @@ fun JsBoxedNumberToLong(context: COpaquePointer?, handle: Int): Long? {
  * question with the compiler's own `is` check and drives the iteration. Returns a handle, or -1
  * when the guest never published them.
  */
-private fun valueOps(ctx: COpaquePointer?): Int =
-  HermesBridge_getProperty(ctx, 0, "__zipline_bridgeValueOps")
+private fun valueOps(ctx: COpaquePointer?): Int = HermesBridge_getProperty(ctx, 0, "__zipline_bridgeValueOps")
 
 /**
  * Call the guest value op [name] with [argument] and return a handle to the result, or -1 when
@@ -485,13 +483,18 @@ fun bridgeForAny(context: COpaquePointer?, handle: Int): Any? {
       // dispatch, so the previous order decoded it as null.
       when (val kind = collectionKind(context, handle)) {
         CollectionKind.MAP -> return jsMapToKotlin(
-          context, handle,
+          context,
+          handle,
           { key -> bridgeForAny(context, key) },
           { value -> bridgeForAny(context, value) },
         )
+
         CollectionKind.SET, CollectionKind.LIST -> return jsCollectionToKotlin(
-          context, handle, kind,
+          context,
+          handle,
+          kind,
         ) { element -> bridgeForAny(context, element) }
+
         CollectionKind.NONE -> Unit
       }
       val dispPtr = HermesBridge_getBridgeDispatch(context, handle)

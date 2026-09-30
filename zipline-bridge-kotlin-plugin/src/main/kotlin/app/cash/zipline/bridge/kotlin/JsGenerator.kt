@@ -221,7 +221,6 @@ internal fun addJsNameAnnotation(
   property.annotations += annotation
 }
 
-
 // -- Host2JS module-load registration (prototypes + runtime factories) --
 
 /**
@@ -291,8 +290,12 @@ internal fun injectModuleLoadBridgeRegistration(
       .firstOrNull { it.isPrimary }
     if (jsExportCtor != null) {
       warmUpFn.annotations += IrConstructorCallImpl(
-        UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-        jsExportCtor.returnType, jsExportCtor.symbol, 0, 0,
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        jsExportCtor.returnType,
+        jsExportCtor.symbol,
+        0,
+        0,
       )
     }
   }
@@ -309,9 +312,11 @@ internal fun injectModuleLoadBridgeRegistration(
       val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
       val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
       val classRef = IrClassReferenceImpl(
-        UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
         pluginContext.irBuiltIns.kClassClass.starProjectedType,
-        clazz.symbol, clazz.defaultType,
+        clazz.symbol,
+        clazz.defaultType,
       )
       +irCall(bridgeRegisterSymbol).apply {
         arguments[0] = irString(targetFqn)
@@ -397,7 +402,11 @@ private fun buildRuntimeFactories(
   val anyMapType = linkedHashMapClass.typeWith(anyNType, anyNType)
 
   buildObjectMethod(
-    finder, pluginContext, factoriesClass, "newLong", pluginContext.irBuiltIns.longType,
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newLong",
+    pluginContext.irBuiltIns.longType,
     listOf(pluginContext.irBuiltIns.intType, pluginContext.irBuiltIns.intType),
   ) { builder, params ->
     builder.irCall(longCtor).apply {
@@ -407,7 +416,11 @@ private fun buildRuntimeFactories(
   }
 
   buildObjectMethod(
-    finder, pluginContext, factoriesClass, "newArrayList", anyListType,
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newArrayList",
+    anyListType,
     listOf(pluginContext.irBuiltIns.arrayClass.typeWith(anyNType)),
   ) { builder, params ->
     builder.irCall(toCollection).apply {
@@ -421,7 +434,11 @@ private fun buildRuntimeFactories(
   }
 
   buildObjectMethod(
-    finder, pluginContext, factoriesClass, "newLinkedHashMap", anyMapType,
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newLinkedHashMap",
+    anyMapType,
     listOf(
       pluginContext.irBuiltIns.arrayClass.typeWith(anyNType),
       pluginContext.irBuiltIns.arrayClass.typeWith(anyNType),
@@ -494,8 +511,12 @@ private fun addJsExportAnnotation(
   val ctor = jsExportClass.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary } ?: return
   fn.annotations += IrConstructorCallImpl(
-    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-    ctor.returnType, ctor.symbol, 0, 0,
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    ctor.returnType,
+    ctor.symbol,
+    0,
+    0,
   )
 }
 
@@ -510,12 +531,18 @@ private fun addJsNameToFunction(
   val ctor = jsNameClass.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary } ?: return
   fn.annotations += IrConstructorCallImpl(
-    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-    ctor.returnType, ctor.symbol, 0, 1,
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    ctor.returnType,
+    ctor.symbol,
+    0,
+    1,
   ).apply {
     arguments[0] = IrConstImpl.string(
-      UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-      pluginContext.irBuiltIns.stringType, name,
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType,
+      name,
     )
   }
 }
@@ -588,13 +615,16 @@ private fun findOrCreateBridgeRegister(
   bridgeRegisterFn.annotations += IrConstructorCallImpl(
     UNDEFINED_OFFSET,
     UNDEFINED_OFFSET,
-    jsNameCtor.returnType, jsNameCtor.symbol,
+    jsNameCtor.returnType,
+    jsNameCtor.symbol,
     0,
     1,
   ).apply {
     arguments[0] = IrConstImpl.string(
-      UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-      pluginContext.irBuiltIns.stringType, "__bridgeRegister",
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType,
+      "__bridgeRegister",
     )
   }
   fileForModule.declarations += bridgeRegisterFn
@@ -629,12 +659,18 @@ private fun findOrCreateBridgeRegisterRuntime(
     .filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary }!!
   bridgeRegisterRuntimeFn.annotations += IrConstructorCallImpl(
-    UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-    jsNameCtor.returnType, jsNameCtor.symbol, 0, 1,
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    jsNameCtor.returnType,
+    jsNameCtor.symbol,
+    0,
+    1,
   ).apply {
     arguments[0] = IrConstImpl.string(
-      UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-      pluginContext.irBuiltIns.stringType, "__bridgeRegisterRuntime",
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType,
+      "__bridgeRegisterRuntime",
     )
   }
   fileForModule.declarations += bridgeRegisterRuntimeFn
@@ -652,4 +688,3 @@ private fun IrSimpleFunction.addDispatchReceiver(clazz: IrClass, pluginContext: 
   val receiver = pluginContext.irFactory.buildValueParameter(builder, clazz)
   parameters = listOf(receiver) + parameters
 }
-

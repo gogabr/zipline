@@ -88,6 +88,7 @@ internal object BridgeValueOps {
  */
 public fun publishValueOps() {
   val ops = BridgeValueOps
+
   @Suppress("UNUSED_VARIABLE")
   val installed = js(
     """

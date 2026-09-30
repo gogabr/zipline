@@ -1,6 +1,8 @@
 package app.cash.zipline.bridge.kotlin
 
 import java.io.File
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.types.IrSimpleType
@@ -10,8 +12,6 @@ import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.hasAnnotation
-import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
-import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.name.FqName
 
 // -- Kotlin/Native bridge code generation (iOS) --
@@ -136,7 +136,7 @@ internal fun generateNativeBridgeFile(
   if (nonNullableFunctionField != null) {
     messageCollector?.report(
       CompilerMessageSeverity.WARNING,
-      "No bridge generated for ${fqn}: its field '${nonNullableFunctionField.name}' has type " +
+      "No bridge generated for $fqn: its field '${nonNullableFunctionField.name}' has type " +
         "'${nonNullableFunctionField.ktType}', which zipline cannot convert. Make the field " +
         "nullable, or remove the bridge annotation.",
     )
@@ -378,12 +378,14 @@ internal fun generateNativeBridgeFile(
           }
           appendLine("    ${freeRef()}")
         }
+
         // zipline has no function bridge: a function-typed field cannot cross. A nullable one
         // decodes to null; a non-nullable one is refused before generation (see above). The local
         // is intentionally untyped so it takes the constructor parameter's type.
         field.isObjectType && field.ktType.startsWith("kotlin.Function") -> {
           appendLine("    val ${field.name} = null")
         }
+
         field.isObjectType && field.ktType != "kotlin.Any" -> {
           val typeName = field.ktType.substringAfterLast(".")
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
@@ -621,15 +623,19 @@ private fun emitElementConversion(
 
   return when {
     ktType == "kotlin.String" -> "HermesBridge_getValueString(ctx, $expr)?.let { s -> s.toKStringFromUtf8()?.also { platform.posix.free(s) } } ?: \"\""
+
     // A value class in a collection arrives BOXED when Kotlin/JS boxes it as a type argument (see
     // the BridgedLongBoxHolder case: `{"value_1":{"low_1":..,"high_1":..}}`), so its payload must be
     // scanned out of the instance first and the unboxed read kept as the fallback — the rule the
     // field branches apply. Reading such an element numerically loses the payload outright.
     isInlineElem && underlying == "kotlin.Int" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toInt() ?: HermesBridge_getValueDouble(ctx, $expr).toInt())"
+
     isInlineElem && underlying == "kotlin.Double" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr) ?: HermesBridge_getValueDouble(ctx, $expr))"
+
     isInlineElem && underlying == "kotlin.Long" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToLong(ctx, $expr) ?: JsNumberToLong(ctx, $expr))"
+
     isInlineElem && underlying == "kotlin.Float" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toFloat() ?: HermesBridge_getValueDouble(ctx, $expr).toFloat())"
-    
+
     ktType == "kotlin.Int" -> "HermesBridge_getValueDouble(ctx, $expr).toInt()"
 
     ktType == "kotlin.Long" -> "JsNumberToLong(ctx, $expr)"

@@ -823,7 +823,7 @@ android {
         targets(if (hermesProd) "hermesvmlean" else "hermesvm")
         arguments(
           "-DANDROID_TOOLCHAIN=clang",
-          "-DANDROID_STL=c++_shared",
+          "-DANDROID_STL=c++_static",
           // Pass the path to the host-side ImportHostCompilers.cmake so
           // Hermes InternalJavaScript step can invoke hermesc and shermes.
           "-DIMPORT_HOST_COMPILERS=${hermesImportCompilers.absolutePath}",
@@ -869,8 +869,8 @@ android {
       // the real package via CMAKE_PREFIX_PATH populated by prefab.
       //
       // compileOnly so fbjni's bundled libc++_shared.so (older NDK) is not
-      // packaged into the final APK; zipline ships its own libc++_shared.so
-      // (matching the NDK used to build our .so).
+      // packaged into the final APK; zipline links libc++ statically
+      // (ANDROID_STL=c++_static) so it needs no libc++_shared.so at all.
       // Removed because the real fbjni broke compose-live at runtime.
     }
   }

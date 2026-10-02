@@ -126,7 +126,7 @@ set(_GLUE_INCLUDES
 if(ANDROID)
   # ---- Android build ----
   set(HERMES_IS_ANDROID TRUE)
-  set(ANDROID_STL "c++_shared")
+  set(ANDROID_STL "c++_static")
   set(HERMES_ENABLE_TEST_SUITE OFF)
   # The debugger (incl. the CDP agent in API/hermes/cdp) is enabled so Kotlin/JS
   # code can be debugged from Chrome DevTools. Lean (prod) builds exclude the JS

@@ -1,6 +1,8 @@
 package app.cash.zipline.bridge.kotlin
 
 import java.io.File
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.types.IrSimpleType
@@ -71,12 +73,16 @@ private fun collectRuntimeImports(
   type: IrType?,
   needsBridgeForAny: MutableSet<Unit>,
   needsJsLong: MutableSet<Unit>,
+  needsJsBoxed: MutableSet<Unit>,
 ) {
   val ktType = effectiveClassFqn(type)
-  // Inline value class backed by Long (e.g. Color) converts via JsNumberToLong.
   val elemClass = (type as? IrSimpleType)?.getClass()
-  if (elemClass != null && isInlineClass(elemClass) && unwrapInlineUnderlying(elemClass) == "kotlin.Long") {
-    needsJsLong.add(Unit)
+  // Inline value class: an inlined Long converts via JsNumberToLong; a BOXED instance (Kotlin/JS
+  // boxes a value class used as a type argument — a List<Color> element, not just a field) reads
+  // its payload through the JsBoxedNumberTo* scanners.
+  if (elemClass != null && isInlineClass(elemClass)) {
+    needsJsBoxed.add(Unit)
+    if (unwrapInlineUnderlying(elemClass) == "kotlin.Long") needsJsLong.add(Unit)
     return
   }
   when {
@@ -86,14 +92,14 @@ private fun collectRuntimeImports(
 
     ktType in MAP_KOTLIN_TYPES -> {
       (type as? IrSimpleType)?.arguments?.forEach { arg ->
-        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong)
+        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong, needsJsBoxed)
       }
     }
 
     ktType == "kotlin.collections.List" || ktType == "kotlin.Array" -> {
       needsBridgeForAny.add(Unit)
       (type as? IrSimpleType)?.arguments?.forEach { arg ->
-        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong)
+        collectRuntimeImports((arg as? IrTypeProjection)?.type ?: (arg as? IrType), needsBridgeForAny, needsJsLong, needsJsBoxed)
       }
     }
 
@@ -105,7 +111,11 @@ private fun collectRuntimeImports(
   }
 }
 
-internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
+internal fun generateNativeBridgeFile(
+  outputDir: String,
+  clazz: IrClass,
+  messageCollector: MessageCollector? = null,
+) {
   val fqn = clazz.fqNameWhenAvailable?.asString() ?: return
   val functionName = "${fqn.replace(".", "_")}_toKotlin"
   val fields = extractFields(clazz)
@@ -117,11 +127,21 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     clazz.hasAnnotation(REDWOOD_CODEGEN_API_FQN) ||
       (clazz.parent as? IrClass)?.hasAnnotation(REDWOOD_CODEGEN_API_FQN) == true
 
-  // Skip classes with unsupported field types (Function* object types).
-  val hasUnsupported = fields.any {
-    (it.isObjectType && it.ktType.startsWith("kotlin.Function"))
+  // zipline has no function bridge, so a NON-NULLABLE function-typed field makes the class
+  // unconvertible. Say so instead of silently generating no converter: the host would otherwise
+  // report a missing converter far from the cause. A nullable function field decodes to null.
+  val nonNullableFunctionField = fields.firstOrNull {
+    it.isObjectType && it.ktType.startsWith("kotlin.Function") && !it.isNullable
   }
-  if (hasUnsupported) return
+  if (nonNullableFunctionField != null) {
+    messageCollector?.report(
+      CompilerMessageSeverity.WARNING,
+      "No bridge generated for $fqn: its field '${nonNullableFunctionField.name}' has type " +
+        "'${nonNullableFunctionField.ktType}', which zipline cannot convert. Make the field " +
+        "nullable, or remove the bridge annotation.",
+    )
+    return
+  }
 
   val source = buildString {
     appendLine("@file:Suppress(\"UNUSED_PARAMETER\", \"unused\", \"INVISIBLE_MEMBER\", \"INVISIBLE_REFERENCE\", \"UNCHECKED_CAST\")")
@@ -139,13 +159,16 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     val needsJsLong = mutableSetOf<Unit>()
     val needsJsBoxed = mutableSetOf<Unit>()
     for (field in fields) {
-      collectRuntimeImports(field.type, needsBridgeForAny, needsJsLong)
-      if (field.isInline && field.underlyingKtType == "kotlin.Long") needsJsLong.add(Unit)
-      if (field.isInline) needsJsBoxed.add(Unit)
+      collectRuntimeImports(field.type, needsBridgeForAny, needsJsLong, needsJsBoxed)
     }
-    if (needsBridgeForAny.isNotEmpty()) {
-      appendLine("import app.cash.zipline.bridgeForAny")
-    }
+    // bridgeForAny is the fallback decoder for object fields and untyped elements.
+    appendLine("import app.cash.zipline.bridgeForAny")
+    // Enums read their ordinal through the guest's value ops (Kotlin/JS mangles `ordinal`), and
+    // collections are decoded by the guest's own iteration.
+    appendLine("import app.cash.zipline.jsEnumOrdinal")
+    appendLine("import app.cash.zipline.jsCollectionToKotlin")
+    appendLine("import app.cash.zipline.jsMapToKotlin")
+    appendLine("import app.cash.zipline.CollectionKind")
     if (needsJsLong.isNotEmpty()) {
       appendLine("import app.cash.zipline.JsNumberToLong")
     }
@@ -298,37 +321,18 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
         }
 
         field.effectiveKtType in MAP_KOTLIN_TYPES -> {
-          val keyType = typeArgument(field.type, 0)
-          val valueType = typeArgument(field.type, 1)
-          val renderedKey = renderedTypeName(keyType)
-          val renderedValue = renderedTypeName(valueType)
+          // The guest drives the iteration (see jsMapToKotlin): a host-side walk of a Kotlin/JS
+          // Map relies on mangled member names, which production builds drop.
+          val renderedKey = renderedTypeName(typeArgument(field.type, 0))
+          val renderedValue = renderedTypeName(typeArgument(field.type, 1))
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
           appendLine("    val ${field.name}Tag = HermesBridge_getValueTag(ctx, ${field.name}Ref)")
+          val conv = emitMapHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref")
           if (field.isNullable) {
-            appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue>? = if (${field.name}Tag == TAG_UNDEFINED || ${field.name}Tag == TAG_NULL) null else memScoped {")
+            appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue>? = if (${field.name}Tag == TAG_UNDEFINED || ${field.name}Tag == TAG_NULL) null else $conv")
           } else {
-            appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue> = memScoped {")
+            appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue> = $conv")
           }
-          appendLine("        val keysHandle = alloc<IntVar>()")
-          appendLine("        val valuesHandle = alloc<IntVar>()")
-          appendLine("        HermesBridge_getMapEntries(ctx, ${field.name}Ref, keysHandle.ptr, valuesHandle.ptr)")
-          appendLine("        val map = mutableMapOf<$renderedKey, $renderedValue>()")
-          appendLine("        val len = HermesBridge_getArrayLength(ctx, keysHandle.value)")
-          appendLine("        var i = 0")
-          appendLine("        while (i < len) {")
-          appendLine("            val keyRef = HermesBridge_createArrayElementHandle(ctx, keysHandle.value, i)")
-          appendLine("            val valueRef = HermesBridge_createArrayElementHandle(ctx, valuesHandle.value, i)")
-          val keyExpr = emitElementConversion(helpers, "conv_${field.name}_key", keyType, "ctx", "keyRef")
-          val valueExpr = emitElementConversion(helpers, "conv_${field.name}_value", valueType, "ctx", "valueRef")
-          appendLine("            map[$keyExpr] = $valueExpr")
-          appendLine("            HermesBridge_freeHandle(ctx, keyRef)")
-          appendLine("            HermesBridge_freeHandle(ctx, valueRef)")
-          appendLine("            i++")
-          appendLine("        }")
-          appendLine("        HermesBridge_freeHandle(ctx, keysHandle.value)")
-          appendLine("        HermesBridge_freeHandle(ctx, valuesHandle.value)")
-          appendLine("        map")
-          appendLine("    }")
           appendLine("    ${freeRef()}")
         }
 
@@ -375,6 +379,13 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
           appendLine("    ${freeRef()}")
         }
 
+        // zipline has no function bridge: a function-typed field cannot cross. A nullable one
+        // decodes to null; a non-nullable one is refused before generation (see above). The local
+        // is intentionally untyped so it takes the constructor parameter's type.
+        field.isObjectType && field.ktType.startsWith("kotlin.Function") -> {
+          appendLine("    val ${field.name} = null")
+        }
+
         field.isObjectType && field.ktType != "kotlin.Any" -> {
           val typeName = field.ktType.substringAfterLast(".")
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
@@ -385,11 +396,15 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
             appendLine("        ${field.name}DispatchFn(ctx, ${field.name}Ref)?.asStableRef<Any>()?.get() as? $typeName")
             appendLine("    }")
           } else {
-            appendLine("    if (${field.name}DispPtr == 0L) {")
-            appendLine("        throw IllegalStateException(\"BRIDGE: non-nullable field ${field.name} ($typeName) — bridge_dispatch not found\")")
+            // An object the HOST built for a host->JS conversion carries no dispatch pointer, so
+            // fall back to the shared decoder - it names the class when nothing can decode it -
+            // rather than dereferencing a null pointer.
+            appendLine("    val ${field.name} = if (${field.name}DispPtr == 0L) {")
+            appendLine("        bridgeForAny(ctx, ${field.name}Ref) as $typeName")
+            appendLine("    } else {")
+            appendLine("        val ${field.name}DispatchFn = ${field.name}DispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!")
+            appendLine("        ${field.name}DispatchFn(ctx, ${field.name}Ref)!!.asStableRef<Any>().get() as $typeName")
             appendLine("    }")
-            appendLine("    val ${field.name}DispatchFn = ${field.name}DispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!")
-            appendLine("    val ${field.name} = ${field.name}DispatchFn(ctx, ${field.name}Ref)!!.asStableRef<Any>().get() as $typeName")
           }
           appendLine("    ${freeRef()}")
         }
@@ -405,9 +420,10 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
         }
 
         else -> {
+          // Anything left is decoded generically: the shared decoder handles scalars, strings,
+          // collections and bridged objects, and names the class when it can decode nothing.
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
-          appendLine("    // TODO: unsupported type ${field.ktType} (isObjectType=${field.isObjectType}, isInline=${field.isInline})")
-          appendLine("    val ${field.name} = ${field.name}Ref  // stub")
+          appendLine("    val ${field.name} = bridgeForAny(ctx, ${field.name}Ref)")
           appendLine("    ${freeRef()}")
         }
       }
@@ -419,11 +435,11 @@ internal fun generateNativeBridgeFile(outputDir: String, clazz: IrClass) {
     val className = clazz.name.asString()
     val qualifier = ((clazz.parent as? IrClass)?.name?.asString()?.plus(".")) ?: ""
     if (clazz.kind == ClassKind.ENUM_CLASS) {
-      // Enum — read ordinal, return entries[ordinal]
-      appendLine("    val ordinalRef = HermesBridge_createHandle(ctx, jsValHandle, \"ordinal_1\")")
-      appendLine("    val ordinal = HermesBridge_getValueDouble(ctx, ordinalRef).toInt()")
-      appendLine("    HermesBridge_freeHandle(ctx, ordinalRef)")
-      appendLine("    val _obj = $qualifier$className.entries[ordinal]")
+      // Enum - the guest reports the ordinal (Kotlin/JS mangles the ordinal field's name, and
+      // production builds drop it), and the index is range-checked: an unchecked index aborts.
+      appendLine("    val ordinal = jsEnumOrdinal(ctx, jsValHandle)")
+      appendLine("    val _obj = $qualifier$className.entries.getOrNull(ordinal)")
+      appendLine("        ?: error(\"host bridge: ordinal \$ordinal is out of range for $qualifier$className\")")
     } else if (ctorFields.isNotEmpty()) {
       appendLine("    @Suppress(\"UNCHECKED_CAST\")")
       append("    val _obj = $qualifier$className(")
@@ -473,23 +489,14 @@ private fun emitListHelper(
   val elementName = "${name}_element"
   val renderedElement = renderedTypeName(elementType)
   val pending = StringBuilder()
+  // The guest drives the iteration: Kotlin/JS mangles the stdlib's backing fields (and drops
+  // them in production builds), and the concrete list class depends on how the guest built it.
   helpers.appendLine("private fun $name(ctx: COpaquePointer?, jsArrHandle: Int): List<$renderedElement> = run {")
-  helpers.appendLine("    var arr = jsArrHandle")
-  helpers.appendLine("    val _tmpArr = HermesBridge_createHandle(ctx, jsArrHandle, \"array_1\")")
-  helpers.appendLine("    if (HermesBridge_getValueTag(ctx, _tmpArr) != TAG_UNDEFINED) {")
-  helpers.appendLine("        arr = _tmpArr")
-  helpers.appendLine("    }")
-  helpers.appendLine("    val len = HermesBridge_getArrayLength(ctx, arr)")
-  helpers.appendLine("    val result = mutableListOf<$renderedElement>()")
-  helpers.appendLine("    var i = 0")
-  helpers.appendLine("    while (i < len) {")
-  helpers.appendLine("        val elemRef = HermesBridge_createArrayElementHandle(ctx, arr, i)")
-  val elemConv = emitElementConversion(pending, elementName, elementType, ctx, "elemRef")
-  helpers.appendLine("        result.add($elemConv)")
-  helpers.appendLine("        HermesBridge_freeHandle(ctx, elemRef)")
-  helpers.appendLine("        i++")
-  helpers.appendLine("    }")
-  helpers.appendLine("    HermesBridge_freeHandle(ctx, _tmpArr)")
+  helpers.appendLine("    @Suppress(\"UNCHECKED_CAST\")")
+  helpers.appendLine("    val result = jsCollectionToKotlin(ctx, jsArrHandle, CollectionKind.LIST) { element ->")
+  val elemConv = emitElementConversion(pending, elementName, elementType, ctx, "element")
+  helpers.appendLine("        $elemConv")
+  helpers.appendLine("    } as List<$renderedElement>")
   helpers.appendLine("    result")
   helpers.appendLine("}")
   helpers.appendLine()
@@ -542,26 +549,18 @@ private fun emitMapHelper(
   val keyName = "${name}_key"
   val valueName = "${name}_value"
   val pending = StringBuilder()
-  helpers.appendLine("private fun $name(ctx: COpaquePointer?, jsMapHandle: Int): Map<$renderedKey, $renderedValue> = memScoped {")
-  helpers.appendLine("    val keysHandle = alloc<IntVar>()")
-  helpers.appendLine("    val valuesHandle = alloc<IntVar>()")
-  helpers.appendLine("    HermesBridge_getMapEntries(ctx, jsMapHandle, keysHandle.ptr, valuesHandle.ptr)")
-  helpers.appendLine("    val map = mutableMapOf<$renderedKey, $renderedValue>()")
-  helpers.appendLine("    val len = HermesBridge_getArrayLength(ctx, keysHandle.value)")
-  helpers.appendLine("    var i = 0")
-  helpers.appendLine("    while (i < len) {")
-  helpers.appendLine("        val keyRef = HermesBridge_createArrayElementHandle(ctx, keysHandle.value, i)")
-  helpers.appendLine("        val valueRef = HermesBridge_createArrayElementHandle(ctx, valuesHandle.value, i)")
-  val keyConv = emitElementConversion(pending, keyName, keyType, ctx, "keyRef")
-  val valueConv = emitElementConversion(pending, valueName, valueType, ctx, "valueRef")
-  helpers.appendLine("        map[$keyConv] = $valueConv")
-  helpers.appendLine("        HermesBridge_freeHandle(ctx, keyRef)")
-  helpers.appendLine("        HermesBridge_freeHandle(ctx, valueRef)")
-  helpers.appendLine("        i++")
-  helpers.appendLine("    }")
-  helpers.appendLine("    HermesBridge_freeHandle(ctx, keysHandle.value)")
-  helpers.appendLine("    HermesBridge_freeHandle(ctx, valuesHandle.value)")
-  helpers.appendLine("    map")
+  // The guest identifies the collection and drives the iteration (see jsMapToKotlin): a host-side
+  // walk of a Kotlin/JS Map only works in development builds.
+  helpers.appendLine("private fun $name(ctx: COpaquePointer?, jsMapHandle: Int): Map<$renderedKey, $renderedValue> = run {")
+  helpers.appendLine("    @Suppress(\"UNCHECKED_CAST\")")
+  helpers.appendLine("    val result = jsMapToKotlin(ctx, jsMapHandle, { key ->")
+  val keyConv = emitElementConversion(pending, keyName, keyType, ctx, "key")
+  helpers.appendLine("        $keyConv")
+  helpers.appendLine("    }, { value ->")
+  val valueConv = emitElementConversion(pending, valueName, valueType, ctx, "value")
+  helpers.appendLine("        $valueConv")
+  helpers.appendLine("    }) as Map<$renderedKey, $renderedValue>")
+  helpers.appendLine("    result")
   helpers.appendLine("}")
   helpers.appendLine()
   helpers.append(pending)
@@ -625,13 +624,17 @@ private fun emitElementConversion(
   return when {
     ktType == "kotlin.String" -> "HermesBridge_getValueString(ctx, $expr)?.let { s -> s.toKStringFromUtf8()?.also { platform.posix.free(s) } } ?: \"\""
 
-    isInlineElem && underlying == "kotlin.Int" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr).toInt())"
+    // A value class in a collection arrives BOXED when Kotlin/JS boxes it as a type argument (see
+    // the BridgedLongBoxHolder case: `{"value_1":{"low_1":..,"high_1":..}}`), so its payload must be
+    // scanned out of the instance first and the unboxed read kept as the fallback — the rule the
+    // field branches apply. Reading such an element numerically loses the payload outright.
+    isInlineElem && underlying == "kotlin.Int" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toInt() ?: HermesBridge_getValueDouble(ctx, $expr).toInt())"
 
-    isInlineElem && underlying == "kotlin.Double" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr))"
+    isInlineElem && underlying == "kotlin.Double" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr) ?: HermesBridge_getValueDouble(ctx, $expr))"
 
-    isInlineElem && underlying == "kotlin.Long" -> "${ktType.substringAfterLast(".")}(JsNumberToLong(ctx, $expr))"
+    isInlineElem && underlying == "kotlin.Long" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToLong(ctx, $expr) ?: JsNumberToLong(ctx, $expr))"
 
-    isInlineElem && underlying == "kotlin.Float" -> "${ktType.substringAfterLast(".")}(HermesBridge_getValueDouble(ctx, $expr).toFloat())"
+    isInlineElem && underlying == "kotlin.Float" -> "${ktType.substringAfterLast(".")}(JsBoxedNumberToDouble(ctx, $expr)?.toFloat() ?: HermesBridge_getValueDouble(ctx, $expr).toFloat())"
 
     ktType == "kotlin.Int" -> "HermesBridge_getValueDouble(ctx, $expr).toInt()"
 
@@ -658,17 +661,21 @@ private fun emitElementConversion(
       val typeName = ktType.substringAfterLast(".")
       val isNullableElem = (type as? IrSimpleType)?.isMarkedNullable() ?: false
       if (isNullableElem) {
-        "(HermesBridge_getBridgeDispatch(ctx, $expr).toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)?.asStableRef<Any>()?.get() as? $typeName)"
+        "(run { val d = HermesBridge_getBridgeDispatch(ctx, $expr); if (d == 0L) bridgeForAny(ctx, $expr) else d.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)?.asStableRef<Any>()?.get() } as? $typeName)"
       } else {
-        "(HermesBridge_getBridgeDispatch(ctx, $expr).toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)!!.asStableRef<Any>().get() as $typeName)"
+        "(run { val d = HermesBridge_getBridgeDispatch(ctx, $expr); if (d == 0L) bridgeForAny(ctx, $expr) else d.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)!!.asStableRef<Any>().get() } as $typeName)"
       }
     }
   }
 }
 
 /** Generate per-class native bridge files. Each file self-registers via @EagerInitialization. */
-internal fun generateNativeBridges(outputDir: String, dispatchClasses: List<IrClass>) {
+internal fun generateNativeBridges(
+  outputDir: String,
+  dispatchClasses: List<IrClass>,
+  messageCollector: MessageCollector? = null,
+) {
   for (clazz in dispatchClasses) {
-    generateNativeBridgeFile(outputDir, clazz)
+    generateNativeBridgeFile(outputDir, clazz, messageCollector)
   }
 }

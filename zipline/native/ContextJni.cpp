@@ -33,6 +33,22 @@ namespace jsi = facebook::jsi;
 static std::vector<std::pair<std::string, jobject(*)(JNIEnv*,jsi::Runtime&,const jsi::Value&)>> bridgeTable;
 static std::vector<void(*)(JNIEnv*)> bridgeInits;
 
+namespace {
+
+// The guest's class prototypes and runtime factories are kept in JS globals (named by
+// bridge_dispatch.h, which the converters read) so that a converter compiled into a consumer
+// library - a separate .so - can reach them with nothing but the runtime. They are
+// per-runtime by construction: each Hermes runtime has its own global object.
+jsi::Object globalBridgeMap(jsi::Runtime &rt, const char *name) {
+  jsi::Value existing = rt.global().getProperty(rt, name);
+  if (existing.isObject()) return existing.asObject(rt);
+  jsi::Object created(rt);
+  rt.global().setProperty(rt, name, created);
+  return created;
+}
+
+}  // namespace
+
 extern "C" __attribute__((used, visibility("default"))) void addBridgeEntry(const char* fq, jobject(*fn)(JNIEnv*,jsi::Runtime&,const jsi::Value&)) {
     bridgeTable.push_back({fq, fn});
 }
@@ -58,11 +74,20 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
             auto fq = args[0].asString(rt).utf8(rt);
             if (!args[1].isObject()) return jsi::Value::undefined();
             jsi::Object ctor = args[1].asObject(rt);
+            jsi::Object proto = ctor.getPropertyAsObject(rt, "prototype");
+
+            // Retain the prototype: the host needs it to build instances of this class for a
+            // host->JS conversion, including for classes that only ever originate host-side.
+            globalBridgeMap(rt, HOST2JS_PROTOTYPES_GLOBAL)
+                .setProperty(rt, fq.c_str(), jsi::Value(rt, proto));
+
+            // Attach the JS->host converter when one is registered. A class that only travels
+            // host->JS has none, which is not an error; a class the host cannot convert either way
+            // fails later, by name, at the conversion.
             for (auto& entry : bridgeTable) {
                 if (strcmp(entry.first.c_str(), fq.c_str()) == 0) {
                     JniBridgeDispatch *disp = new JniBridgeDispatch();
                     disp->toJavaObject = entry.second;
-                    jsi::Object proto = ctor.getPropertyAsObject(rt, "prototype");
                     // Store pointer as two int32 halves (JS double has 53-bit mantissa;
                     // ARM64 pointers need 64 bits, so split into two 32-bit values).
                     intptr_t ptr = reinterpret_cast<intptr_t>(disp);
@@ -70,14 +95,29 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
                     int32_t high = static_cast<int32_t>((ptr >> 32) & 0xFFFFFFFF);
                     proto.setProperty(rt, "bridge_dispatch_low",  jsi::Value(static_cast<double>(low)));
                     proto.setProperty(rt, "bridge_dispatch_high", jsi::Value(static_cast<double>(high)));
-                    return jsi::Value::undefined();
+                    break;
                 }
             }
-            throw jsi::JSError(rt, std::string("bridge_register_js: FQN '") + fq + "' not found in bridge_table");
             return jsi::Value::undefined();
         });
+
+    auto bridgeRegisterRuntimeFn = jsi::Function::createFromHostFunction(
+        rt,
+        jsi::PropNameID::forUtf8(rt, "__bridgeRegisterRuntime"),
+        1,
+        [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
+            if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
+            // The factories build real Kotlin/JS Long/ArrayList/LinkedHashMap instances; they are
+            // the guest's own stdlib calls, so nothing here relies on Kotlin/JS internals. The
+            // instance carries newLong/newArrayList/newLinkedHashMap through its prototype, so
+            // the host can read them off it directly.
+            rt.global().setProperty(rt, HOST2JS_FACTORIES_GLOBAL, args[0]);
+            return jsi::Value::undefined();
+        });
+
     jsi::Object globalObject = rt.global();
     globalObject.setProperty(rt, "__bridgeRegister", std::move(bridgeRegisterFn));
+    globalObject.setProperty(rt, "__bridgeRegisterRuntime", std::move(bridgeRegisterRuntimeFn));
 }
 
 namespace jsi = facebook::jsi;
@@ -121,6 +161,40 @@ bool tryAsInt64(double d, int64_t& out) {
   }
   out = static_cast<int64_t>(d);
   return true;
+}
+
+/**
+ * Reports a pending Java exception and clears it. A conversion that failed leaves one pending;
+ * continuing to call JNI with it pending aborts the VM, which hides the original failure, and the
+ * caller is dropping the work item anyway. The message goes to logcat (Android) or stderr (JVM)
+ * so the real cause stays visible.
+ */
+void reportAndClearPendingException(JNIEnv* env, const char* what) {
+  if (!env->ExceptionCheck()) return;
+  jthrowable pending = env->ExceptionOccurred();
+  env->ExceptionClear();
+  std::string description;
+  if (pending != nullptr) {
+    jclass throwableClass = env->FindClass("java/lang/Throwable");
+    if (throwableClass != nullptr) {
+      jmethodID toString = env->GetMethodID(throwableClass, "toString", "()Ljava/lang/String;");
+      if (toString != nullptr) {
+        jstring text = static_cast<jstring>(env->CallObjectMethod(pending, toString));
+        if (!env->ExceptionCheck() && text != nullptr) {
+          description = zipline::jniStringToUtf8(env, text);
+        }
+        env->ExceptionClear();
+      }
+      env->DeleteLocalRef(throwableClass);
+    }
+    env->ExceptionClear();
+    env->DeleteLocalRef(pending);
+  }
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_ERROR, "BRIDGE", "%s: %s", what, description.c_str());
+#else
+  fprintf(stderr, "BRIDGE: %s: %s\n", what, description.c_str());
+#endif
 }
 
 }  // namespace
@@ -202,9 +276,16 @@ ContextJni::ContextJni(JNIEnv* env, bool forceEagerCompilation)
 }
 
 void ContextJni::deleteBridgeRefs(JNIEnv* env) {
+  // Each field is nulled as it is released: these caches are set independently (the JDK
+  // collection classes are cached even when redwood is absent), so a partially populated set must
+  // not leave a stale handle for a second release.
+  if (arrayListClass != nullptr) {
+    env->DeleteGlobalRef(arrayListClass);
+    arrayListClass = nullptr;
+  }
   if (rdmaBridgeClass != nullptr) {
     env->DeleteGlobalRef(rdmaBridgeClass);
-    env->DeleteGlobalRef(arrayListClass);
+    rdmaBridgeClass = nullptr;
   }
   if (rdmaChangeSink != nullptr) {
     env->DeleteGlobalRef(rdmaChangeSink);
@@ -238,6 +319,9 @@ ContextJni::~ContextJni() {
 }
 
 jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) {
+  // Guest code that called into a host bridge may have left a Java exception pending. Every
+  // further JNI call with one pending is undefined and aborts the VM, so report it and stop.
+  if (env->ExceptionCheck()) return nullptr;
   // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
@@ -268,6 +352,9 @@ jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
                      "evaluate() is not available in lean Hermes build");
   return nullptr;
 #else
+  // Guest code that called into a host bridge may have left a Java exception pending. Every
+  // further JNI call with one pending is undefined and aborts the VM, so report it and stop.
+  if (env->ExceptionCheck()) return nullptr;
   // Run any pending CDP runtime tasks (e.g. breakpoint installation) before
   // evaluating more JavaScript. We are on the JS thread here.
   zipline_cdp::drainTasks(this);
@@ -413,10 +500,15 @@ void ContextJni::setOutboundCallChannel(JNIEnv* env, jstring name, jobject callC
 
 jobject
 ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsupportedType) {
+  // A pending Java exception (e.g. a host bridge that threw while guest code ran) makes every
+  // further JNI call undefined; never start a conversion on top of one.
+  if (env->ExceptionCheck()) return nullptr;
   if (value.isBool()) {
     jvalue v;
     v.z = value.asBool() ? JNI_TRUE : JNI_FALSE;
-    return env->CallStaticObjectMethodA(booleanClass, booleanValueOf, &v);
+    jobject boxed = env->CallStaticObjectMethodA(booleanClass, booleanValueOf, &v);
+    if (env->ExceptionCheck()) return nullptr;
+    return boxed;
   }
   if (value.isNumber()) {
     double d = value.asNumber();
@@ -425,14 +517,20 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
     if (tryAsInt32(d, asInt)) {
       jvalue v;
       v.i = asInt;
-      return env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
+      jobject boxed = env->CallStaticObjectMethodA(integerClass, integerValueOf, &v);
+      if (env->ExceptionCheck()) return nullptr;
+      return boxed;
     }
     jvalue v;
     v.d = d;
-    return env->CallStaticObjectMethodA(doubleClass, doubleValueOf, &v);
+    jobject boxed = env->CallStaticObjectMethodA(doubleClass, doubleValueOf, &v);
+    if (env->ExceptionCheck()) return nullptr;
+    return boxed;
   }
   if (value.isString()) {
-    return toJavaString(env, value.asString(*runtime));
+    jstring result = toJavaString(env, value.asString(*runtime));
+    if (env->ExceptionCheck()) return nullptr;
+    return result;
   }
   if (value.isNull() || value.isUndefined()) {
     return nullptr;
@@ -445,39 +543,115 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
       jobjectArray result = env->NewObjectArray(static_cast<jsize>(len), objectClass, nullptr);
       for (size_t i = 0; i < len && !env->ExceptionCheck(); i++) {
         jobject el = toJavaObject(env, arr.getValueAtIndex(*runtime, i), false);
+        if (env->ExceptionCheck()) break;
         env->SetObjectArrayElement(result, static_cast<jsize>(i), el);
         if (el) env->DeleteLocalRef(el);
       }
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(result);
+        return nullptr;
+      }
       return result;
     }
+    // Kotlin/JS collections (map/set/list) are objects, not JS arrays. The guest identifies them
+    // and drives the iteration through its value ops: without this a guest-authored collection
+    // decodes to null.
+    int kind = jsiBridgeCollectionKind(*runtime, value);
+    if (kind != BRIDGE_COLLECTION_NONE) {
+      jobject result = jsiCollectionToJava(
+          env, *runtime, value, kind, jsiValueToBoxedLoud, jsiValueToBoxedLoud);
+      if (env->ExceptionCheck()) return nullptr;
+      if (result != nullptr) return result;
+    }
     // Try bridge_dispatch (bridged Kotlin/JS object → Java).
-    jsi::Value lowVal = obj.getProperty(*runtime, "bridge_dispatch_low");
-    jsi::Value highVal = obj.getProperty(*runtime, "bridge_dispatch_high");
-    if (!lowVal.isUndefined() && !highVal.isUndefined()) {
-      int32_t low = static_cast<int32_t>(lowVal.asNumber());
-      int32_t high = static_cast<int32_t>(highVal.asNumber());
-      intptr_t ptr = (static_cast<intptr_t>(high) << 32) |
-                     static_cast<intptr_t>(static_cast<uint32_t>(low));
+    intptr_t ptr = jsi_get_bridge_dispatch(*runtime, value);
+    if (ptr != 0) {
       JniBridgeDispatch* disp = reinterpret_cast<JniBridgeDispatch*>(ptr);
       jobject result = disp->toJavaObject(env, *runtime, value);
+      if (env->ExceptionCheck()) return nullptr;
       if (result) return result;
     }
-    // Try Kotlin/JS Long ({low_1, high_1}).
-    jsi::Value lo = obj.getProperty(*runtime, "low_1");
-    if (!lo.isUndefined()) {
-      jsi::Value hi = obj.getProperty(*runtime, "high_1");
-      jlong lv = (static_cast<jlong>(static_cast<int32_t>(hi.asNumber())) << 32) |
-                 (static_cast<jlong>(static_cast<uint32_t>(static_cast<int32_t>(lo.asNumber()))));
-      jvalue v;
-      v.j = lv;
-      return env->CallStaticObjectMethodA(longClass, longValueOf, &v);
-    }
+    // Boxed kotlin.Long: the guest reports its 32-bit halves (its own field names are mangled).
+    jobject boxedLong = jsiBridgeTryUnwrapLong(env, *runtime, value);
+    if (env->ExceptionCheck()) return nullptr;
+    if (boxedLong != nullptr) return boxedLong;
   }
   if (throwOnUnsupportedType) {
-    throwJsExceptionFmt(
-        env, this, "Cannot marshal Hermes value of this kind to Java");
+    // Name the offending class when a Kotlin class instance has no converter. Plain data - a plain
+    // JS object, a function, a Kotlin collection or Long, or kotlin.Unit (the value a Unit-returning
+    // guest function, e.g. the direct-event sink, produces) - decodes to null, which is what it did
+    // before and what the Kotlin/Native decoder does; only a class instance is an error.
+    jsiThrowUnbridgedJsObject(env, *runtime, value);
   }
   return nullptr;
+}
+
+bool ContextJni::hasPendingPlatformException() {
+  JNIEnv* env = getEnv();
+  return env != nullptr && env->ExceptionCheck();
+}
+
+jboolean ContextJni::hasGlobalFunction(JNIEnv* env, jstring name) {
+  if (env->ExceptionCheck()) return JNI_FALSE;
+  std::string functionName = toCppString(env, name);
+  if (env->ExceptionCheck()) return JNI_FALSE;
+  try {
+    jsi::Value value = runtime->global().getProperty(*runtime, functionName.c_str());
+    if (!value.isObject() || !value.asObject(*runtime).isFunction(*runtime)) return JNI_FALSE;
+    return JNI_TRUE;
+  } catch (const jsi::JSError& e) {
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return JNI_FALSE;
+  }
+}
+
+jobject ContextJni::callGuestFunction(JNIEnv* env, jstring name, jobject argsList) {
+  if (env->ExceptionCheck()) return nullptr;
+  std::string functionName = toCppString(env, name);
+  if (env->ExceptionCheck()) return nullptr;
+  try {
+    jsi::Runtime& rt = *runtime;
+    jsi::Value function = rt.global().getProperty(rt, functionName.c_str());
+    if (!function.isObject() || !function.asObject(rt).isFunction(rt)) {
+      throwJavaException(env, "java/lang/IllegalStateException",
+                         "JavaScript global function %s was not found",
+                         functionName.c_str());
+      return nullptr;
+    }
+
+    // Arguments cross host->JS one by one; a value that has no counterpart fails loudly here
+    // rather than arriving as undefined on the guest side.
+    std::vector<jsi::Value> args;
+    if (argsList != nullptr) {
+      jclass listClass = env->FindClass("java/util/List");
+      jmethodID sizeMethod = env->GetMethodID(listClass, "size", "()I");
+      jmethodID getMethod = env->GetMethodID(listClass, "get", "(I)Ljava/lang/Object;");
+      jint size = env->CallIntMethod(argsList, sizeMethod);
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(listClass);
+        return nullptr;
+      }
+      for (jint i = 0; i < size && !env->ExceptionCheck(); i++) {
+        jobject arg = env->CallObjectMethod(argsList, getMethod, i);
+        if (env->ExceptionCheck()) {
+          if (arg) env->DeleteLocalRef(arg);
+          break;
+        }
+        args.push_back(jsiHost2JsAnyToJs(env, rt, arg));
+        if (arg) env->DeleteLocalRef(arg);
+        if (env->ExceptionCheck()) break;
+      }
+      env->DeleteLocalRef(listClass);
+      if (env->ExceptionCheck()) return nullptr;
+    }
+
+    jsi::Value result = function.asObject(rt).asFunction(rt).call(
+        rt, static_cast<const jsi::Value *>(args.data()), args.size());
+    return toJavaObject(env, result, true);
+  } catch (const jsi::JSError& e) {
+    throwJsException(env, const_cast<jsi::JSError&>(e));
+    return nullptr;
+  }
 }
 
 void ContextJni::throwJsException(JNIEnv* env, jsi::JSError& error) {
@@ -625,6 +799,19 @@ void ContextJni::throwJsException(const std::string& message) {
 }
 
 void ContextJni::cacheRdmaBridgeMethods(JNIEnv* env) {
+  // The JDK collection classes back every change that carries a payload, not just the RDMA
+  // bridge, so cache them before the optional RdmaBridge lookup below can bail out - otherwise a
+  // build with no redwood on the classpath leaves them null and the serialization path crashes.
+  if (this->arrayListClass == nullptr) {
+    jclass alCls = findClassOrNull(env, "java/util/ArrayList");
+    if (alCls != nullptr) {
+      this->arrayListClass = alCls;
+      this->arrayListInit = env->GetMethodID(alCls, "<init>", "()V");
+      this->arrayListInitWithCapacity = env->GetMethodID(alCls, "<init>", "(I)V");
+      this->arrayListAdd = env->GetMethodID(alCls, "add", "(Ljava/lang/Object;)Z");
+    }
+  }
+
   jclass cls = env->FindClass("app/cash/redwood/treehouse/RdmaBridge");
   if (!cls) {
     // RDMA is an optional integration: redwood-treehouse may be absent from
@@ -647,24 +834,17 @@ void ContextJni::cacheRdmaBridgeMethods(JNIEnv* env) {
   this->rdmaBridgeJsonPrimitiveLong = env->GetStaticMethodID(
     cls, "jsonPrimitiveLong", "(J)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonPrimitiveDouble = env->GetStaticMethodID(
-      cls, "jsonPrimitiveDouble", "(D)Lkotlinx/serialization/json/JsonPrimitive;");
+    cls, "jsonPrimitiveDouble", "(D)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonPrimitiveBoolean = env->GetStaticMethodID(
-      cls, "jsonPrimitiveBoolean", "(Z)Lkotlinx/serialization/json/JsonPrimitive;");
+    cls, "jsonPrimitiveBoolean", "(Z)Lkotlinx/serialization/json/JsonPrimitive;");
   this->rdmaBridgeJsonNull = env->GetStaticMethodID(
-      cls, "jsonNull", "()Lkotlinx/serialization/json/JsonNull;");
+    cls, "jsonNull", "()Lkotlinx/serialization/json/JsonNull;");
   this->rdmaBridgeCreateJsonArray = env->GetStaticMethodID(
-      cls, "createJsonArray",
-      "(Ljava/util/List;)Lkotlinx/serialization/json/JsonArray;");
+    cls, "createJsonArray",
+    "(Ljava/util/List;)Lkotlinx/serialization/json/JsonArray;");
   this->rdmaBridgeCreateJsonObject = env->GetStaticMethodID(
-      cls, "createJsonObject",
-      "(Ljava/util/List;Ljava/util/List;)Lkotlinx/serialization/json/JsonObject;");
-
-  // ArrayList
-  jclass alCls = env->FindClass("java/util/ArrayList");
-  this->arrayListClass = static_cast<jclass>(env->NewGlobalRef(alCls));
-  this->arrayListInit = env->GetMethodID(alCls, "<init>", "()V");
-  this->arrayListInitWithCapacity = env->GetMethodID(alCls, "<init>", "(I)V");
-  this->arrayListAdd = env->GetMethodID(alCls, "add", "(Ljava/lang/Object;)Z");
+    cls, "createJsonObject",
+    "(Ljava/util/List;Ljava/util/List;)Lkotlinx/serialization/json/JsonObject;");
 
   pendingChanges.reserve(RDMA_BATCH_SIZE);
 }
@@ -859,6 +1039,11 @@ void ContextJni::dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch) {
         JniBridgeDispatch* disp = reinterpret_cast<JniBridgeDispatch*>(ptr);
         jobject uiChange = disp->toJavaObject(env, rt, *ch.jsValue);
         if (!uiChange) {
+          // The generated converter failed. Report why and clear it: the change is dropped
+          // either way, and a pending exception left behind would abort the VM at the next JNI
+          // call, far from the cause (and hide it).
+          reportAndClearPendingException(
+              env, "host bridge: cannot decode a bridge change payload");
           return;
         }
         env->CallVoidMethod(rdmaChangeSink, rdmaSinkCreateBridgeChange, ch.id, uiChange);

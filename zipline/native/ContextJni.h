@@ -52,6 +52,16 @@ class ContextJni : public ContextBase {
   void throwJsException(JNIEnv* env, jsi::JSError& error);
   jsi::Value throwJavaExceptionFromJs(JNIEnv* env);
 
+  bool hasPendingPlatformException() override;
+
+  // ----- Host to guest calls (direct events).
+  // Whether globalThis[name] is a callable function. The host probes before it takes a direct
+  // path, so a guest that cannot receive direct events falls back to serialization.
+  jboolean hasGlobalFunction(JNIEnv* env, jstring name);
+  // Call globalThis[name](args...), converting each argument host->JS and the result JS->host.
+  // [argsList] is a java.util.List of arguments, or null for a no-argument call.
+  jobject callGuestFunction(JNIEnv* env, jstring name, jobject argsList);
+
   // Stashed Java throwable from a host-function call. Set by
   // throwJavaExceptionFromJs (after ExceptionClear), consumed and reset
   // by throwJsException when the wrapping JS error is observed.
@@ -93,33 +103,33 @@ class ContextJni : public ContextBase {
   // RDMA Changes support.
   // Stateless JsonElement factories on the RdmaBridge companion (still @JvmStatic).
   jclass rdmaBridgeClass = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveString;
-  jmethodID rdmaBridgeJsonPrimitiveInt;
-  jmethodID rdmaBridgeJsonPrimitiveLong;
-  jmethodID rdmaBridgeJsonPrimitiveDouble;
-  jmethodID rdmaBridgeJsonPrimitiveBoolean;
-  jmethodID rdmaBridgeJsonNull;
-  jmethodID rdmaBridgeCreateJsonArray;
-  jmethodID rdmaBridgeCreateJsonObject;
-  jclass arrayListClass;
-  jmethodID arrayListInit;
-  jmethodID arrayListInitWithCapacity;
-  jmethodID arrayListAdd;
+  jmethodID rdmaBridgeJsonPrimitiveString = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveInt = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveLong = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveDouble = nullptr;
+  jmethodID rdmaBridgeJsonPrimitiveBoolean = nullptr;
+  jmethodID rdmaBridgeJsonNull = nullptr;
+  jmethodID rdmaBridgeCreateJsonArray = nullptr;
+  jmethodID rdmaBridgeCreateJsonObject = nullptr;
+  jclass arrayListClass = nullptr;
+  jmethodID arrayListInit = nullptr;
+  jmethodID arrayListInitWithCapacity = nullptr;
+  jmethodID arrayListAdd = nullptr;
 
   // Per-session RdmaChangeSink (global ref owned by this context). All change
   // delivery goes through this instance, so concurrent sessions never route
   // changes into each other's UI.
   jobject rdmaChangeSink = nullptr;
-  jmethodID rdmaSinkCreateCreate;
-  jmethodID rdmaSinkCreatePropertyChange;
-  jmethodID rdmaSinkCreateModifierChange;
-  jmethodID rdmaSinkCreateAdd;
-  jmethodID rdmaSinkCreateRemove;
-  jmethodID rdmaSinkCreateMove;
-  jmethodID rdmaSinkCreateBridgeChange;
-  jmethodID rdmaSinkSetRemoveDetach;
-  jmethodID rdmaSinkSendBatch;
-  jmethodID rdmaSinkSendChanges;
+  jmethodID rdmaSinkCreateCreate = nullptr;
+  jmethodID rdmaSinkCreatePropertyChange = nullptr;
+  jmethodID rdmaSinkCreateModifierChange = nullptr;
+  jmethodID rdmaSinkCreateAdd = nullptr;
+  jmethodID rdmaSinkCreateRemove = nullptr;
+  jmethodID rdmaSinkCreateMove = nullptr;
+  jmethodID rdmaSinkCreateBridgeChange = nullptr;
+  jmethodID rdmaSinkSetRemoveDetach = nullptr;
+  jmethodID rdmaSinkSendBatch = nullptr;
+  jmethodID rdmaSinkSendChanges = nullptr;
 
   // kotlin.Pair for modifier elements.
   jclass pairClass = nullptr;

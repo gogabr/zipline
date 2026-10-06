@@ -43,6 +43,12 @@ struct ContextBase {
   virtual void throwJsException(const std::string& message);
   virtual void throwJsError(facebook::jsi::JSError& error);
 
+  // True when a platform exception is already pending on this thread. The shared call channels
+  // use it before they touch the platform again: a Java exception thrown from inside guest code
+  // is routine on the direct-event path, and re-entering JNI with one pending aborts the VM.
+  // Platforms without such an exception (Kotlin/Native) never report one.
+  virtual bool hasPendingPlatformException();
+
   std::unique_ptr<facebook::hermes::HermesRuntime> runtime;
   std::string lastError;
 

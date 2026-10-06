@@ -29,3 +29,7 @@ void ContextBase::throwJsException(const std::string& message) {
 void ContextBase::throwJsError(jsi::JSError& error) {
   throwJsException(error.getMessage());
 }
+
+bool ContextBase::hasPendingPlatformException() {
+  return false;
+}

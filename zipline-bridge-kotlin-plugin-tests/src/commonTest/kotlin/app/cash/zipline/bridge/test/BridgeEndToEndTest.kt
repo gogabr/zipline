@@ -85,6 +85,21 @@ class BridgeEndToEndTest {
   }
 
   @Test
+  fun bridgedCallbackHolder() {
+    // The function field decodes to null; the rest of the object must survive the round trip.
+    val decoded = evalOne("provideBridgedCallbackHolder") as BridgedCallbackHolder
+    assertEquals("done", decoded.name)
+    assertEquals(null, decoded.onDone)
+  }
+
+  @Test
+  fun bridgedFloatListHolder() {
+    // Integral Float values (0f/1f) are stored as INT-tagged JS numbers and must be
+    // converted to Float, not read through the float64 slot.
+    assertEquals(BridgedTestValues.floatList, evalOne("provideBridgedFloatListHolder"))
+  }
+
+  @Test
   fun bridgedNested() {
     assertEquals(BridgedTestValues.nested, evalOne("provideBridgedNested"))
   }
@@ -212,5 +227,13 @@ class BridgeEndToEndTest {
       v.map { m -> m.mapKeys { (it.key as Number).toDouble() } }
     }
     assertEquals(mapOf("outer" to listOf(mapOf(1.0 to "one", 2.0 to "two"))), complexNested)
+  }
+
+  @Test
+  fun bridgedLongBoxHolder() {
+    println("guest wire shape: " + evalOne("stringifyBridgedLongBoxHolder"))
+    val actual = evalOne("provideBridgedLongBoxHolder") as BridgedLongBoxHolder
+    assertEquals(BridgedTestValues.longBoxSolid, actual.solid)
+    assertContentEquals(BridgedTestValues.longBoxHolder.gradient, actual.gradient)
   }
 }

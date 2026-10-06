@@ -1,9 +1,9 @@
 /*
  * JVM/JNI host backend for BridgeEndToEndTest.
  *
- * Loading order matters: JsEngine.create() loads libquickjs, then System.load loads
+ * Loading order matters: JsEngine.create() loads libhermesvm, then System.load loads
  * libbridgetests.dylib whose constructors register the generated C converters via
- * addBridgeEntry (undefined symbols resolve against the already-loaded libquickjs).
+ * addBridgeEntry (undefined symbols resolve against the already-loaded libhermesvm).
  */
 package app.cash.zipline.bridge.test
 

@@ -579,6 +579,48 @@ static inline void jsiHost2JsDefineProperty(
   defineProperty.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(3));
 }
 
+/**
+ * Define [alias] on [target] as an own accessor forwarding to [source], so guest code that
+ * predates a rename keeps reading the payload field it knows. An accessor rather than a copied
+ * value, so a guest write through either name lands in the same property; the sibling
+ * jsiHost2JsDefineProperty above stays a data property because the host writes each field once.
+ */
+static inline void jsiHost2JsDefineFieldAlias(
+    jsi::Runtime &rt, const jsi::Value &target, const char *alias, const char *source) {
+  std::string sourceName(source);
+  jsi::Function getter = jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forUtf8(rt, "get"), 0,
+      [sourceName](jsi::Runtime &runtime, const jsi::Value &thisVal,
+                   const jsi::Value *, size_t) -> jsi::Value {
+        if (!thisVal.isObject()) return jsi::Value::undefined();
+        return thisVal.asObject(runtime).getProperty(runtime, sourceName.c_str());
+      });
+  jsi::Function setter = jsi::Function::createFromHostFunction(
+      rt, jsi::PropNameID::forUtf8(rt, "set"), 1,
+      [sourceName](jsi::Runtime &runtime, const jsi::Value &thisVal,
+                   const jsi::Value *args, size_t count) -> jsi::Value {
+        if (thisVal.isObject() && count > 0) {
+          thisVal.asObject(runtime).setProperty(runtime, sourceName.c_str(), args[0]);
+        }
+        return jsi::Value::undefined();
+      });
+  jsi::Object descriptor(rt);
+  descriptor.setProperty(rt, "get", getter);
+  descriptor.setProperty(rt, "set", setter);
+  descriptor.setProperty(rt, "enumerable", jsi::Value(true));
+  descriptor.setProperty(rt, "configurable", jsi::Value(true));
+  // jsi has no defineProperty: the same Object.defineProperty route jsiHost2JsDefineProperty takes.
+  jsi::Function defineProperty = rt.global()
+                                   .getPropertyAsObject(rt, "Object")
+                                   .getPropertyAsFunction(rt, "defineProperty");
+  jsi::Value args[3] = {
+    jsi::Value(rt, target),
+    jsi::String::createFromUtf8(rt, alias),
+    jsi::Value(rt, descriptor),
+  };
+  defineProperty.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(3));
+}
+
 /** A value from the guest's runtime factories (`newLong`/`newArrayList`/`newLinkedHashMap`). */
 static inline jsi::Value jsiHost2JsRuntimeFactory(JNIEnv *env, jsi::Runtime &rt, const char *name) {
   jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);

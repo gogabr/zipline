@@ -164,6 +164,9 @@ tasks {
   // Embed the guest bytecode as base64 constants, shared by jvmTest and nativeTest.
   val generateGuestSource = register("generateGuestSource") {
     dependsOn(compileGuestJs)
+    // The bytecode is this task's real input. Without it Gradle sees an unchanged output dir and
+    // keeps a stale holder after any guest change, so the tests silently run the old bundle.
+    inputs.dir(layout.buildDirectory.dir("zipline-guest"))
     outputs.dir(generatedGuestDir)
     doLast {
       val ziplineDir = layout.buildDirectory.dir("zipline-guest").get().asFile

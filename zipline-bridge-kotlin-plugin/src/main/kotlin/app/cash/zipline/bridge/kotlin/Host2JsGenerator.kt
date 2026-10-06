@@ -116,6 +116,7 @@ internal fun injectNativeConvertToJsMembers(
 ) {
   val anyToJsSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "anyToJs")
   val setJsPropertySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "setJsProperty")
+  val setJsPropertyAliasSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "setJsPropertyAlias")
   val newJsObjectSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "newJsObject")
   val refuseEnumSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsRefuseEnum")
   val host2JsConvertible = finder.findClass(
@@ -202,6 +203,16 @@ internal fun injectNativeConvertToJsMembers(
             arguments[3] = irCall(anyToJsSymbol).apply {
               arguments[0] = irGet(member.parameters[1])
               arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
+            }
+          }
+          // The guest bundle and this host are deployed independently: an already-shipped guest
+          // reads the payload under the pre-rename name, which only this alias provides.
+          field.legacyJsName?.let { alias ->
+            +irCall(setJsPropertyAliasSymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irGet(obj)
+              arguments[2] = irString(alias)
+              arguments[3] = irString(field.jsPropertyName)
             }
           }
         }

@@ -1,7 +1,7 @@
 name: build
 
 # Pull requests: build, lint, unit tests and an optional (manually approved) -SNAPSHOT publication
-# to GitHub Packages.
+# to GitHub Packages (by publish-fork-snapshot.yaml for pull requests from forks).
 # Pushes to tret9_trunk_hermes: bump library_version.txt, build, lint, unit tests, then publish to
 # Maven Central. Cancel the run while it builds to skip publishing a version.
 on:
@@ -181,9 +181,13 @@ jobs:
           fi
 
   # Manual: runs only after approval in the 'github-packages-snapshot' environment (configure it
-  # with required reviewers). Doesn't wait for lint or tests.
+  # with required reviewers). Doesn't wait for lint or tests. Fork PRs get a read-only token, so
+  # publish-fork-snapshot.yaml publishes theirs instead.
   publish-snapshot:
-    if: ${{ github.event_name != 'push' }}
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository)
     needs:
       - version
       - build

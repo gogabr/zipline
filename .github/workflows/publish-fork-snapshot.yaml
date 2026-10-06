@@ -1,0 +1,92 @@
+name: publish-fork-snapshot
+
+# Fork pull requests run `build` with a read-only token, so they can't publish their own snapshots.
+# This workflow picks up the `maven-repository` artifact of such a run and uploads it to GitHub
+# Packages after manual approval. It runs from the default branch and never executes anything from
+# the fork: the artifact is validated as data and uploaded with the default-branch script.
+#
+# The fork controls its `build` run entirely (pull_request runs use the PR's workflow files), so
+# the approval in the 'github-packages-snapshot' environment is the real gate: review the PR's
+# code before approving, because whoever depends on the snapshot runs it.
+on:
+  workflow_run:
+    workflows: [build]
+    types: [completed]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_sha }}
+
+permissions:
+  contents: read
+
+jobs:
+  # Unprivileged pre-check, so a failed build doesn't ask anyone for approval.
+  check:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      built: ${{ steps.build.outputs.built }}
+    steps:
+      - name: Check the build job
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name == "build") | .conclusion')
+          echo "build job: ${conclusion:-missing}"
+          echo "built=$([ "$conclusion" = success ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  publish-snapshot:
+    needs: check
+    if: ${{ needs.check.outputs.built == 'true' }}
+    runs-on: ubuntu-latest
+    environment: github-packages-snapshot
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+    steps:
+      # The default branch's scripts, never the fork's.
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/scripts
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: maven-repository
+          path: maven-repository
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Validate
+        id: validate
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          version=$(.github/scripts/validate-fork-snapshot.sh maven-repository io/github/tret9 "$HEAD_SHA")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: .github/scripts/publish-to-github-packages.sh maven-repository
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+          HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          {
+            echo "Published \`$VERSION\` from $HEAD_REPOSITORY ([build]($RUN_URL)) to GitHub Packages:"
+            echo '```kotlin'
+            echo "maven(\"https://maven.pkg.github.com/$GITHUB_REPOSITORY\") {"
+            echo '  credentials { username = "<github user>"; password = "<token with read:packages>" }'
+            echo '}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+* New: `@HostName("oldId")` on a renamed property of a bridged class keeps the old JS field name
+  readable across guest/host version skew, in both directions. The guest installs an accessor
+  alias for the old name on the class prototype (an already-shipped host keeps reading it), and
+  the host defines the same alias on the payload objects it builds and falls back to the old name
+  when reading (an already-shipped guest keeps reading it). The host's Kotlin property, field name
+  and constructor are untouched.
 * Fix: Kotlin `Long` values outside +/-2^53-1 are no longer silently rounded when crossing the
   Kotlin/JS guest boundary. The guest transport now uses string-based `encodeToString`/`decodeFromString`
   instead of the JS-object (`encodeToDynamic`/`decodeFromDynamic`) fast path, which turned every `Long`

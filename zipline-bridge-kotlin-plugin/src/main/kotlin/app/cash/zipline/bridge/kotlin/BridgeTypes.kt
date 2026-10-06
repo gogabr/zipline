@@ -24,6 +24,12 @@ data class FieldInfo(
   val type: IrType,
   val isConstructorParam: Boolean,
   val jsPropertyName: String,
+  /**
+   * The JS property name this field carried before `@HostName` renamed it; null when it was never
+   * renamed (or the annotated name is its current name). The host readers fall back to it and the
+   * host writers define it as an accessor alias beside [jsPropertyName].
+   */
+  val legacyJsName: String? = null,
 ) {
   val ktType: String by lazy {
     // Type parameters (T, U, …) have no classFqName: use the upper bound (or Any when unbounded)

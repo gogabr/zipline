@@ -477,12 +477,12 @@ class ZiplineBridgeKotlinPluginTest {
   }
 
   @Test
-  fun `array of any generates full runtime dispatch`() {
+  fun `array field generates per-element converter`() {
     val outputDir = createTempDirectory("zipline-bridge-test")
     try {
       val result = compileWithCOutputDir(
         sourceFile = SourceFile.kotlin(
-          "Mixed.kt",
+          "Strings.kt",
           """
           package com.example
 
@@ -490,7 +490,7 @@ class ZiplineBridgeKotlinPluginTest {
 
           @WithJS2HostBridge
           class MixedBag {
-            val values: Array<Any> = arrayOf(1, "hello", true)
+            val values: Array<String> = arrayOf("hello", "world")
           }
           """,
         ),
@@ -503,19 +503,545 @@ class ZiplineBridgeKotlinPluginTest {
 
       val content = cFile.readText()
 
-      // Per-element converter delegates to the generic boxer (full runtime dispatch)
+      // Per-element converter and array converter are generated
       assertTrue(content.contains("static jobject conv_values_element(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal)"))
-      assertTrue(content.contains("jsi_value_to_boxed(env, rt, jsVal)"))
-
-      // Array converter creates an object array
       assertTrue(content.contains("static jobject conv_values(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal)"))
       assertTrue(content.contains("NewObjectArray"))
 
-      // Field descriptor for Array<Any>
-      assertTrue(content.contains("[Lkotlin/Any;"))
+      // Field descriptor for Array<String>
+      assertTrue(content.contains("[Ljava/lang/String;"))
     } finally {
       outputDir.toFile().deleteRecursively()
     }
+  }
+
+  @Test
+  fun `array of any field is rejected`() {
+    val result = compileWithCOutputDir(
+      sourceFile = SourceFile.kotlin(
+        "AnyArr.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class MixedBag {
+          val values: Array<Any> = arrayOf(1, "hello", true)
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    // A collection must have a good element type; Array<Any> is not allowed as a field.
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'MixedBag.values' has type 'kotlin.Array' that cannot cross the bridge"), result.messages)
+  }
+
+  // -- CLV-88: bridge safety subset --
+
+  @Test
+  fun `good field types compile`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Good.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Payload(
+          val i: Int,
+          val s: String,
+          val b: Boolean,
+          val f: Float,
+          val ints: List<Int>,
+          val map: Map<String, Int>,
+          val bytes: ByteArray,
+          val nested: Payload2,
+        )
+
+        @WithJS2HostBridge
+        class Payload2(val x: Int)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `bad field type is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Bad.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bag {
+          val stamp: java.util.UUID = java.util.UUID.randomUUID()
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("bridge: field 'Bag.stamp' has type 'java.util.UUID' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `unannotated class is untouched`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Plain.kt",
+        """
+        package com.example
+
+        class Plain {
+          val stamp: java.util.Date = java.util.Date()
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `any field with good initializer compiles`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "AnyGood.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Slot {
+          val value: Any? = 42
+          val text: Any? = "hi"
+          val list: Any? = listOf(1, 2, 3)
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `any field assigned bad value is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "AnyBad.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Slot {
+          var value: Any? = null
+        }
+
+        fun fill(s: Slot) {
+          s.value = java.util.Date()
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("value of type 'java.util.Date' assigned to property 'value' of 'Slot' cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `any field assigned any value is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Chain.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Chain {
+          val a: Any? = "hello"
+          val b: Any? = a
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("value of type 'kotlin.Any' assigned to field 'Chain.b' cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `constructor parameter backed any field is not a false error`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "CtorGood.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Holder(val value: Any?)
+
+        fun make(): Holder = Holder(42)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `constructor argument with any type is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "CtorBad.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Holder(val value: Any?)
+
+        fun make(x: Any?): Holder = Holder(x)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(
+      result.messages.contains("value of type 'kotlin.Any' assigned to constructor parameter 'value' of 'Holder' cannot cross the bridge"),
+      result.messages,
+    )
+  }
+
+  @Test
+  fun `suppress bridge unsafe on enclosing function allows any argument`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "SuppressFn.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Holder(val value: Any?)
+
+        @Suppress("BRIDGE_UNSAFE")
+        fun make(x: Any?): Holder = Holder(x)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `suppress bridge unsafe on source variable allows any argument`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "SuppressVar.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Holder(val value: Any?)
+
+        fun decode(): Any? = null
+
+        fun make(): Holder {
+          @Suppress("BRIDGE_UNSAFE")
+          val value: Any? = decode()
+          return Holder(value)
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `suppress bridge unsafe does not silence field type checks`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "SuppressField.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @Suppress("BRIDGE_UNSAFE")
+        @WithJS2HostBridge
+        class Holder(val value: java.util.UUID)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Holder.value' has type 'java.util.UUID' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `enum field crosses js2host only`() {
+    val js2host = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "EnumJs.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        enum class Color { RED }
+
+        @WithJS2HostBridge
+        class Paint(val color: Color)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, js2host.exitCode, js2host.messages)
+
+    val host2js = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "EnumHost.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+        enum class Color { RED }
+
+        @WithHost2JSBridge
+        class Paint(val color: Color)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, host2js.exitCode, host2js.messages)
+    assertTrue(
+      host2js.messages.contains("field 'Paint.color' has enum type 'com.example.Color' that cannot cross the host-to-JS bridge as a value"),
+      host2js.messages,
+    )
+  }
+
+  @Test
+  fun `non-final unannotated class field is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Open.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        open class Base
+
+        @WithJS2HostBridge
+        class Sub(val base: Base)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    // Only a bridge-annotated class (own or inherited) is good; a non-final unannotated
+    // static type is no longer waved through.
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Sub.base' has type 'com.example.Base' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `list of any field is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "ListAny.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bag(val items: List<Any?>)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Bag.items' has type 'kotlin.collections.List' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `map with any value field is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "MapAny.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bag(val entries: Map<String, Any?>)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Bag.entries' has type 'kotlin.collections.Map' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `function field is allowed`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Fn.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Actions(
+          val onClick: (() -> Unit)?,
+          val onKey: ((Int) -> Unit)?,
+        )
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `subclass of annotated parent is checked`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Sticky.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        open class Base
+
+        class Sub(val stamp: java.util.UUID) : Base()
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    // Stickiness: Sub inherits @WithJS2HostBridge, so its own fields are validated.
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Sub.stamp' has type 'java.util.UUID' that cannot cross the bridge"), result.messages)
+  }
+
+  @Test
+  fun `sticky host2js subclass inherits enum warning`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "StickyHost.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+        enum class Color { RED }
+
+        @WithHost2JSBridge
+        open class Base
+
+        class Paint(val color: Color) : Base()
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+    assertTrue(
+      result.messages.contains("field 'Paint.color' has enum type 'com.example.Color' that cannot cross the host-to-JS bridge as a value"),
+      result.messages,
+    )
+  }
+
+  @Test
+  fun `unbounded type parameter field is checked at writes`() {
+    val ok = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "GenGood.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Box<T>(val value: T)
+
+        fun make(): Box<String> = Box("hi")
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, ok.exitCode, ok.messages)
+
+    val bad = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "GenBad.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Box<T>(val value: T)
+
+        fun make(x: Any?): Box<Any?> = Box(x)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    // An unbounded type parameter behaves like Any?: the field is allowed, the write is not.
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, bad.exitCode, bad.messages)
+    assertTrue(
+      bad.messages.contains("value of type 'kotlin.Any' assigned to constructor parameter 'value' of 'Box' cannot cross the bridge"),
+      bad.messages,
+    )
+  }
+
+  @Test
+  fun `value class over primitive crosses js2host`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Value.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @JvmInline
+        value class Wrapped(val v: Int)
+
+        @WithJS2HostBridge
+        class Box(val w: Wrapped)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
   }
 
   @Test

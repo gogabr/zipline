@@ -51,6 +51,8 @@ class ZiplineBridgeIrGenerationExtension(
       it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
       it.kind != ClassKind.INTERFACE
     }
+    // -- CLV-88: compile-time safety subset (platform-independent contract) --
+    validateBridgeSafety(moduleFragment, pluginContext, dispatchClasses, host2JsClasses)
 
     // -- @JsName annotations (stable JS property names for all bridge backends) --
     annotateJsNames(finder, dispatchClasses, pluginContext)

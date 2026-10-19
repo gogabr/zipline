@@ -17,6 +17,7 @@ import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.isInterface
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.properties
+import org.jetbrains.kotlin.name.ClassId
 
 // -- Field extraction and class discovery (shared between C, Native, and JS generators) --
 
@@ -135,16 +136,28 @@ private fun IrProperty.jsName(): String {
   return if (isPrivate || isInlineClass(parentAsClass)) "${kotlinName}_1" else kotlinName
 }
 
-internal fun hasWithJS2HostBridgeAnnotation(irClass: IrClass): Boolean {
-  return irClass.annotations.any {
-    it.symbol.owner.returnType.getClass()?.classId == WITH_JS2HOST_BRIDGE_CLASS_ID
-  }
-}
+/**
+ * Whether [irClass] carries `@WithJS2HostBridge`, directly or via an ancestor. Bridge
+ * annotations are sticky: a subclass is discovered, given a converter, and validated as if it
+ * carried the annotation itself, so the crossing guarantee holds across the whole hierarchy.
+ */
+internal fun hasWithJS2HostBridgeAnnotation(irClass: IrClass): Boolean = carriesBridgeAnnotation(irClass, WITH_JS2HOST_BRIDGE_CLASS_ID)
 
-internal fun hasWithHost2JSBridgeAnnotation(irClass: IrClass): Boolean {
-  return irClass.annotations.any {
-    it.symbol.owner.returnType.getClass()?.classId == WITH_HOST2JS_BRIDGE_CLASS_ID
+/** Whether [irClass] carries `@WithHost2JSBridge`, directly or via an ancestor. */
+internal fun hasWithHost2JSBridgeAnnotation(irClass: IrClass): Boolean = carriesBridgeAnnotation(irClass, WITH_HOST2JS_BRIDGE_CLASS_ID)
+
+/**
+ * Walks [irClass] and its supertypes looking for [annotationId]. The visited set guards
+ * against cyclic hierarchies.
+ */
+private fun carriesBridgeAnnotation(irClass: IrClass, annotationId: ClassId): Boolean {
+  val visited = mutableSetOf<IrClass>()
+  fun walk(clazz: IrClass): Boolean {
+    if (!visited.add(clazz)) return false
+    if (clazz.annotations.any { it.symbol.owner.returnType.getClass()?.classId == annotationId }) return true
+    return clazz.superTypes.any { (it as? IrSimpleType)?.getClass()?.let(::walk) == true }
   }
+  return walk(irClass)
 }
 
 /** Check if an [IrClass] is an inline value class. */

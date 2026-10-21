@@ -21,7 +21,7 @@ import kotlinx.serialization.json.JsonPrimitive
 // copy-on-write because registration (zipline thread) and callback
 // invocation (any thread running JS) may race.
 private val outboundChannels = AtomicReference<Map<Long, CallChannel>>(emptyMap())
-private val rdmaChangeSinks = AtomicReference<Map<Long, RdmaChangeSink>>(emptyMap())
+private val directChangeSinks = AtomicReference<Map<Long, DirectChangeSink>>(emptyMap())
 private val cdpListeners = AtomicReference<Map<Long, CdpListener>>(emptyMap())
 
 val bridgeRetainRefs = mutableListOf<() -> Unit>()
@@ -78,12 +78,12 @@ private fun outboundChannelDisconnectCallback(context: COpaquePointer?, instance
     return if (channel.disconnect(instanceNameStr)) 1 else 0
 }
 
-// Called from C++ when JS invokes finishChanges() on the RDMA channel.
-// Delegates to rdmaChangeSink.sendChanges() which flushes all accumulated
+// Called from C++ when JS invokes finishChanges() on the Direct Bridge channel.
+// Delegates to directChangeSink.sendChanges() which flushes all accumulated
 // changes to the UI. The C++ side manages the pendingChanges list and
 // removeCounter internally; only the final sendChanges() call reaches Kotlin.
-private fun rdmaChangeSinkSendChanges(context: COpaquePointer?) {
-    val sink = rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
+private fun directChangeSinkSendChanges(context: COpaquePointer?) {
+    val sink = directChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
     sink.sendChanges()
 }
 
@@ -147,27 +147,27 @@ private fun hermesValueToJsonElement(context: COpaquePointer?, handle: Int): Jso
 }
 
 // Per-change-type callbacks called from C++ JS host-function lambdas.
-// Each writes directly into the RdmaChangeSink accumulator.
+// Each writes directly into the DirectChangeSink accumulator.
 
-private fun onRdmaCreate(context: COpaquePointer?, id: Int, tag: Int) {
+private fun onDirectCreate(context: COpaquePointer?, id: Int, tag: Int) {
     try {
-        rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createCreate(id, tag)
+        directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createCreate(id, tag)
     } catch (_: Throwable) {
     }
 }
 
-private fun onRdmaPropertyChange(context: COpaquePointer?, id: Int, widgetTag: Int, propertyTag: Int, valueHandle: Int) {
+private fun onDirectPropertyChange(context: COpaquePointer?, id: Int, widgetTag: Int, propertyTag: Int, valueHandle: Int) {
     try {
-        val sink = rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
+        val sink = directChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
         val value = hermesValueToJsonElement(context, valueHandle)
         sink.createPropertyChange(id, widgetTag, propertyTag, value)
     } catch (_: Throwable) {
     }
 }
 
-private fun onRdmaModifierChange(context: COpaquePointer?, id: Int, elementsHandle: Int) {
+private fun onDirectModifierChange(context: COpaquePointer?, id: Int, elementsHandle: Int) {
     try {
-        val sink = rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
+        val sink = directChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
         val elements = jsArrayToModifierElements(context, elementsHandle)
         sink.createModifierChange(id, elements)
     } catch (_: Throwable) {
@@ -194,30 +194,30 @@ private fun jsArrayToModifierElements(context: COpaquePointer?, elementsHandle: 
     return elements
 }
 
-private fun onRdmaAdd(context: COpaquePointer?, id: Int, childrenTag: Int, childId: Int, index: Int) {
+private fun onDirectAdd(context: COpaquePointer?, id: Int, childrenTag: Int, childId: Int, index: Int) {
     try {
-        rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createAdd(id, childrenTag, childId, index)
+        directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createAdd(id, childrenTag, childId, index)
     } catch (_: Throwable) {
     }
 }
 
-private fun onRdmaRemove(context: COpaquePointer?, id: Int, childrenTag: Int, index: Int, detach: Int) {
+private fun onDirectRemove(context: COpaquePointer?, id: Int, childrenTag: Int, index: Int, detach: Int) {
     try {
-        rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createRemove(id, childrenTag, index, detach != 0)
+        directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createRemove(id, childrenTag, index, detach != 0)
     } catch (_: Throwable) {
     }
 }
 
-private fun onRdmaMove(context: COpaquePointer?, id: Int, childrenTag: Int, fromIndex: Int, toIndex: Int, count: Int) {
+private fun onDirectMove(context: COpaquePointer?, id: Int, childrenTag: Int, fromIndex: Int, toIndex: Int, count: Int) {
     try {
-        rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createMove(id, childrenTag, fromIndex, toIndex, count)
+        directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.createMove(id, childrenTag, fromIndex, toIndex, count)
     } catch (_: Throwable) {
     }
 }
 
-private fun onRdmaBridgeChange(context: COpaquePointer?, id: Int, jsValueHandle: Int) {
+private fun onDirectBridgeChange(context: COpaquePointer?, id: Int, jsValueHandle: Int) {
     try {
-        val sink = rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
+        val sink = directChangeSinks.load()[context?.rawValue?.toLong() ?: return] ?: return
         val dispPtr = HermesBridge_getBridgeDispatch(context, jsValueHandle)
         if (dispPtr == 0L) return
         val dispatchFn = dispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!
@@ -227,13 +227,13 @@ private fun onRdmaBridgeChange(context: COpaquePointer?, id: Int, jsValueHandle:
     }
 }
 
-private fun onRdmaSetRemoveDetach(context: COpaquePointer?, index: Int) {
-    rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.setRemoveDetach(index)
+private fun onDirectSetRemoveDetach(context: COpaquePointer?, index: Int) {
+    directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.setRemoveDetach(index)
 }
 
-private fun onRdmaSendChanges(context: COpaquePointer?) {
+private fun onDirectSendChanges(context: COpaquePointer?) {
     try {
-        rdmaChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.sendChanges()
+        directChangeSinks.load()[context?.rawValue?.toLong() ?: return]?.sendChanges()
     } catch (_: Throwable) {
     }
 }
@@ -636,32 +636,32 @@ actual class JsEngine private constructor(
     }
   }
 
-  actual var rdmaChangeSink: RdmaChangeSink? = null
+  actual var directChangeSink: DirectChangeSink? = null
 
-  actual fun initRdmaChangesChannel() {
+  actual fun initDirectChangesChannel() {
     checkNotClosed()
-    if (rdmaChangeSink == null) return
+    if (directChangeSink == null) return
     val context = requireNotNull(contextPointer) { "Engine has no native context" }
 
     // Register per-change-type callbacks so the C++ JS host-function lambdas
-    // write directly into the Kotlin RdmaChangeSink accumulator (matching the
+    // write directly into the Kotlin DirectChangeSink accumulator (matching the
     // gogabr/jni-bridges design).
-    HermesContext_setRdmaCreateCallback(context, staticCFunction(::onRdmaCreate))
-    HermesContext_setRdmaPropertyChangeCallback(context, staticCFunction(::onRdmaPropertyChange))
-    HermesContext_setRdmaModifierChangeCallback(context, staticCFunction(::onRdmaModifierChange))
-    HermesContext_setRdmaAddCallback(context, staticCFunction(::onRdmaAdd))
-    HermesContext_setRdmaRemoveCallback(context, staticCFunction(::onRdmaRemove))
-    HermesContext_setRdmaMoveCallback(context, staticCFunction(::onRdmaMove))
-    HermesContext_setRdmaBridgeChangeCallback(context, staticCFunction(::onRdmaBridgeChange))
-    HermesContext_setRdmaSetRemoveDetachCallback(context, staticCFunction(::onRdmaSetRemoveDetach))
-    HermesContext_setRdmaSendChangesCallback(context, staticCFunction(::onRdmaSendChanges))
+    HermesContext_setDirectCreateCallback(context, staticCFunction(::onDirectCreate))
+    HermesContext_setDirectPropertyChangeCallback(context, staticCFunction(::onDirectPropertyChange))
+    HermesContext_setDirectModifierChangeCallback(context, staticCFunction(::onDirectModifierChange))
+    HermesContext_setDirectAddCallback(context, staticCFunction(::onDirectAdd))
+    HermesContext_setDirectRemoveCallback(context, staticCFunction(::onDirectRemove))
+    HermesContext_setDirectMoveCallback(context, staticCFunction(::onDirectMove))
+    HermesContext_setDirectBridgeChangeCallback(context, staticCFunction(::onDirectBridgeChange))
+    HermesContext_setDirectSetRemoveDetachCallback(context, staticCFunction(::onDirectSetRemoveDetach))
+    HermesContext_setDirectSendChangesCallback(context, staticCFunction(::onDirectSendChanges))
 
-    rdmaChangeSinks.putValue(context.rawValue.toLong(), rdmaChangeSink!!)
-    HermesContext_setRdmaChangeSink(context, staticCFunction(::rdmaChangeSinkSendChanges))
-    val result = HermesContext_initRdmaChangesChannel(contextPointer)
+    directChangeSinks.putValue(context.rawValue.toLong(), directChangeSink!!)
+    HermesContext_setDirectChangeSink(context, staticCFunction(::directChangeSinkSendChanges))
+    val result = HermesContext_initDirectChangesChannel(contextPointer)
     if (result == 0) {
       val error = HermesContext_getLastError(contextPointer)
-      throw UnsupportedOperationException(error?.toKString() ?: "Failed to init RDMA changes channel")
+      throw UnsupportedOperationException(error?.toKString() ?: "Failed to init direct changes channel")
     }
   }
 
@@ -728,8 +728,8 @@ actual class JsEngine private constructor(
         outboundChannels.removeValue(contextPointer.rawValue.toLong())
         HermesContext_setOutboundChannelCallbacks(contextPointer, null, null)
 
-        rdmaChangeSinks.removeValue(contextPointer.rawValue.toLong())
-        HermesContext_setRdmaChangeSink(contextPointer, null)
+        directChangeSinks.removeValue(contextPointer.rawValue.toLong())
+        HermesContext_setDirectChangeSink(contextPointer, null)
       }
 
       HermesRuntime_destroy(contextPointer)

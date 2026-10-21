@@ -93,7 +93,7 @@ actual class Zipline private constructor(
   init {
     // Eagerly publish the channel so the guest can call us.
     jsEngine.initOutboundChannel(endpoint.inboundChannel)
-    jsEngine.initRdmaChangesChannel()
+    jsEngine.initDirectChangesChannel()
 
     val eventLoop = CoroutineEventLoop(dispatcher, scope, guest)
 
@@ -103,9 +103,9 @@ actual class Zipline private constructor(
     )
   }
 
-  fun initRdmaChannel(sink: RdmaChangeSink) {
-    jsEngine.rdmaChangeSink = sink
-    jsEngine.initRdmaChangesChannel()
+  fun initDirectBridgeChannel(sink: DirectChangeSink) {
+    jsEngine.directChangeSink = sink
+    jsEngine.initDirectChangesChannel()
   }
 
   actual fun <T : ZiplineService> bind(name: String, instance: T) {

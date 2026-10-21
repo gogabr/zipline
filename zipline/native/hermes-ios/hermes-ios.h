@@ -18,7 +18,7 @@ int HermesFramework_init(void** runtimeOut);
 
 // Runtime lifecycle (opaque void* pointers). The returned pointer is an
 // ios-layer context that extends the core Hermes context with the
-// per-runtime bridge state (channel callbacks, RDMA state).
+// per-runtime bridge state (channel callbacks, direct bridge state).
 void* HermesRuntime_create(void);
 // Creates a runtime for CDP debugging: eager compilation (so breakpoints
 // bind) and eval enabled (for Debugger.evaluateOnCallFrame). Use when the
@@ -87,22 +87,22 @@ void HermesContext_setOutboundChannelCallbacks(void* context,
                                                 OutboundCallChannelCallFn callFn,
                                                 OutboundCallChannelDisconnectFn disconnectFn);
 
-// RDMA Changes support. The sink is per-context; the context pointer is
+// Direct Bridge Changes support. The sink is per-context; the context pointer is
 // passed back on invocation.
-typedef void (*RdmaChangeSinkFn)(void* context);
-void HermesContext_setRdmaChangeSink(void* context, RdmaChangeSinkFn sinkFn);
+typedef void (*DirectChangeSinkFn)(void* context);
+void HermesContext_setDirectChangeSink(void* context, DirectChangeSinkFn sinkFn);
 
-// Per-change-type RDMA callbacks (called directly from JS host-function lambdas).
-// Each callback writes into the Kotlin-side RdmaChangeSink accumulator.
-void HermesContext_setRdmaCreateCallback(void* context, void* fn);
-void HermesContext_setRdmaPropertyChangeCallback(void* context, void* fn);
-void HermesContext_setRdmaModifierChangeCallback(void* context, void* fn);
-void HermesContext_setRdmaAddCallback(void* context, void* fn);
-void HermesContext_setRdmaRemoveCallback(void* context, void* fn);
-void HermesContext_setRdmaMoveCallback(void* context, void* fn);
-void HermesContext_setRdmaBridgeChangeCallback(void* context, void* fn);
-void HermesContext_setRdmaSetRemoveDetachCallback(void* context, void* fn);
-void HermesContext_setRdmaSendChangesCallback(void* context, void* fn);
+// Per-change-type direct callbacks (called from JS host-function lambdas).
+// Each callback writes into the Kotlin-side DirectChangeSink accumulator.
+void HermesContext_setDirectCreateCallback(void* context, void* fn);
+void HermesContext_setDirectPropertyChangeCallback(void* context, void* fn);
+void HermesContext_setDirectModifierChangeCallback(void* context, void* fn);
+void HermesContext_setDirectAddCallback(void* context, void* fn);
+void HermesContext_setDirectRemoveCallback(void* context, void* fn);
+void HermesContext_setDirectMoveCallback(void* context, void* fn);
+void HermesContext_setDirectBridgeChangeCallback(void* context, void* fn);
+void HermesContext_setDirectSetRemoveDetachCallback(void* context, void* fn);
+void HermesContext_setDirectSendChangesCallback(void* context, void* fn);
 
 // CDP (Chrome DevTools Protocol) debugging. Callbacks may be invoked from
 // arbitrary threads; `listener` is an opaque handle passed back on every
@@ -144,8 +144,8 @@ char* HermesContext_callInboundDisconnect(void* context, const char* channelName
 int HermesContext_installModuleLoader(void* context);
 int HermesContext_callRequireMethod(void* context, const char* moduleId, const char* methodName);
 
-// RDMA Changes support
-int HermesContext_initRdmaChangesChannel(void* context);
+// Direct Bridge Changes support
+int HermesContext_initDirectChangesChannel(void* context);
 
 // Memory management
 void HermesContext_setMemoryLimit(void* context, int64_t limitBytes);
@@ -216,7 +216,7 @@ int HermesBridge_getMapEntries(void* context, int mapHandle, int* keysHandleOut,
 /** Clear all bridge handles. Called when context is about to be destroyed. */
 void HermesBridge_clearHandles(void* context);
 
-/** Register a bridge function pointer for the given FQN. 
+/** Register a bridge function pointer for the given FQN.
  *  Called from Kotlin registerBridge(). */
 void HermesBridge_addBridgeEntry(const char* fqn, void* fn);
 

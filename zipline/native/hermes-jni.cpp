@@ -118,16 +118,16 @@ Java_app_cash_zipline_JsEngine_bridgeInitAllNative(JNIEnv* env, jclass, jlong js
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_app_cash_zipline_JsEngine_initRdmaChangesChannel(JNIEnv* env, jobject /*thiz*/,
-                                                     jlong _context,
-                                                     jobject rdmaChangeSink) {
+Java_app_cash_zipline_JsEngine_initDirectChangesChannel__JLapp_cash_zipline_DirectChangeSink_2(JNIEnv* env, jobject /*thiz*/,
+                                                                                               jlong _context,
+                                                                                               jobject directChangeSink) {
   ContextJni* ctx = toContext(_context);
   if (!ctx) {
     throwJavaException(env, "java/lang/IllegalStateException",
                        "JsEngine instance was closed");
     return;
   }
-  ctx->initRdmaChangesChannel(env, rdmaChangeSink);
+    ctx->initDirectChangesChannel(env, directChangeSink);
 }
 
 extern "C" JNIEXPORT jobject JNICALL

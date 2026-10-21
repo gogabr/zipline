@@ -63,7 +63,7 @@ actual class JsEngine private constructor(
       throw UnsupportedOperationException("InterruptHandler is not supported by the Hermes engine")
     }
 
-  actual var rdmaChangeSink: RdmaChangeSink? = null
+  actual var directChangeSink: DirectChangeSink? = null
 
   /** Memory usage statistics for the JavaScript engine. */
   actual val memoryUsage: MemoryUsage
@@ -140,12 +140,12 @@ actual class JsEngine private constructor(
     setOutboundCallChannel(context, OUTBOUND_CHANNEL_NAME, outboundChannel)
   }
 
-  actual fun initRdmaChangesChannel() {
-    // RDMA is an optional redwood-treehouse integration; without a sink there
+  actual fun initDirectChangesChannel() {
+    // Direct Bridges is an optional redwood-treehouse integration; without a sink there
     // is nothing to deliver changes to, and the native side would need
     // redwood classes that may be absent from the classpath.
-    if (rdmaChangeSink == null) return
-    initRdmaChangesChannel(context, rdmaChangeSink)
+    if (directChangeSink == null) return
+    initDirectChangesChannel(context, directChangeSink)
   }
 
   internal actual fun getInboundChannel(): CallChannel {
@@ -289,8 +289,8 @@ actual class JsEngine private constructor(
   private external fun cdpResetAgent(context: Long)
   private external fun cdpDetach(context: Long)
 
-  @JvmName("initRdmaChangesChannel")
-  private external fun initRdmaChangesChannel(context: Long, rdmaChangeSink: RdmaChangeSink?)
+  @JvmName("initDirectChangesChannel")
+  private external fun initDirectChangesChannel(context: Long, directChangeSink: DirectChangeSink?)
 
   internal actual fun bridgeInitAll() {
     bridgeInitAllNative(getJsContext(context))

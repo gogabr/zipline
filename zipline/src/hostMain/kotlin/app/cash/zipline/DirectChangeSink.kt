@@ -3,16 +3,16 @@ package app.cash.zipline
 import kotlinx.serialization.json.JsonElement
 
 /**
- * Callback interface for the RDMA (Remote Direct Memory Access) changes channel.
+ * Callback interface for the Direct Bridge changes channel.
  *
  * Implementations create Redwood [Change] objects from raw primitive values
  * and flush them in batches to the host UI.
  *
  * This is the Kotlin/Native (iOS) equivalent of the JNI calls from Context.cpp
- * to RdmaBridge on Android.
+ * to DirectBridge on Android.
  */
 @EngineApi
-public interface RdmaChangeSink {
+public interface DirectChangeSink {
   fun createCreate(id: Int, tag: Int)
   fun createPropertyChange(id: Int, widgetTag: Int, propertyTag: Int, value: JsonElement)
   fun createModifierChange(id: Int, elements: List<Pair<Int, JsonElement>>)

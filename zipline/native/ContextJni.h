@@ -1,7 +1,7 @@
 #ifndef ZIPLINE_CONTEXT_JNI_H
 #define ZIPLINE_CONTEXT_JNI_H
 
-#include "RdmaChange.h"
+#include "DirectChange.h"
 #include "hermes-core.h"
 
 #include <jni.h>
@@ -100,53 +100,53 @@ class ContextJni : public ContextBase {
   jmethodID stringConstructor;
   jmethodID jsExceptionConstructor;
 
-  // RDMA Changes support.
-  // Stateless JsonElement factories on the RdmaBridge companion (still @JvmStatic).
-  jclass rdmaBridgeClass = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveString = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveInt = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveLong = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveDouble = nullptr;
-  jmethodID rdmaBridgeJsonPrimitiveBoolean = nullptr;
-  jmethodID rdmaBridgeJsonNull = nullptr;
-  jmethodID rdmaBridgeCreateJsonArray = nullptr;
-  jmethodID rdmaBridgeCreateJsonObject = nullptr;
+  // Direct Bridge Changes support.
+  // Stateless JsonElement factories on the DirectBridge companion (still @JvmStatic).
+  jclass directBridgeClass = nullptr;
+  jmethodID directBridgeJsonPrimitiveString = nullptr;
+  jmethodID directBridgeJsonPrimitiveInt = nullptr;
+  jmethodID directBridgeJsonPrimitiveLong = nullptr;
+  jmethodID directBridgeJsonPrimitiveDouble = nullptr;
+  jmethodID directBridgeJsonPrimitiveBoolean = nullptr;
+  jmethodID directBridgeJsonNull = nullptr;
+  jmethodID directBridgeCreateJsonArray = nullptr;
+  jmethodID directBridgeCreateJsonObject = nullptr;
   jclass arrayListClass = nullptr;
   jmethodID arrayListInit = nullptr;
   jmethodID arrayListInitWithCapacity = nullptr;
   jmethodID arrayListAdd = nullptr;
 
-  // Per-session RdmaChangeSink (global ref owned by this context). All change
+  // Per-session DirectChangeSink (global ref owned by this context). All change
   // delivery goes through this instance, so concurrent sessions never route
   // changes into each other's UI.
-  jobject rdmaChangeSink = nullptr;
-  jmethodID rdmaSinkCreateCreate = nullptr;
-  jmethodID rdmaSinkCreatePropertyChange = nullptr;
-  jmethodID rdmaSinkCreateModifierChange = nullptr;
-  jmethodID rdmaSinkCreateAdd = nullptr;
-  jmethodID rdmaSinkCreateRemove = nullptr;
-  jmethodID rdmaSinkCreateMove = nullptr;
-  jmethodID rdmaSinkCreateBridgeChange = nullptr;
-  jmethodID rdmaSinkSetRemoveDetach = nullptr;
-  jmethodID rdmaSinkSendBatch = nullptr;
-  jmethodID rdmaSinkSendChanges = nullptr;
+  jobject directChangeSink = nullptr;
+  jmethodID directSinkCreateCreate = nullptr;
+  jmethodID directSinkCreatePropertyChange = nullptr;
+  jmethodID directSinkCreateModifierChange = nullptr;
+  jmethodID directSinkCreateAdd = nullptr;
+  jmethodID directSinkCreateRemove = nullptr;
+  jmethodID directSinkCreateMove = nullptr;
+  jmethodID directSinkCreateBridgeChange = nullptr;
+  jmethodID directSinkSetRemoveDetach = nullptr;
+  jmethodID directSinkSendBatch = nullptr;
+  jmethodID directSinkSendChanges = nullptr;
 
   // kotlin.Pair for modifier elements.
   jclass pairClass = nullptr;
   jmethodID pairInit = nullptr;
 
-  std::vector<RdmaChange> pendingChanges;
+  std::vector<DirectChange> pendingChanges;
 
-  void cacheRdmaBridgeMethods(JNIEnv* env);
-  void cacheRdmaSink(jobject sink);
-  void dispatchChangeToSink(JNIEnv* env, const RdmaChange& ch);
+  void cacheDirectBridgeMethods(JNIEnv* env);
+  void cacheDirectChangeSink(jobject sink);
+  void dispatchChangeToSink(JNIEnv* env, const DirectChange& ch);
   void deleteBridgeRefs(JNIEnv* env);
   jobject jsValueToJsonElement(JNIEnv* env, const jsi::Value& val);
   jobject jsArrayToJsonElement(JNIEnv* env, const jsi::Value& val);
   jobject jsObjectToJsonElement(JNIEnv* env, const jsi::Value& val);
   void flushPendingBatch(JNIEnv* env, int toFlush);
   void finishFlushPending(JNIEnv* env);
-  void initRdmaChangesChannel(JNIEnv* env, jobject rdmaChangeSink);
+  void initDirectChangesChannel(JNIEnv* env, jobject directChangeSink);
 
   std::unordered_map<std::string, jclass> globalReferences;
 };

@@ -1,14 +1,14 @@
-#ifndef ZIPLINE_RDMA_CHANGE_H
-#define ZIPLINE_RDMA_CHANGE_H
+#ifndef ZIPLINE_DIRECT_CHANGE_H
+#define ZIPLINE_DIRECT_CHANGE_H
 
 #include <jsi/jsi.h>
 
 #include <memory>
 
-// RDMA Changes support, shared by the JNI (Android/JVM) and iOS engine
-// layers. Both accumulate RdmaChange entries from JS host functions and
+// Direct Changes support, shared by the JNI (Android/JVM) and iOS engine
+// layers. Both accumulate DirectChange entries from JS host functions and
 // flush them to the platform sink (redwood-treehouse).
-enum class RdmaChangeType {
+enum class DirectChangeType {
   Create,
   PropertyChange,
   ModifierChange,
@@ -18,10 +18,10 @@ enum class RdmaChangeType {
   BridgeChange,
 };
 
-constexpr int RDMA_BATCH_SIZE = 2048;
+constexpr int DIRECT_BRIDGE_BATCH_SIZE = 2048;
 
-struct RdmaChange {
-  RdmaChangeType type;
+struct DirectChange {
+  DirectChangeType type;
   int id;
   int field1;    // tag (Create/Remove/Move), widgetTag (PropertyChange), childrenTag (Add)
   int field2;    // propertyTag (PropertyChange), childId (Add), index (Remove), fromIndex (Move)
@@ -32,11 +32,11 @@ struct RdmaChange {
   // value so it stays alive until the change is flushed to the platform.
   std::shared_ptr<facebook::jsi::Value> jsValue;
 
-  RdmaChange() = default;
-  RdmaChange(const RdmaChange&) = default;
-  RdmaChange& operator=(const RdmaChange&) = default;
-  RdmaChange(RdmaChange&&) = default;
-  RdmaChange& operator=(RdmaChange&&) = default;
+  DirectChange() = default;
+  DirectChange(const DirectChange&) = default;
+  DirectChange& operator=(const DirectChange&) = default;
+  DirectChange(DirectChange&&) = default;
+  DirectChange& operator=(DirectChange&&) = default;
 };
 
-#endif  // ZIPLINE_RDMA_CHANGE_H
+#endif  // ZIPLINE_DIRECT_CHANGE_H

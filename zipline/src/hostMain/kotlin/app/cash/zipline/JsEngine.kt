@@ -137,22 +137,22 @@ expect class JsEngine : AutoCloseable {
   fun gc()
 
   /**
-   * Callback sink for the RDMA changes channel. Set by the host before the guest
-   * starts rendering. When non-null, JS guest calls to `app_cash_redwood_rdmaSendChanges`
+   * Callback sink for the direct changes channel. Set by the host before the guest
+   * starts rendering. When non-null, JS guest calls to `app_cash_redwood_directSendChanges`
    * are forwarded to this sink instead of using JSON serialization.
    *
    * On Android, this is handled via JNI (Context.cpp). On iOS (Kotlin/Native),
    * the sink is called directly from Kotlin via [staticCFunction] callbacks.
    */
   @EngineApi
-  var rdmaChangeSink: RdmaChangeSink?
+  var directChangeSink: DirectChangeSink?
 
   /**
-   * Initialize the RDMA changes channel. Registers a JS-Callable function on globalThis
+   * Initialize the direct changes channel. Registers a JS-Callable function on globalThis
    * so the JS guest can send Changes directly via JNI, bypassing JSON serialization.
    */
   @EngineApi
-  fun initRdmaChangesChannel()
+  fun initDirectChangesChannel()
 
   /**
    * Starts a CDP debug session on this engine. Returns false when the engine was built without

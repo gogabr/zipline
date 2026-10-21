@@ -68,7 +68,7 @@ static inline JSValue JsNewFloat64(double d) {
   return JS_NewFloat64(NULL, d);
 }
 
-// RDMA Changes helpers
+// Direct Bridge Change helpers
 
 static inline JSValue JsNewCFunction(JSContext* ctx, void* func, const char* name, int length) {
   return JS_NewCFunction(ctx, (JSCFunction*)func, name, length);

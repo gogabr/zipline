@@ -24,6 +24,19 @@ public final class app/cash/zipline/CallResult {
 	public final fun getServiceNames ()Ljava/util/List;
 }
 
+public abstract interface class app/cash/zipline/DirectChangeSink {
+	public abstract fun createAdd (IIII)V
+	public abstract fun createBridgeChange (ILjava/lang/Object;)V
+	public abstract fun createCreate (II)V
+	public abstract fun createModifierChange (ILjava/util/List;)V
+	public abstract fun createMove (IIIII)V
+	public abstract fun createPropertyChange (IIILkotlinx/serialization/json/JsonElement;)V
+	public abstract fun createRemove (IIIZ)V
+	public abstract fun sendBatch ()V
+	public abstract fun sendChanges ()V
+	public abstract fun setRemoveDetach (I)V
+}
+
 public abstract interface annotation class app/cash/zipline/EngineApi : java/lang/annotation/Annotation {
 }
 
@@ -90,22 +103,22 @@ public final class app/cash/zipline/JsEngine : java/io/Closeable, java/lang/Auto
 	public final fun execute ([BLjava/lang/String;)Ljava/lang/Object;
 	public static synthetic fun execute$default (Lapp/cash/zipline/JsEngine;[BLjava/lang/String;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun gc ()V
+	public final fun getDirectChangeSink ()Lapp/cash/zipline/DirectChangeSink;
 	public final fun getGcThreshold ()J
 	public final fun getGlobalProperty (Ljava/lang/String;)Ljava/lang/String;
 	public final fun getInterruptHandler ()Lapp/cash/zipline/InterruptHandler;
 	public final fun getMaxStackSize ()J
 	public final fun getMemoryLimit ()J
 	public final fun getMemoryUsage ()Lapp/cash/zipline/MemoryUsage;
-	public final fun getRdmaChangeSink ()Lapp/cash/zipline/RdmaChangeSink;
 	public final fun hasGlobalFunction (Ljava/lang/String;)Z
-	public final fun initRdmaChangesChannel ()V
+	public final fun initDirectChangesChannel ()V
 	public final fun installModuleLoader ()V
+	public final fun setDirectChangeSink (Lapp/cash/zipline/DirectChangeSink;)V
 	public final fun setGcThreshold (J)V
 	public final fun setGlobalProperty (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun setInterruptHandler (Lapp/cash/zipline/InterruptHandler;)V
 	public final fun setMaxStackSize (J)V
 	public final fun setMemoryLimit (J)V
-	public final fun setRdmaChangeSink (Lapp/cash/zipline/RdmaChangeSink;)V
 	public final fun startHeapSampling (J)V
 	public static synthetic fun startHeapSampling$default (Lapp/cash/zipline/JsEngine;JILjava/lang/Object;)V
 	public final fun stopHeapSampling (Ljava/lang/String;)Z
@@ -159,19 +172,6 @@ public final class app/cash/zipline/MemoryUsage {
 	public fun toString ()Ljava/lang/String;
 }
 
-public abstract interface class app/cash/zipline/RdmaChangeSink {
-	public abstract fun createAdd (IIII)V
-	public abstract fun createBridgeChange (ILjava/lang/Object;)V
-	public abstract fun createCreate (II)V
-	public abstract fun createModifierChange (ILjava/util/List;)V
-	public abstract fun createMove (IIIII)V
-	public abstract fun createPropertyChange (IIILkotlinx/serialization/json/JsonElement;)V
-	public abstract fun createRemove (IIIZ)V
-	public abstract fun sendBatch ()V
-	public abstract fun sendChanges ()V
-	public abstract fun setRemoveDetach (I)V
-}
-
 public final class app/cash/zipline/SerializersKt {
 	public static final fun ziplineServiceSerializer ()Lkotlinx/serialization/KSerializer;
 	public static final fun ziplineServiceSerializer (Lapp/cash/zipline/internal/bridge/ZiplineServiceAdapter;)Lkotlinx/serialization/KSerializer;
@@ -190,7 +190,7 @@ public final class app/cash/zipline/Zipline : java/lang/AutoCloseable {
 	public final fun getJsEngine ()Lapp/cash/zipline/JsEngine;
 	public final fun getJson ()Lkotlinx/serialization/json/Json;
 	public final fun getOrPutAttachment (Lkotlin/reflect/KClass;Lkotlin/jvm/functions/Function0;)Ljava/lang/Object;
-	public final fun initRdmaChannel (Lapp/cash/zipline/RdmaChangeSink;)V
+	public final fun initDirectBridgeChannel (Lapp/cash/zipline/DirectChangeSink;)V
 	public final fun loadJsModule (Ljava/lang/String;Ljava/lang/String;)V
 	public final fun loadJsModule ([BLjava/lang/String;)V
 	public final fun take (Ljava/lang/String;Lapp/cash/zipline/ZiplineScope;)Lapp/cash/zipline/ZiplineService;

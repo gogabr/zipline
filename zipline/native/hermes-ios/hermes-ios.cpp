@@ -1,6 +1,6 @@
 #include "hermes-ios.h"
 #include "hermes-core.h"
-#include "../RdmaChange.h"
+#include "../DirectChange.h"
 #include "../ContextNative.h"
 #include "../CdpSession.h"
 #include "../InboundCallChannel.h"
@@ -71,46 +71,46 @@ void HermesContext_setOutboundChannelCallbacks(void* context,
     ctx->outboundDisconnectFn = disconnectFn;
 }
 
-void HermesContext_setRdmaChangeSink(void* context, RdmaChangeSinkFn sinkFn) {
+void HermesContext_setDirectChangeSink(void* context, DirectChangeSinkFn sinkFn) {
     if (!context) return;
-    asNativeContext(context)->rdmaSinkFn = sinkFn;
+    asNativeContext(context)->directSinkFn = sinkFn;
 }
 
-void HermesContext_setRdmaCreateCallback(void* context, void* fn) {
+void HermesContext_setDirectCreateCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->createCb = reinterpret_cast<RdmaCreateFn>(fn);
+    asNativeContext(context)->createCb = reinterpret_cast<DirectCreateFn>(fn);
 }
-void HermesContext_setRdmaPropertyChangeCallback(void* context, void* fn) {
+void HermesContext_setDirectPropertyChangeCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->propertyChangeCb = reinterpret_cast<RdmaPropertyChangeFn>(fn);
+    asNativeContext(context)->propertyChangeCb = reinterpret_cast<DirectPropertyChangeFn>(fn);
 }
-void HermesContext_setRdmaModifierChangeCallback(void* context, void* fn) {
+void HermesContext_setDirectModifierChangeCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->modifierChangeCb = reinterpret_cast<RdmaModifierChangeFn>(fn);
+    asNativeContext(context)->modifierChangeCb = reinterpret_cast<DirectModifierChangeFn>(fn);
 }
-void HermesContext_setRdmaAddCallback(void* context, void* fn) {
+void HermesContext_setDirectAddCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->addCb = reinterpret_cast<RdmaAddFn>(fn);
+    asNativeContext(context)->addCb = reinterpret_cast<DirectAddFn>(fn);
 }
-void HermesContext_setRdmaRemoveCallback(void* context, void* fn) {
+void HermesContext_setDirectRemoveCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->removeCb = reinterpret_cast<RdmaRemoveFn>(fn);
+    asNativeContext(context)->removeCb = reinterpret_cast<DirectRemoveFn>(fn);
 }
-void HermesContext_setRdmaMoveCallback(void* context, void* fn) {
+void HermesContext_setDirectMoveCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->moveCb = reinterpret_cast<RdmaMoveFn>(fn);
+    asNativeContext(context)->moveCb = reinterpret_cast<DirectMoveFn>(fn);
 }
-void HermesContext_setRdmaBridgeChangeCallback(void* context, void* fn) {
+void HermesContext_setDirectBridgeChangeCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->bridgeChangeCb = reinterpret_cast<RdmaBridgeChangeFn>(fn);
+    asNativeContext(context)->bridgeChangeCb = reinterpret_cast<DirectBridgeChangeFn>(fn);
 }
-void HermesContext_setRdmaSetRemoveDetachCallback(void* context, void* fn) {
+void HermesContext_setDirectSetRemoveDetachCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->setRemoveDetachCb = reinterpret_cast<RdmaSetRemoveDetachFn>(fn);
+    asNativeContext(context)->setRemoveDetachCb = reinterpret_cast<DirectSetRemoveDetachFn>(fn);
 }
-void HermesContext_setRdmaSendChangesCallback(void* context, void* fn) {
+void HermesContext_setDirectSendChangesCallback(void* context, void* fn) {
     if (!context) return;
-    asNativeContext(context)->sendChangesCb = reinterpret_cast<RdmaSendChangesFn>(fn);
+    asNativeContext(context)->sendChangesCb = reinterpret_cast<DirectSendChangesFn>(fn);
 }
 
 int HermesFramework_init(void** runtimeOut) {
@@ -441,7 +441,7 @@ int HermesContext_callRequireMethod(void* context, const char* moduleId, const c
     return success;
 }
 
-int HermesContext_initRdmaChangesChannel(void* context) {
+int HermesContext_initDirectChangesChannel(void* context) {
     if (!context) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid context");
         return 0;
@@ -453,7 +453,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
     }
     jsi::Runtime& rt = *rtPtr;
 
-    jsi::Object rdmaObj(rt);
+    jsi::Object directBridgeObj(rt);
 
     auto appendCreateFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendCreate"), 2,
@@ -469,7 +469,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendCreate", appendCreateFn);
+    directBridgeObj.setProperty(rt, "appendCreate", appendCreateFn);
 
     auto appendPropertyChangeFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendPropertyChange"), 4,
@@ -489,7 +489,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             HermesBridge_freeHandle(context, handle);
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendPropertyChange", appendPropertyChangeFn);
+    directBridgeObj.setProperty(rt, "appendPropertyChange", appendPropertyChangeFn);
 
     auto appendModifierChangeFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendModifierChange"), 2,
@@ -505,7 +505,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             HermesBridge_freeHandle(context, handle);
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendModifierChange", appendModifierChangeFn);
+    directBridgeObj.setProperty(rt, "appendModifierChange", appendModifierChangeFn);
 
     auto appendAddFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendAdd"), 4,
@@ -524,7 +524,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendAdd", appendAddFn);
+    directBridgeObj.setProperty(rt, "appendAdd", appendAddFn);
 
     auto appendRemoveFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendRemove"), 3,
@@ -542,7 +542,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value(ctx->removeCounter++);
         });
-    rdmaObj.setProperty(rt, "appendRemove", appendRemoveFn);
+    directBridgeObj.setProperty(rt, "appendRemove", appendRemoveFn);
 
     auto setRemoveDetachFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "setRemoveDetach"), 1,
@@ -557,7 +557,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "setRemoveDetach", setRemoveDetachFn);
+    directBridgeObj.setProperty(rt, "setRemoveDetach", setRemoveDetachFn);
 
     auto appendMoveFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendMove"), 5,
@@ -577,7 +577,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendMove", appendMoveFn);
+    directBridgeObj.setProperty(rt, "appendMove", appendMoveFn);
 
     auto appendBridgeChangeFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "appendBridgeChange"), 2,
@@ -593,7 +593,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             HermesBridge_freeHandle(context, handle);
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "appendBridgeChange", appendBridgeChangeFn);
+    directBridgeObj.setProperty(rt, "appendBridgeChange", appendBridgeChangeFn);
 
     auto finishChangesFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "finishChanges"), 0,
@@ -606,7 +606,7 @@ int HermesContext_initRdmaChangesChannel(void* context) {
             }
             return jsi::Value::undefined();
         });
-    rdmaObj.setProperty(rt, "finishChanges", finishChangesFn);
+    directBridgeObj.setProperty(rt, "finishChanges", finishChangesFn);
 
     auto changesLengthFn = jsi::Function::createFromHostFunction(
         rt, jsi::PropNameID::forUtf8(rt, "changesLength"), 0,
@@ -614,9 +614,9 @@ int HermesContext_initRdmaChangesChannel(void* context) {
            const jsi::Value*, size_t) -> jsi::Value {
             return jsi::Value(asNativeContext(context)->removeCounter);
         });
-    rdmaObj.setProperty(rt, "changesLength", changesLengthFn);
+    directBridgeObj.setProperty(rt, "changesLength", changesLengthFn);
 
-    rt.global().setProperty(rt, "app_cash_redwood_rdmaSendChanges", rdmaObj);
+    rt.global().setProperty(rt, "app_cash_redwood_directSendChanges", directBridgeObj);
     return 1;
 }
 
@@ -1201,7 +1201,7 @@ int HermesBridge_createString(void* context, const char* utf8) {
     if (!ctx || !ctx->runtime || !utf8) return bridgeFailure(ctx, "bridge: invalid string");
     jsi::Runtime& rt = *ctx->runtime;
     try {
-        return allocBridgeHandle(ctx, 
+        return allocBridgeHandle(ctx,
             std::make_shared<jsi::Value>(rt, jsi::String::createFromUtf8(rt, std::string(utf8))));
     } catch (const jsi::JSError& e) {
         return bridgeFailure(ctx, e.getMessage());

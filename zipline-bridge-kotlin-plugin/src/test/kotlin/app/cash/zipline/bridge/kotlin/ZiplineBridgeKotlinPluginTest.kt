@@ -611,6 +611,127 @@ class ZiplineBridgeKotlinPluginTest {
     assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
   }
 
+  /**
+   * The sink class is compiled first, on its own, and the call site is compiled against its
+   * class files. The call-site compilation never sees the sink's source, so the check can only
+   * work from the annotation read out of the dependency's metadata.
+   */
+  @Test
+  fun `cross-module Any slot write with non-bridge value fails compile`() {
+    val sinkClasses = createTempDirectory("zipline-bridge-cross-sink").toFile()
+    val sink = KotlinCompilation().apply {
+      sources = listOf(
+        SourceFile.kotlin(
+          "Sink.kt",
+          """
+          package com.example.sink
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Sink(val v: Any?)
+          """,
+        ),
+      )
+      inheritClassPath = true
+      workingDir = sinkClasses
+    }.compile()
+    val sinkClassesDir = sinkClasses.resolve("classes")
+    assertEquals(KotlinCompilation.ExitCode.OK, sink.exitCode, sink.messages)
+
+    val callSite = KotlinCompilation().apply {
+      sources = listOf(
+        SourceFile.kotlin(
+          "CallSite.kt",
+          """
+          package com.example.call
+
+          import com.example.sink.Sink
+
+          class Bad
+
+          val badSink = Sink(Bad())
+          """,
+        ),
+      )
+      inheritClassPath = true
+      classpaths = listOf(sinkClassesDir)
+      compilerPluginRegistrars = listOf(
+        object : CompilerPluginRegistrar() {
+          override val pluginId: String get() = BuildConfig.KOTLIN_PLUGIN_ID
+          override val supportsK2: Boolean get() = true
+
+          override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
+            IrGenerationExtension.registerExtension(
+              ZiplineBridgeIrGenerationExtension(createTempDirectory("zipline-bridge-cross-out").toString()),
+            )
+          }
+        },
+      )
+    }.compile()
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, callSite.exitCode, callSite.messages)
+    assertTrue(
+      callSite.messages.contains("value of type 'com.example.call.Bad' assigned to constructor parameter 'v' of 'Sink' cannot cross the bridge"),
+      callSite.messages,
+    )
+  }
+
+  @Test
+  fun `cross-module inherited bridge annotation is honored`() {
+    val baseClasses = createTempDirectory("zipline-bridge-cross-base").toFile()
+    val base = KotlinCompilation().apply {
+      sources = listOf(
+        SourceFile.kotlin(
+          "Base.kt",
+          """
+          package com.example.base
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          open class Base(val v: Any?)
+          """,
+        ),
+      )
+      inheritClassPath = true
+      workingDir = baseClasses
+    }.compile()
+    assertEquals(KotlinCompilation.ExitCode.OK, base.exitCode, base.messages)
+
+    val callSite = KotlinCompilation().apply {
+      sources = listOf(
+        SourceFile.kotlin(
+          "Sub.kt",
+          """
+          package com.example.sub
+
+          import com.example.base.Base
+
+          class Bad
+
+          class Sub : Base(make())
+          fun make(): Any? = Bad()
+          """,
+        ),
+      )
+      inheritClassPath = true
+      classpaths = listOf(baseClasses.resolve("classes"))
+      compilerPluginRegistrars = listOf(
+        object : CompilerPluginRegistrar() {
+          override val pluginId: String get() = BuildConfig.KOTLIN_PLUGIN_ID
+          override val supportsK2: Boolean get() = true
+
+          override fun ExtensionStorage.registerExtensions(configuration: CompilerConfiguration) {
+            IrGenerationExtension.registerExtension(
+              ZiplineBridgeIrGenerationExtension(createTempDirectory("zipline-bridge-cross-out2").toString()),
+            )
+          }
+        },
+      )
+    }.compile()
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, callSite.exitCode, callSite.messages)
+  }
+
   @Test
   fun `bad field type is rejected`() {
     val result = compileWithCOutputDir(

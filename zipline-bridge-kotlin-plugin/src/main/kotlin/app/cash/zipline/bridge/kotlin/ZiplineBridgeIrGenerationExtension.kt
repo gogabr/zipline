@@ -43,8 +43,6 @@ class ZiplineBridgeIrGenerationExtension(
       it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
       it.kind != ClassKind.INTERFACE
     }
-    if (annotatedClasses.isEmpty() && host2JsClasses.isEmpty()) return
-
     // Include all annotated classes except abstract/sealed (no JS constructor to export)
     val dispatchClasses = annotatedClasses.filter {
       it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
@@ -53,6 +51,10 @@ class ZiplineBridgeIrGenerationExtension(
     }
     // -- CLV-88: compile-time safety subset (platform-independent contract) --
     validateBridgeSafety(moduleFragment, pluginContext, dispatchClasses, host2JsClasses)
+
+    // Nothing left to generate when no bridge-annotated class exists; @Bridged sites are still
+    // validated above, since they need no generated code.
+    if (annotatedClasses.isEmpty() && host2JsClasses.isEmpty()) return
 
     // -- @JsName annotations (stable JS property names for all bridge backends) --
     annotateJsNames(finder, dispatchClasses, pluginContext)

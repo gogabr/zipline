@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.ir.declarations.IrTypeParameter
 import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrConst
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
+import org.jetbrains.kotlin.ir.expressions.IrDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.expressions.IrSetField
@@ -195,7 +196,12 @@ internal fun validateBridgeSafety(
 private class BridgeSafetyChecker(
   private val pluginContext: IrPluginContext,
 ) {
-  /** The directions [clazz] carries, empty when it is not bridge-annotated. */
+  /**
+   * The bridge directions [clazz] carries, empty when it is not bridge-annotated. The
+   * annotation helpers walk the supertype chain, which covers inherited annotations for
+   * classes declared in this module and for classes loaded from a dependency's metadata: the
+   * annotation has BINARY retention, so a separately compiled bridge class reports it too.
+   */
   private fun directions(clazz: IrClass): Set<BridgeDirection> = buildSet {
     if (hasWithJS2HostBridgeAnnotation(clazz)) add(BridgeDirection.JS2HOST)
     if (hasWithHost2JSBridgeAnnotation(clazz)) add(BridgeDirection.HOST2JS)
@@ -336,6 +342,32 @@ private class BridgeSafetyChecker(
           }
         }
         return super.visitConstructorCall(expression)
+      }
+
+      /**
+       * `class Sub : Base(value)` compiles to a delegating constructor call rather than an
+       * [IrConstructorCall] in the class body, so it needs the same `Any?`-argument check.
+       */
+      override fun visitDelegatingConstructorCall(
+        expression: IrDelegatingConstructorCall,
+      ): IrExpression {
+        val clazz = expression.symbol.owner.parent as? IrClass
+        if (clazz != null) {
+          val dirs = directions(clazz)
+          if (dirs.isNotEmpty()) {
+            for (parameter in expression.symbol.owner.parameters.filter { it.kind == IrParameterKind.Regular }) {
+              if (!isDynamicSlot(parameter.type)) continue
+              checkValue(
+                expression.arguments[parameter],
+                dirs,
+                "constructor parameter '${parameter.name.asString()}' of '${clazz.name.asString()}'",
+                expression,
+                currentFile,
+              )
+            }
+          }
+        }
+        return super.visitDelegatingConstructorCall(expression)
       }
 
       override fun visitCall(expression: IrCall): IrExpression {

@@ -559,11 +559,51 @@ class ZiplineBridgeKotlinPluginTest {
           val ints: List<Int>,
           val map: Map<String, Int>,
           val bytes: ByteArray,
+          val intArr: IntArray,
+          val chars: CharArray,
+          val shorts: ShortArray,
+          val longs: LongArray,
+          val floats: FloatArray,
+          val doubles: DoubleArray,
+          val bools: BooleanArray,
+          val nullableInts: IntArray?,
           val nested: Payload2,
         )
 
         @WithJS2HostBridge
         class Payload2(val x: Int)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `host2js primitive array fields compile clean`() {
+    // The checker allows primitive arrays in both directions; the host->JS runtime converts
+    // them via explicit is-IntArray..is-DoubleArray branches (Host2Js.kt). Guard that the
+    // checker does not reject them.
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "HostArrays.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+        @WithHost2JSBridge
+        class HostArrays(
+          val ints: IntArray,
+          val bytes: ByteArray,
+          val chars: CharArray,
+          val shorts: ShortArray,
+          val longs: LongArray,
+          val floats: FloatArray,
+          val doubles: DoubleArray,
+          val bools: BooleanArray,
+          val nullableInts: IntArray?,
+        )
         """,
       ),
       cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),

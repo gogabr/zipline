@@ -424,8 +424,9 @@ private fun throwUnbridgedJsObject(ctx: COpaquePointer?, handle: Int): Any? {
     val className = namePtr?.toKStringFromUtf8()?.also { platform.posix.free(namePtr) }.orEmpty()
     if (className.isEmpty() || className in UNBRIDGED_DECODE_EXEMPT_CLASSES) return null
     throw IllegalStateException(
-      "host bridge: no converter registered for JS class '$className'; " +
-        "annotate the class with @WithJS2HostBridge to send it to the host",
+      "host bridge: no converter registered for JS class '$className': " +
+        "the host build does not bridge this class; it may have been built before the class " +
+        "was annotated with @WithJS2HostBridge",
     )
   } finally {
     HermesBridge_freeHandle(ctx, ctor)

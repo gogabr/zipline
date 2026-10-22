@@ -259,6 +259,9 @@ class BridgedInterfaceImplementation : BridgedInterface {
 /**
  * Test class for generic types with type parameters
  */
+// `List<T>`/`Map<T, U>` with an unbounded T cannot be proven to cross the bridge; these
+// fixtures exercise generic support with known-good instantiations, so they opt out.
+@Suppress("BRIDGE_UNSAFE")
 @WithJS2HostBridge
 @WithHost2JSBridge
 data class BridgedGenericClass<T>(
@@ -269,6 +272,7 @@ data class BridgedGenericClass<T>(
 /**
  * Test class for multiple type parameters
  */
+@Suppress("BRIDGE_UNSAFE")
 @WithJS2HostBridge
 @WithHost2JSBridge
 data class BridgedMultiGenericClass<T, U>(

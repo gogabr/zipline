@@ -247,7 +247,11 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
     is Array<*> -> jsArrayFrom(ctx, value.size) { anyToJs(ctx, value[it]) }
 
     else -> (value as? Host2JsConvertible)?.convertToJs(ctx)
-      ?: error("HOST2JS: no bridge for '${value::class.qualifiedName}'")
+      ?: error(
+        "host2js: no bridge for '${value::class.qualifiedName}': the host build does not " +
+          "bridge this class; it may have been built before the class was annotated with " +
+          "@WithHost2JSBridge",
+      )
   }
 }
 

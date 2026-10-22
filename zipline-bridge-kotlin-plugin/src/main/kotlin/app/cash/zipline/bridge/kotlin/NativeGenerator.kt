@@ -144,7 +144,10 @@ internal fun generateNativeBridgeFile(
   }
 
   val source = buildString {
-    appendLine("@file:Suppress(\"UNUSED_PARAMETER\", \"unused\", \"INVISIBLE_MEMBER\", \"INVISIBLE_REFERENCE\", \"UNCHECKED_CAST\")")
+    // BRIDGE_UNSAFE: this decoder is the dynamic boundary. Values arrive through bridgeForAny,
+    // which already rejects anything that cannot cross; the static types here are `Any` by
+    // construction, so the safety-subset checker must not judge them.
+    appendLine("@file:Suppress(\"UNUSED_PARAMETER\", \"unused\", \"INVISIBLE_MEMBER\", \"INVISIBLE_REFERENCE\", \"UNCHECKED_CAST\", \"BRIDGE_UNSAFE\")")
     if (usesRedwoodCodegenApi) {
       appendLine("@file:OptIn(app.cash.redwood.RedwoodCodegenApi::class, kotlinx.cinterop.ExperimentalForeignApi::class)")
     } else {

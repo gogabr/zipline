@@ -285,7 +285,8 @@ static inline void jsiThrowUnbridgedJsObject(JNIEnv *env, jsi::Runtime &rt, cons
   if (className.empty() || jsiIsUnbridgedDecodeExemptClass(className)) return;
 
   std::string message = "host bridge: no converter registered for JS class '" + className +
-                        "'; annotate the class with @WithJS2HostBridge to send it to the host";
+                        "': the host build does not bridge this class; it may have been built "
+                        "before the class was annotated with @WithJS2HostBridge.";
   env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
 }
 
@@ -607,6 +608,32 @@ static inline jsi::Value jsiHost2JsLongToJs(JNIEnv *env, jsi::Runtime &rt, jlong
 }
 
 static inline jsi::Value jsiHost2JsAnyToJs(JNIEnv *env, jsi::Runtime &rt, jobject obj);
+
+/** The binary name of [cls] (`com.example.Outer$Inner`), or "" when it cannot be read. */
+static inline std::string jsiClassName(JNIEnv *env, jclass cls) {
+  jclass classClass = env->FindClass("java/lang/Class");
+  if (classClass == nullptr) {
+    env->ExceptionClear();
+    return "";
+  }
+  jmethodID getName = env->GetMethodID(classClass, "getName", "()Ljava/lang/String;");
+  if (getName == nullptr) {
+    env->ExceptionClear();
+    env->DeleteLocalRef(classClass);
+    return "";
+  }
+  jstring name = static_cast<jstring>(env->CallObjectMethod(cls, getName));
+  env->DeleteLocalRef(classClass);
+  if (env->ExceptionCheck() || name == nullptr) {
+    env->ExceptionClear();
+    return "";
+  }
+  const char *chars = env->GetStringUTFChars(name, nullptr);
+  std::string result = chars != nullptr ? chars : "";
+  if (chars != nullptr) env->ReleaseStringUTFChars(name, chars);
+  env->DeleteLocalRef(name);
+  return result;
+}
 
 /** A Java map key as the guest stored it: boxed primitives and String keep their JS shape. */
 static inline jsi::Value jsiHost2JsKeyToJs(JNIEnv *env, jsi::Runtime &rt, jobject key) {
@@ -989,12 +1016,21 @@ static inline jsi::Value jsiHost2JsAnyToJs(JNIEnv *env, jsi::Runtime &rt, jobjec
   // the instance from the guest prototype and fills its fields. The member returns a pointer to a
   // heap jsi::Value this function takes ownership of.
   jmethodID convertToJs = env->GetMethodID(objClass, "convertToJs", "(J)J");
-  env->DeleteLocalRef(objClass);
   if (env->ExceptionCheck()) {
-    // NoSuchMethodError for an unbridgeable object: leave it pending. It propagates to the JVM
-    // and crashes, which is the policy: never a silent null.
+    // Name the class: the NoSuchMethodError from GetMethodID would surface without saying why the
+    // value could not cross. This is the last-resort path for a host object this build has no
+    // bridge for, which also covers version skew: the class may be annotated in the current
+    // source while this host predates that annotation.
+    env->ExceptionClear();
+    std::string className = jsiClassName(env, objClass);
+    env->DeleteLocalRef(objClass);
+    std::string message =
+        "host2js: no bridge for '" + className + "': the host build does not bridge this "
+        "class; it may have been built before the class was annotated with @WithHost2JSBridge.";
+    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
     return jsi::Value::undefined();
   }
+  env->DeleteLocalRef(objClass);
   jlong result = env->CallLongMethod(obj, convertToJs, static_cast<jlong>(reinterpret_cast<intptr_t>(&rt)));
   if (env->ExceptionCheck() || result == 0) return jsi::Value::undefined();
   jsi::Value *heap = reinterpret_cast<jsi::Value *>(static_cast<intptr_t>(result));

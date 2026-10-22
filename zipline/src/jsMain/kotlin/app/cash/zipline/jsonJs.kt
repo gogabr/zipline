@@ -19,8 +19,6 @@ import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 
-public actual fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T =
-  decodeFromString(deserializer, string)
+public actual fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T = decodeFromString(deserializer, string)
 
-public actual fun <T> Json.encodeToStringFast(serializer: KSerializer<T>, value: T): String =
-  encodeToString(serializer, value)
+public actual fun <T> Json.encodeToStringFast(serializer: KSerializer<T>, value: T): String = encodeToString(serializer, value)

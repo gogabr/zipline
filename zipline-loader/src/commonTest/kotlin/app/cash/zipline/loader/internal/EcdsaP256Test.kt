@@ -61,6 +61,9 @@ class EcdsaP256Test {
     // SecKeyVerifySignature is not strict about BER vs. DER encoding, and so some signatures are
     // accepted even though they are not in canonical form. This is not a cryptographic weakness,
     // just an overly lenient ASN.1 decoder. These are bugs in the underlying Apple crypto code.
+    //
+    // JDK SunEC rejects a valid signature when k*G has an x-coordinate larger than the subgroup
+    // order (testcase 285). Accepting it is correct; the rejection is a platform bug.
     val knownFailures = setOf(
       "testcase 4 (long form encoding of length of sequence)",
       "testcase 5 (length of sequence contains leading 0)",
@@ -68,6 +71,7 @@ class EcdsaP256Test {
       "testcase 69 (long form encoding of length of integer)",
       "testcase 70 (length of integer contains leading 0)",
       "testcase 71 (length of integer contains leading 0)",
+      "testcase 285 (k*G has a large x-coordinate)",
     )
 
     var unexpectedErrors = 0

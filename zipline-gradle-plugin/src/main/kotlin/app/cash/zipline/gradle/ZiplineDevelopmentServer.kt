@@ -19,6 +19,8 @@ import java.io.File
 import java.util.EnumSet
 import java.util.Timer
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.concurrent.schedule
 import org.eclipse.jetty.ee10.servlet.ResourceServlet
@@ -155,7 +157,7 @@ internal open class ZiplineDevelopmentServer internal constructor(
 
   private fun sendMessageToAllWebSockets(message: String) {
     for (webSocket in webSockets) {
-      val session = webSocket.session ?: continue
+      val session = webSocket.awaitSession() ?: continue
       session.sendText(message, Callback.NOOP)
     }
   }
@@ -172,17 +174,35 @@ internal open class ZiplineDevelopmentServer internal constructor(
 
   @WebSocket
   internal inner class ZiplineWebSocket {
+    private val opened = CountDownLatch(1)
+
+    @Volatile
     var session: Session? = null
+
+    /**
+     * Jetty writes the 101 before [onWebSocketOpen], so a reload can arrive
+     * while [session] is still null. Wait for that callback.
+     */
+    fun awaitSession(): Session? {
+      if (session == null) {
+        opened.await(1, TimeUnit.SECONDS)
+      }
+      return session
+    }
 
     @OnWebSocketClose
     fun onWebSocketClose(statusCode: Int, reason: String?) {
       session = null
+      // Unblock awaitSession() if the socket closes before onWebSocketOpen.
+      // After a normal open the latch is already at 0, so this is a no-op.
+      opened.countDown()
       webSockets.remove(this)
     }
 
     @OnWebSocketOpen
     fun onWebSocketOpen(session: Session?) {
       this.session = session
+      opened.countDown()
     }
   }
 

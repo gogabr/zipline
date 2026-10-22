@@ -18,6 +18,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.TimeSource
 import kotlinx.coroutines.CloseableCoroutineDispatcher
 import kotlinx.coroutines.DelicateCoroutinesApi
@@ -202,7 +203,9 @@ class CdpDebugTest {
 
   /** A one-shot HTTP server answering GETs from [paths] (path -> body). */
   private class MiniHttpServer(port: Int, private val paths: Map<String, String>) {
-    private val serverSocket = DebugServerSocket(port)
+    // servedScriptBytecode hardcodes :18080, so every process serves that port.
+    // Parallel native test binaries wait until the previous one has closed it.
+    private val serverSocket = bindWhenFree(port)
     private val running = AtomicBoolean(true)
 
     fun start() {
@@ -277,9 +280,33 @@ class CdpDebugTest {
   }
 
   private companion object {
-    const val PORT = 9229
+    val PORT = cdpDebugTestPort()
     const val SCRIPT_URL = "http://localhost:8080/test.js"
     const val SOURCE_SERVER_PORT = 18080
+
+    private fun bindWhenFree(port: Int): DebugServerSocket {
+      val deadline = TimeSource.Monotonic.markNow() + 30.seconds
+      while (true) {
+        try {
+          return DebugServerSocket(port)
+        } catch (t: Throwable) {
+          if (!isAddressInUse(t) || deadline.hasPassedNow()) throw t
+          runBlocking { delay(50) }
+        }
+      }
+    }
+
+    private fun isAddressInUse(t: Throwable): Boolean {
+      var current: Throwable? = t
+      while (current != null) {
+        val message = current.message.orEmpty()
+        if (message.contains("EADDRINUSE") || message.contains("Address already in use")) {
+          return true
+        }
+        current = current.cause
+      }
+      return false
+    }
     const val SERVED_SCRIPT_URL = "http://localhost:18080/test.js"
 
     /**

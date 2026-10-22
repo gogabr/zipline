@@ -662,11 +662,13 @@ internal class CdpDebugServer(
     }
 
     suspend fun removeClient(conn: CdpClientConnection) {
-      val nowEmpty = clientsLock.withLock {
-        clients.remove(conn)
-        clients.isEmpty()
+      // remove() is false when close() already dropped this client. The list
+      // is empty then too, but the engine is shutting down and must not be
+      // reset (cdpResetAgent throws once JsEngine.close has set closed).
+      val resetAgent = clientsLock.withLock {
+        clients.remove(conn) && clients.isEmpty()
       }
-      if (nowEmpty) {
+      if (resetAgent) {
         // The next client gets a fresh agent so it re-receives scriptParsed
         // events when it enables the Debugger domain (breakpoint state is
         // preserved across the reset).

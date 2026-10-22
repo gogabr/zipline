@@ -495,8 +495,14 @@ int HermesCore_warmUpModule(void* context, const char* moduleId, const char* fun
       return 0;
     }
 
-    jsi::Value exports = requireVal.asObject(rt).asFunction(rt).call(
-      rt, jsi::String::createFromUtf8(rt, moduleId ? moduleId : ""), 1);
+    // Scripts loaded without define() are absent from the module map. That is not an error:
+    // only a bridge-plugin module has a warm-up hook. require() throws for a missing id, so
+    // look the export up directly and skip the hook when it is not there.
+    jsi::Value registryVal = rt.global().getProperty(rt, "app_cash_zipline_idToExports");
+    if (!registryVal.isObject()) {
+      return 0;
+    }
+    jsi::Value exports = registryVal.asObject(rt).getProperty(rt, moduleId ? moduleId : "");
     if (!exports.isObject()) {
       return 0;
     }

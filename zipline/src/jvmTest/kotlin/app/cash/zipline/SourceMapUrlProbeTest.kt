@@ -111,9 +111,9 @@ class SourceMapUrlProbeTest {
   }
 
   companion object {
-    // Must match CdpDebugTest.PORT: CdpDebugSupport keeps one process-wide
-    // server singleton, so all tests in a shared JVM must use the same port.
-    private const val PORT = 9229
+    // Same port as CdpDebugTest: CdpDebugSupport keeps one process-wide server,
+    // so every CDP test in this process must use cdpDebugTestPort().
+    private val PORT = cdpDebugTestPort()
     private const val SCRIPT_URL = "http://localhost:8080/probe.js"
     private val TEST_JS = """
       function probeMe() {

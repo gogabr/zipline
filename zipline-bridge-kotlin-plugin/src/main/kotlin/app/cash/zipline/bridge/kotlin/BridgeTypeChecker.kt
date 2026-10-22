@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.ir.declarations.IrAnnotationContainer
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrDeclaration
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
@@ -18,6 +19,7 @@ import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrTypeParameter
+import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrConst
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
@@ -234,6 +236,22 @@ private class BridgeSafetyChecker(
         if (field.ktType.startsWith("kotlin.Function")) continue
         for (dir in dirs) {
           val bad = dir.firstBad(field.type) ?: break
+          if (bad.isUnboundedTypeParameter()) {
+            // Unprovable rather than provably bad: the element type is an unbounded type
+            // parameter, so no static guarantee exists. Strict by default; the author's
+            // explicit opt-out is the only escape, and it never silences a provably bad type.
+            if (!isSuppressedField(clazz, field.name)) {
+              report(
+                BRIDGE_TYPE_SEVERITY,
+                "bridge: field '${clazz.name.asString()}.${field.name}' has type " +
+                  "'${field.ktType}' whose element type is an unbounded type parameter, so it " +
+                  "cannot be proven to cross the bridge; bound the type parameter, or opt out " +
+                  "with @Suppress(\"BRIDGE_UNSAFE\") if every runtime value is known to cross",
+                locate(clazz, field.name),
+              )
+            }
+            break
+          }
           if (bad.isEnumType()) {
             // A nullable enum field can still cross as null, and the generated convertToJs
             // already refuses a non-null value by name, so this is a warning, not an error.
@@ -257,6 +275,12 @@ private class BridgeSafetyChecker(
         }
       }
     }
+  }
+
+  /** Whether the property backing [fieldName] carries an explicit `BRIDGE_UNSAFE` opt-out. */
+  private fun isSuppressedField(clazz: IrClass, fieldName: String): Boolean {
+    val property = clazz.properties.firstOrNull { it.name.asString() == fieldName } ?: return false
+    return suppressedAt(property)
   }
 
   /**
@@ -331,6 +355,10 @@ private class BridgeSafetyChecker(
           if (dirs.isNotEmpty()) {
             for (parameter in ctor.parameters.filter { it.kind == IrParameterKind.Regular }) {
               if (!isDynamicSlot(parameter.type)) continue
+              // The synthesized data-class `copy` forwards its own parameters into the
+              // constructor. That is plumbing, not a new value: the caller of `copy` is the site
+              // to validate, and visitCall does so.
+              if (isGeneratedDataMemberParameterRead(expression.arguments[parameter], clazz)) continue
               checkValue(
                 expression.arguments[parameter],
                 dirs,
@@ -371,6 +399,7 @@ private class BridgeSafetyChecker(
       }
 
       override fun visitCall(expression: IrCall): IrExpression {
+        checkGeneratedCopyArguments(expression, currentFile)
         val setter = expression.symbol.owner as? IrSimpleFunction
         if (setter != null && setter.name.asString().startsWith("<set-")) {
           val property = setter.correspondingPropertySymbol?.owner
@@ -394,6 +423,41 @@ private class BridgeSafetyChecker(
     }
   }
 
+  /**
+   * Checks the arguments of a data-class `copy` call. `copy` is generated, so the constructor
+   * call inside it is exempted as plumbing; the user's call site is where a bad value can enter.
+   */
+  private fun checkGeneratedCopyArguments(expression: IrCall, file: IrFile?) {
+    val function = expression.symbol.owner
+    if (function.name.asString() != "copy") return
+    if (function.origin != IrDeclarationOrigin.GENERATED_DATA_CLASS_MEMBER) return
+    val clazz = function.parent as? IrClass ?: return
+    val dirs = directions(clazz)
+    if (dirs.isEmpty()) return
+    for (parameter in function.parameters.filter { it.kind == IrParameterKind.Regular }) {
+      if (!isDynamicSlot(parameter.type)) continue
+      checkValue(
+        expression.arguments[parameter],
+        dirs,
+        "parameter '${parameter.name.asString()}' of '${clazz.name.asString()}.copy'",
+        expression,
+        file,
+      )
+    }
+  }
+
+  /**
+   * Whether [expr] reads a parameter of a compiler-generated member of [clazz] -- the data-class
+   * `copy` forwarding its own parameters into the constructor.
+   */
+  private fun isGeneratedDataMemberParameterRead(expr: IrExpression?, clazz: IrClass): Boolean {
+    val read = expr as? IrGetValue ?: return false
+    val parameter = read.symbol.owner as? IrValueParameter ?: return false
+    val function = parameter.parent as? IrSimpleFunction ?: return false
+    return function.parent == clazz &&
+      function.origin == IrDeclarationOrigin.GENERATED_DATA_CLASS_MEMBER
+  }
+
   /** Reports [value] unless it provably crosses every direction in [dirs]. */
   private fun checkValue(
     value: IrExpression?,
@@ -414,6 +478,10 @@ private class BridgeSafetyChecker(
     // vouches for a write the static type cannot prove safe (e.g. a decode boundary).
     if (isSuppressed(at, expr)) return
     if (dirs.all { it.isGood(expr.type) }) return
+    // A value of an unbounded type parameter is unknown, not provably bad: the same dynamic
+    // value as an `Any?` slot, and the runtime decodes it. Reporting it would reject every
+    // generic bridge class at the synthesized `copy()` call, which reads `T` fields back.
+    if (expr.type.isUnboundedTypeParameter()) return
     val fqn = expr.type.classFqName?.asString() ?: return
     report(
       BRIDGE_TYPE_SEVERITY,
@@ -481,6 +549,13 @@ private fun IrExpression.constStrings(): List<String> = when (this) {
 private val SUPPRESS_CLASS_ID = ClassId(FqName("kotlin"), Name.identifier("Suppress"))
 
 private fun IrType?.isEnumType(): Boolean = (this as? IrSimpleType)?.getClass()?.kind == ClassKind.ENUM_CLASS
+
+/** Whether this is a type parameter whose first upper bound is `Any`, i.e. carries no guarantee. */
+private fun IrType?.isUnboundedTypeParameter(): Boolean {
+  val typeParameter = (this as? IrSimpleType)?.classifier?.owner as? IrTypeParameter ?: return false
+  val bound = typeParameter.superTypes.firstOrNull() ?: return true
+  return bound.classFqName?.asString() == "kotlin.Any"
+}
 
 /** Finds the line and column of [irElement] within this file. */
 private fun IrFile.locationOf(irElement: IrElement?): CompilerMessageSourceLocation {

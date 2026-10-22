@@ -755,6 +755,93 @@ class ZiplineBridgeKotlinPluginTest {
   }
 
   @Test
+  fun `data class with an unbounded type parameter compiles with copy`() {
+    // The synthesized data-class `copy` re-passes its own parameters into the constructor. That
+    // plumbing must not be reported: the caller of `copy` is the site to validate.
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "CopyGood.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        data class Box<T>(val value: T)
+
+        fun use(box: Box<Int>) = box.copy(value = 1)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `bad value passed to copy is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "CopyBad.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        data class Box<T>(val value: T)
+
+        fun use(box: Box<Any?>) = box.copy(value = java.util.UUID.randomUUID())
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("value of type 'java.util.UUID' assigned to parameter 'value' of 'Box.copy'"), result.messages)
+  }
+
+  @Test
+  fun `collection of an unbounded type parameter is rejected`() {
+    // The element type carries no static guarantee, so the field cannot be proven safe. Strict
+    // by default; only an explicit opt-out may accept it.
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "Generic.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bag<T>(val items: List<T>, val both: Map<T, T>)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("element type is an unbounded type parameter"), result.messages)
+  }
+
+  @Test
+  fun `collection of an unbounded type parameter can opt out`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "GenericSuppressed.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @Suppress("BRIDGE_UNSAFE")
+        @WithJS2HostBridge
+        class Bag<T>(val items: List<T>, val both: Map<T, T>)
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
   fun `unannotated class is untouched`() {
     val result = compileWithCOutputDir(
       SourceFile.kotlin(

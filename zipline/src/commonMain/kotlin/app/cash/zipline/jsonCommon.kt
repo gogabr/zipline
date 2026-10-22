@@ -20,9 +20,11 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 
 /*
- * In QuickJS (version 2021-03-27) it's faster to ask the JavaScript engine to parse JSON to a
- * dynamic value (ie. JSON.parse()) and bind that to a Kotlin Objects, than to parse and bind all
- * in Kotlin/JS. In one sample this optimization reduced overall execution time by 35%.
+ * Both the JS and JVM actuals are string-based (kotlinx `encodeToString`/`decodeFromString`). The JS
+ * actual used to go through `encodeToDynamic`/`decodeFromDynamic` for a ~35% QuickJS speedup, but the
+ * JS-object encoder turns every Kotlin `Long` into a double, silently rounding values outside
+ * +/-2^53-1 in any nested position (lists, maps, DTO fields). String transport is exact for `Long`
+ * everywhere, so correctness wins over that speedup.
  */
 
 public expect fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T

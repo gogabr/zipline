@@ -116,16 +116,6 @@ class ZiplineTest {
       .isEqualTo("JavaScript received 'sup from the JVM, homie' from the JVM")
   }
 
-  @Test fun jsCallJvmServiceUsingDynamicFunction() = runTest(dispatcher) {
-    zipline.bind<EchoService>("supService", JvmEchoService("sup"))
-
-    assertThat(
-      zipline.jsEngine.evaluate(
-      "testing.app.cash.zipline.testing.callSupServiceDynamically('homie')",
-      ),
-    ).isEqualTo("JavaScript received 'sup from the JVM, homie' dynamically")
-  }
-
   @Test fun suspendingJvmCallJsService() = runTest(dispatcher) {
     zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareSuspendingJsBridges()")
 
@@ -157,25 +147,6 @@ class ZiplineTest {
     zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.callSuspendingEchoService('Eric')")
     assertThat(zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.suspendingEchoResult"))
       .isEqualTo("hello from the suspending JVM, Eric")
-  }
-
-  @Test fun suspendingJsCallJvmServiceUsingDynamicFunction() = runTest(dispatcher) {
-    val jvmSuspendingEchoService = object : SuspendingEchoService {
-      override suspend fun suspendingEcho(request: EchoRequest): EchoResponse {
-        return EchoResponse("hello dynamic and suspending, ${request.message}")
-      }
-    }
-
-    zipline.bind<SuspendingEchoService>(
-      "jvmSuspendingEchoService",
-      jvmSuspendingEchoService,
-    )
-
-    zipline.jsEngine.evaluate(
-      "testing.app.cash.zipline.testing.callSuspendingEchoServiceDynamically('Dylan')",
-    )
-    assertThat(zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.suspendingEchoResult"))
-      .isEqualTo("hello dynamic and suspending, Dylan")
   }
 
   /**

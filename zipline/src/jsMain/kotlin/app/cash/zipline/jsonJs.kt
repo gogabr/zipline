@@ -16,16 +16,9 @@
 package app.cash.zipline
 
 import kotlinx.serialization.DeserializationStrategy
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.decodeFromDynamic
-import kotlinx.serialization.json.encodeToDynamic
 
-@OptIn(ExperimentalSerializationApi::class) // Zipline must track changes to decodeFromDynamic.
-public actual fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T =
-  decodeFromDynamic(deserializer, JSON.parse(string))
+public actual fun <T> Json.decodeFromStringFast(deserializer: DeserializationStrategy<T>, string: String): T = decodeFromString(deserializer, string)
 
-@OptIn(ExperimentalSerializationApi::class) // Zipline must track changes to encodeToDynamic.
-public actual fun <T> Json.encodeToStringFast(serializer: KSerializer<T>, value: T): String =
-  JSON.stringify(encodeToDynamic(serializer, value))
+public actual fun <T> Json.encodeToStringFast(serializer: KSerializer<T>, value: T): String = encodeToString(serializer, value)

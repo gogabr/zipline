@@ -21,6 +21,18 @@ class JsEncodingService : EncodingService {
   override fun echoLong(request: Long): Long {
     return request
   }
+
+  override fun echoLongList(request: List<Long>): List<Long> {
+    return request
+  }
+
+  override fun echoLongMap(request: Map<Long, Long>): Map<Long, Long> {
+    return request
+  }
+
+  override fun echoPayload(request: LongPayload): LongPayload {
+    return request
+  }
 }
 
 private val zipline by lazy { Zipline.get() }

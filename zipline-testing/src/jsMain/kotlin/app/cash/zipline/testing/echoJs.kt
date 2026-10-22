@@ -16,8 +16,6 @@
 package app.cash.zipline.testing
 
 import app.cash.zipline.Zipline
-import app.cash.zipline.asDynamicFunction
-import app.cash.zipline.sourceType
 
 class JsEchoService(
   private val greeting: String,
@@ -76,13 +74,4 @@ fun callSupService(message: String): String {
 fun callEchoServiceByName(serviceName: String, message: String): String {
   val service = zipline.take<EchoService>(serviceName)
   return service.echo(EchoRequest(message)).message
-}
-
-@JsExport
-fun callSupServiceDynamically(message: String): String {
-  val supService = zipline.take<EchoService>("supService")
-  val echoFunction = supService.sourceType!!.functions.single { "echo" in it.signature }
-    .asDynamicFunction()
-  val echoResponse = echoFunction(supService, arrayOf(js("""{"message":message}""")))
-  return "JavaScript received '${echoResponse.asDynamic().message}' dynamically"
 }

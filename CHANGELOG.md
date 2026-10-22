@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-Nothing yet!
+* Fix: Kotlin `Long` values outside +/-2^53-1 are no longer silently rounded when crossing the
+  Kotlin/JS guest boundary. The guest transport now uses string-based `encodeToString`/`decodeFromString`
+  instead of the JS-object (`encodeToDynamic`/`decodeFromDynamic`) fast path, which turned every `Long`
+  into a double. This applies to all positions: top-level arguments, lists, maps, and `@Serializable`
+  DTO fields. Plain `Long` is exact with no `@Contextual` annotation required.
+* Removed: `ZiplineFunction.asDynamicFunction()`, `ZiplineFunction.asDynamicSuspendingFunction()` and
+  `FastDynamicSerializer`. These relied on the lossy JS-object transport and have no replacement; call
+  bridged functions normally instead.
 
 ## [1.27.0] - 2026-04-02
 [1.27.0]: https://github.com/cashapp/zipline/releases/tag/1.27.0

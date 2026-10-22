@@ -16,6 +16,7 @@
 package app.cash.zipline
 
 import app.cash.zipline.testing.EncodingService
+import app.cash.zipline.testing.LongPayload
 import app.cash.zipline.testing.loadTestingJs
 import assertk.assertThat
 import assertk.assertions.isEqualTo
@@ -40,12 +41,8 @@ class EncodingTest {
   }
 
   /**
-   * We encode all numbers as doubles for a significant performance gain in `encodeToStringFast()`.
-   * Unfortunately this breaks high valued longs (greater than 2^53) because they don't all have an
-   * exact representation as a double.
-   *
-   * We work around this by using `@Contextual` on Longs, plus an encoder that wraps very
-   * these high-valued longs in strings.
+   * The guest transport is string-based, so plain `Long` (no `@Contextual`, no wrapping serializer)
+   * round-trips exactly, including values outside the +/-2^53-1 double-precision range.
    */
   @Test fun encodeLongs() = runBlocking(dispatcher) {
     zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareEncodingJsBridges()")
@@ -64,5 +61,42 @@ class EncodingTest {
     assertThat(service.echoLong(9007199254740992L)).isEqualTo(9007199254740992L)
     assertThat(service.echoLong(9007199254740993L)).isEqualTo(9007199254740993L)
     assertThat(service.echoLong(Long.MAX_VALUE)).isEqualTo(Long.MAX_VALUE)
+  }
+
+  @Test fun encodeLongList() = runBlocking(dispatcher) {
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareEncodingJsBridges()")
+
+    val service = zipline.take<EncodingService>("encodingService")
+    val values = listOf(
+      Long.MIN_VALUE,
+      -9007199254740993L,
+      0L,
+      9007199254740993L,
+      Long.MAX_VALUE,
+    )
+    assertThat(service.echoLongList(values)).isEqualTo(values)
+  }
+
+  @Test fun encodeLongMap() = runBlocking(dispatcher) {
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareEncodingJsBridges()")
+
+    val service = zipline.take<EncodingService>("encodingService")
+    val values = mapOf(
+      Long.MIN_VALUE to -9007199254740993L,
+      9007199254740993L to 0L,
+      Long.MAX_VALUE to 1L,
+    )
+    assertThat(service.echoLongMap(values)).isEqualTo(values)
+  }
+
+  @Test fun encodeLongPayload() = runBlocking(dispatcher) {
+    zipline.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareEncodingJsBridges()")
+
+    val service = zipline.take<EncodingService>("encodingService")
+    val payload = LongPayload(
+      value = 9007199254740993L,
+      values = listOf(Long.MIN_VALUE, -9007199254740993L, 0L, Long.MAX_VALUE),
+    )
+    assertThat(service.echoPayload(payload)).isEqualTo(payload)
   }
 }

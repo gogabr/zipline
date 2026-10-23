@@ -434,6 +434,15 @@ data class BridgedAnnotationRange(
 
 /** Canonical values used both by the guest providers and the host assertions. */
 
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedContainers(
+  val pair: Pair<Int, String>,
+  val triple: Triple<Int, String, Boolean>,
+  val entry: Map.Entry<String, Int>,
+  val pairs: List<Pair<Int, String>>,
+)
+
 object BridgedTestValues {
   val data = BridgedData(id = 7, name = "seven", active = true, ratio = 1.5)
   val inline = BridgedInline(raw = 42)
@@ -497,6 +506,13 @@ object BridgedTestValues {
     mapOfLists = mapOf("list1" to listOf(1, 2, 3)),
     listOfMaps = listOf(mapOf("a" to 1, "b" to 2)),
     complexNested = mapOf("outer" to listOf(mapOf(1 to "one", 2 to "two"))),
+  )
+
+  val containers = BridgedContainers(
+    pair = 1 to "one",
+    triple = Triple(1, "one", true),
+    entry = mapOf("k" to 1).entries.first(),
+    pairs = listOf(1 to "one", 2 to "two"),
   )
 
   // Long values: a large positive (needs both low/high halves) and a negative.

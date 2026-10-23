@@ -236,6 +236,8 @@ val kotlinToJvmClass = mapOf(
   "kotlin.collections.Collection" to "java/util/Collection",
   "kotlin.collections.MutableCollection" to "java/util/Collection",
   "kotlin.collections.Iterable" to "java/lang/Iterable",
+  "kotlin.collections.Map.Entry" to "java/util/Map\$Entry",
+  "java.util.Map.Entry" to "java/util/Map\$Entry",
   "kotlin.Function0" to "kotlin/jvm/functions/Function0",
   "kotlin.Function1" to "kotlin/jvm/functions/Function1",
   "kotlin.Function2" to "kotlin/jvm/functions/Function2",

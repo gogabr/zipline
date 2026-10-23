@@ -92,6 +92,12 @@ private val MAP_LIKE = setOf(
   "kotlin.collections.LinkedHashMap",
 )
 
+private val PAIR_LIKE = setOf("kotlin.Pair")
+
+private val TRIPLE_LIKE = setOf("kotlin.Triple")
+
+private val ENTRY_LIKE = setOf("kotlin.collections.Map.Entry", "java.util.Map.Entry")
+
 /** Bridge direction a type is validated against. */
 internal enum class BridgeDirection {
   /** JS -> host (`@WithJS2HostBridge`). */
@@ -143,6 +149,16 @@ internal enum class BridgeDirection {
       fqn in MAP_LIKE ->
         return isGood(typeArgument(type, 0)) && isGood(typeArgument(type, 1))
 
+      fqn in PAIR_LIKE ->
+        return isGood(typeArgument(type, 0)) && isGood(typeArgument(type, 1))
+
+      fqn in TRIPLE_LIKE ->
+        return isGood(typeArgument(type, 0)) && isGood(typeArgument(type, 1)) &&
+          isGood(typeArgument(type, 2))
+
+      fqn in ENTRY_LIKE ->
+        return isGood(typeArgument(type, 0)) && isGood(typeArgument(type, 1))
+
       else -> {
         val clazz = (type as? IrSimpleType)?.getClass() ?: return false
         // An explicit (own or inherited) annotation is the author's contract and wins.
@@ -163,21 +179,38 @@ internal enum class BridgeDirection {
 
   /**
    * The first type in [type]'s structure that is not good, or null when the whole type is
-   * good. Descends into collection element/key/value types so the diagnostic names the
+   * good. Descends into collection/container element types so the diagnostic names the
    * offending leaf -- the `Any` inside a `List<Any?>` -- rather than the outer container.
+   * [BadType.path] is the accessor chain that reaches it ("first", "element.value", ...);
+   * null means the field's own type is the offender.
    */
-  fun firstBad(type: IrType?): IrType? {
+  fun firstBad(type: IrType?, prefix: String = ""): BadType? {
     if (type == null || isGood(type)) return null
-    val fqn = type.classFqName?.asString() ?: return type
-    if (fqn in LIST_LIKE || fqn == "kotlin.Array") {
-      return firstBad(typeArgument(type, 0)) ?: type
+    fun self() = BadType(type, prefix.ifEmpty { null })
+    val fqn = type.classFqName?.asString() ?: return self()
+    fun descend(index: Int, name: String): BadType? {
+      val path = if (prefix.isEmpty()) name else "$prefix.$name"
+      return firstBad(typeArgument(type, index), path)
     }
-    if (fqn in MAP_LIKE) {
-      return firstBad(typeArgument(type, 0)) ?: firstBad(typeArgument(type, 1)) ?: type
+    return when {
+      fqn in LIST_LIKE || fqn == "kotlin.Array" -> descend(0, "element") ?: self()
+
+      fqn in MAP_LIKE -> descend(0, "key") ?: descend(1, "value") ?: self()
+
+      fqn in PAIR_LIKE -> descend(0, "first") ?: descend(1, "second") ?: self()
+
+      fqn in TRIPLE_LIKE ->
+        descend(0, "first") ?: descend(1, "second") ?: descend(2, "third") ?: self()
+
+      fqn in ENTRY_LIKE -> descend(0, "key") ?: descend(1, "value") ?: self()
+
+      else -> self()
     }
-    return type
   }
 }
+
+/** A non-good type found in a field type, with the accessor chain that reaches it. */
+internal data class BadType(val type: IrType, val path: String?)
 
 /**
  * Enforces the safety subset on [js2HostClasses] / [host2JsClasses]: field types must be
@@ -236,7 +269,8 @@ private class BridgeSafetyChecker(
         if (field.ktType.startsWith("kotlin.Function")) continue
         for (dir in dirs) {
           val bad = dir.firstBad(field.type) ?: break
-          if (bad.isUnboundedTypeParameter()) {
+          val where = bad.path?.let { " at '$it'" } ?: ""
+          if (bad.type.isUnboundedTypeParameter()) {
             // Unprovable rather than provably bad: the element type is an unbounded type
             // parameter, so no static guarantee exists. Strict by default; the author's
             // explicit opt-out is the only escape, and it never silences a provably bad type.
@@ -244,7 +278,7 @@ private class BridgeSafetyChecker(
               report(
                 BRIDGE_TYPE_SEVERITY,
                 "bridge: field '${clazz.name.asString()}.${field.name}' has type " +
-                  "'${field.ktType}' whose element type is an unbounded type parameter, so it " +
+                  "'${field.ktType}' with an unbounded type parameter$where, so it " +
                   "cannot be proven to cross the bridge; bound the type parameter, or opt out " +
                   "with @Suppress(\"BRIDGE_UNSAFE\") if every runtime value is known to cross",
                 locate(clazz, field.name),
@@ -252,22 +286,33 @@ private class BridgeSafetyChecker(
             }
             break
           }
-          if (bad.isEnumType()) {
+          if (bad.type.isEnumType()) {
             // A nullable enum field can still cross as null, and the generated convertToJs
             // already refuses a non-null value by name, so this is a warning, not an error.
             report(
               CompilerMessageSeverity.WARNING,
               "bridge: field '${clazz.name.asString()}.${field.name}' has enum type " +
-                "'${bad.classFqName?.asString()}' that cannot cross the host-to-JS bridge as a value; " +
-                "the guest would only see a lookalike, not an enum instance",
+                "'${bad.type.classFqName?.asString()}'$where that cannot cross the host-to-JS " +
+                "bridge as a value; the guest would only see a lookalike, not an enum instance",
               locate(clazz, field.name),
             )
-          } else {
+          } else if (bad.path == null) {
             report(
               BRIDGE_TYPE_SEVERITY,
               "bridge: field '${clazz.name.asString()}.${field.name}' has type " +
                 "'${field.ktType}' that cannot cross the bridge; use a primitive, String, " +
                 "a bridge-annotated class, a List/Array/Map of allowed types, or Any?",
+              locate(clazz, field.name),
+            )
+          } else {
+            val leaf = bad.type.classFqName?.asString()
+            val offender = if (leaf != null) "type '$leaf'" else "type"
+            report(
+              BRIDGE_TYPE_SEVERITY,
+              "bridge: field '${clazz.name.asString()}.${field.name}' has type " +
+                "'${field.ktType}' with a non-bridgeable $offender at '${bad.path}'; use a " +
+                "primitive, String, a bridge-annotated class, a List/Array/Map of allowed types, " +
+                "or Any?",
               locate(clazz, field.name),
             )
           }

@@ -69,18 +69,24 @@ class Host2JsRuntimeTest {
       __bridgeRegisterRuntime({
         newLong: function (low, high) { return { low_1: low, high_1: high }; },
         newArrayList: function (array) { return array; },
-        newLinkedHashMap: function (keys, values) { return {}; }
+        newLinkedHashMap: function (keys, values) { return {}; },
+        newPair: function (parts) { return { kind: 4, first: parts[0], second: parts[1] }; },
+        newTriple: function (parts) { return { kind: 5, first: parts[0], second: parts[1], third: parts[2] }; },
+        newMapEntry: function (parts) { return { kind: 6, key: parts[0], value: parts[1] }; }
       });
       globalThis.__zipline_bridgeValueOps = {
-        kind: function (value) { return 0; },
+        kind: function (value) { return (value && value.kind) || 0; },
         longLow: function (value) { return value.low_1; },
         longHigh: function (value) { return value.high_1; },
         enumOrdinal: function (value) { return -1; },
         iterator: function (value) { return null; },
         hasNext: function (iterator) { return false; },
         next: function (iterator) { return null; },
-        key: function (entry) { return null; },
-        value: function (entry) { return null; }
+        key: function (entry) { return entry.key ?? null; },
+        value: function (entry) { return entry.value ?? null; },
+        first: function (value) { return value.first ?? null; },
+        second: function (value) { return value.second ?? null; },
+        third: function (value) { return value.third ?? null; }
       };
       class Host2JsEcho {
         greet() { return 'hello'; }
@@ -210,6 +216,27 @@ class Host2JsRuntimeTest {
     } finally {
       HermesBridge_freeHandle(context, handle)
     }
+  }
+
+  @Test
+  fun `anyToJs pair round-trips through the guest factory`() {
+    publishGuestRuntime()
+    assertEquals("a" to "b", roundTrip("a" to "b"))
+  }
+
+  @Test
+  fun `anyToJs triple round-trips through the guest factory`() {
+    publishGuestRuntime()
+    assertEquals(Triple("a", "b", true), roundTrip(Triple("a", "b", true)))
+  }
+
+  @Test
+  fun `anyToJs map entry round-trips through the guest factory`() {
+    publishGuestRuntime()
+    val result = roundTrip(mapOf("k" to "v").entries.first())
+    assertTrue(result is Map.Entry<*, *>, "expected a Map.Entry, got $result")
+    assertEquals("k", result.key)
+    assertEquals("v", result.value)
   }
 
   @Test

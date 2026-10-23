@@ -535,7 +535,7 @@ class ZiplineBridgeKotlinPluginTest {
     )
     // A collection must have a good element type; Array<Any> is not allowed as a field.
     assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
-    assertTrue(result.messages.contains("field 'MixedBag.values' has type 'kotlin.Array' that cannot cross the bridge"), result.messages)
+    assertTrue(result.messages.contains("field 'MixedBag.values' has type 'kotlin.Array' with a non-bridgeable type 'kotlin.Any' at 'element'"), result.messages)
   }
 
   // -- CLV-88: bridge safety subset --
@@ -567,6 +567,9 @@ class ZiplineBridgeKotlinPluginTest {
           val doubles: DoubleArray,
           val bools: BooleanArray,
           val nullableInts: IntArray?,
+          val pair: Pair<Int, String>,
+          val triple: Triple<Int, String, Boolean>,
+          val entry: Map.Entry<String, Int>,
           val nested: Payload2,
         )
 
@@ -818,7 +821,8 @@ class ZiplineBridgeKotlinPluginTest {
       cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
     )
     assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
-    assertTrue(result.messages.contains("element type is an unbounded type parameter"), result.messages)
+    assertTrue(result.messages.contains("field 'Bag.items' has type 'kotlin.collections.List' with an unbounded type parameter at 'element'"), result.messages)
+    assertTrue(result.messages.contains("field 'Bag.both' has type 'kotlin.collections.Map' with an unbounded type parameter at 'key'"), result.messages)
   }
 
   @Test
@@ -839,6 +843,34 @@ class ZiplineBridgeKotlinPluginTest {
       cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
     )
     assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `container with a bad element type is rejected`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "BadContainers.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bad(
+          val pair: Pair<java.util.UUID, Int>,
+          val triple: Triple<Int, java.util.UUID, Boolean>,
+          val entry: Map.Entry<String, java.util.UUID>,
+          val nested: List<Pair<java.util.UUID, Int>>,
+        )
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(result.messages.contains("field 'Bad.pair' has type 'kotlin.Pair' with a non-bridgeable type 'java.util.UUID' at 'first'"), result.messages)
+    assertTrue(result.messages.contains("field 'Bad.triple' has type 'kotlin.Triple' with a non-bridgeable type 'java.util.UUID' at 'second'"), result.messages)
+    assertTrue(result.messages.contains("field 'Bad.entry' has type 'kotlin.collections.Map.Entry' with a non-bridgeable type 'java.util.UUID' at 'value'"), result.messages)
+    assertTrue(result.messages.contains("field 'Bad.nested' has type 'kotlin.collections.List' with a non-bridgeable type 'java.util.UUID' at 'element.first'"), result.messages)
   }
 
   @Test
@@ -1131,7 +1163,7 @@ class ZiplineBridgeKotlinPluginTest {
       cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
     )
     assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
-    assertTrue(result.messages.contains("field 'Bag.items' has type 'kotlin.collections.List' that cannot cross the bridge"), result.messages)
+    assertTrue(result.messages.contains("field 'Bag.items' has type 'kotlin.collections.List' with a non-bridgeable type 'kotlin.Any' at 'element'"), result.messages)
   }
 
   @Test
@@ -1151,7 +1183,7 @@ class ZiplineBridgeKotlinPluginTest {
       cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
     )
     assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
-    assertTrue(result.messages.contains("field 'Bag.entries' has type 'kotlin.collections.Map' that cannot cross the bridge"), result.messages)
+    assertTrue(result.messages.contains("field 'Bag.entries' has type 'kotlin.collections.Map' with a non-bridgeable type 'kotlin.Any' at 'value'"), result.messages)
   }
 
   @Test

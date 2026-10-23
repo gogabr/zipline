@@ -32,9 +32,15 @@ internal object BridgeValueOps {
   const val MAP = 1
   const val SET = 2
   const val LIST = 3
+  const val PAIR = 4
+  const val TRIPLE = 5
+  const val ENTRY = 6
 
   @JsName("kind")
   fun kind(value: Any?): Int = when (value) {
+    is Pair<*, *> -> PAIR
+    is Triple<*, *, *> -> TRIPLE
+    is Map.Entry<*, *> -> ENTRY
     is Map<*, *> -> MAP
     is Set<*> -> SET
     is List<*> -> LIST
@@ -64,6 +70,26 @@ internal object BridgeValueOps {
   /** Value of an entry produced by [next], or the element itself for sets and lists. */
   @JsName("value")
   fun value(entry: Any?): Any? = (entry as? Map.Entry<*, *>)?.value
+
+  /** First component of a [Pair] or [Triple]. */
+  @JsName("first")
+  fun first(value: Any?): Any? = when (value) {
+    is Pair<*, *> -> value.first
+    is Triple<*, *, *> -> value.first
+    else -> null
+  }
+
+  /** Second component of a [Pair] or [Triple]. */
+  @JsName("second")
+  fun second(value: Any?): Any? = when (value) {
+    is Pair<*, *> -> value.second
+    is Triple<*, *, *> -> value.second
+    else -> null
+  }
+
+  /** Third component of a [Triple]. */
+  @JsName("third")
+  fun third(value: Any?): Any? = (value as? Triple<*, *, *>)?.third
 
   /** Low 32 bits of a boxed `kotlin.Long`, or null for any other value. */
   @JsName("longLow")
@@ -99,6 +125,9 @@ public fun publishValueOps() {
       next: function (iterator) { return ops.next(iterator); },
       key: function (entry) { return ops.key(entry); },
       value: function (entry) { return ops.value(entry); },
+      first: function (value) { return ops.first(value); },
+      second: function (value) { return ops.second(value); },
+      third: function (value) { return ops.third(value); },
       longLow: function (value) { return ops.longLow(value); },
       longHigh: function (value) { return ops.longHigh(value); },
       enumOrdinal: function (value) { return ops.enumOrdinal(value); },

@@ -145,6 +145,21 @@ private fun jsArrayFrom(ctx: COpaquePointer?, size: Int, convert: (Int) -> Int):
   }
 }
 
+/** Build a parts array and call the guest's [factory]; the caller owns the returned handle. */
+private fun containerToJs(
+  ctx: COpaquePointer?,
+  factory: String,
+  size: Int,
+  part: (Int) -> Any?,
+): Int {
+  val parts = jsArrayFrom(ctx, size) { anyToJs(ctx, part(it)) }
+  try {
+    return callFactory(ctx, factory, intArrayOf(parts))
+  } finally {
+    HermesBridge_freeHandle(ctx, parts)
+  }
+}
+
 /**
  * Convert an arbitrary host value to its JS counterpart in [ctx]. The caller owns the returned
  * handle.
@@ -218,6 +233,22 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
         HermesBridge_freeHandle(ctx, values)
         HermesBridge_freeHandle(ctx, keys)
       }
+    }
+
+    is Pair<*, *> -> containerToJs(ctx, "newPair", 2) { index ->
+      if (index == 0) value.first else value.second
+    }
+
+    is Triple<*, *, *> -> containerToJs(ctx, "newTriple", 3) { index ->
+      when (index) {
+        0 -> value.first
+        1 -> value.second
+        else -> value.third
+      }
+    }
+
+    is Map.Entry<*, *> -> containerToJs(ctx, "newMapEntry", 2) { index ->
+      if (index == 0) value.key else value.value
     }
 
     is IntArray -> jsArrayFrom(ctx, value.size) { newJsInt(ctx, value[it]) }

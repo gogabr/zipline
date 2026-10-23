@@ -400,6 +400,15 @@ private fun buildRuntimeFactories(
   // MARKER_9F3A typeWith, not defaultType: stdlib klib classes have a null thisReceiver, so defaultType NPEs.
   val anyListType = arrayListClass.typeWith(anyNType)
   val anyMapType = linkedHashMapClass.typeWith(anyNType, anyNType)
+  val anyArrayType = pluginContext.irBuiltIns.arrayClass.typeWith(anyNType)
+
+  fun containerFactory(name: String): IrSimpleFunctionSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier(name)),
+  ).firstOrNull() ?: error("app.cash.zipline.$name not found")
+
+  val newPairFunction = containerFactory("newPair")
+  val newTripleFunction = containerFactory("newTriple")
+  val newMapEntryFunction = containerFactory("newMapEntry")
 
   buildObjectMethod(
     finder,
@@ -457,6 +466,45 @@ private fun buildRuntimeFactories(
           arguments[1] = builder.irGet(params[1])
         }
       }
+    }
+  }
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newPair",
+    anyNType,
+    listOf(anyArrayType),
+  ) { builder, params ->
+    builder.irCall(newPairFunction).apply {
+      arguments[0] = builder.irGet(params[0])
+    }
+  }
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newTriple",
+    anyNType,
+    listOf(anyArrayType),
+  ) { builder, params ->
+    builder.irCall(newTripleFunction).apply {
+      arguments[0] = builder.irGet(params[0])
+    }
+  }
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    "newMapEntry",
+    anyNType,
+    listOf(anyArrayType),
+  ) { builder, params ->
+    builder.irCall(newMapEntryFunction).apply {
+      arguments[0] = builder.irGet(params[0])
     }
   }
 

@@ -270,6 +270,9 @@ public enum class CollectionKind(val code: Int) {
   MAP(1),
   SET(2),
   LIST(3),
+  PAIR(4),
+  TRIPLE(5),
+  ENTRY(6),
   ;
 
   public companion object {
@@ -278,6 +281,9 @@ public enum class CollectionKind(val code: Int) {
       MAP.code -> MAP
       SET.code -> SET
       LIST.code -> LIST
+      PAIR.code -> PAIR
+      TRIPLE.code -> TRIPLE
+      ENTRY.code -> ENTRY
       else -> NONE
     }
   }
@@ -448,6 +454,37 @@ private val UNBRIDGED_DECODE_EXEMPT_CLASSES = setOf(
   "Unit",
 )
 
+/** A decoded `Map.Entry` with the contract's key/value equality and hash. */
+private class ZiplineMapEntry<K, V>(
+  override val key: K,
+  override val value: V,
+) : Map.Entry<K, V> {
+  override fun equals(other: Any?): Boolean = other is Map.Entry<*, *> && key == other.key && value == other.value
+
+  override fun hashCode(): Int = (key?.hashCode() ?: 0) xor (value?.hashCode() ?: 0)
+
+  override fun toString(): String = "$key=$value"
+}
+
+/**
+ * Reads one Pair/Triple/Map.Entry component through the guest's value ops and returns its handle;
+ * the caller frees it. Generated bridges use this to decode components with the declared types.
+ */
+public fun jsContainerComponent(ctx: COpaquePointer?, handle: Int, op: String): Int = callValueOp(ctx, op, handle)
+
+/** A `Map.Entry` with the contract's key/value equality and hash; generated bridges use it. */
+public fun <K, V> jsMapEntry(key: K, value: V): Map.Entry<K, V> = ZiplineMapEntry(key, value)
+
+/** Reads one Pair/Triple/Entry component through the guest's value ops. */
+private fun containerComponent(ctx: COpaquePointer?, handle: Int, op: String): Any? {
+  val ref = callValueOp(ctx, op, handle)
+  try {
+    return bridgeForAny(ctx, ref)
+  } finally {
+    HermesBridge_freeHandle(ctx, ref)
+  }
+}
+
 /**
  * Dispatch a single JS value to its Kotlin equivalent using bridge dispatch for objects.
  * Used by generated bridge code for elements of unknown type (Any? fields, List elements).
@@ -495,6 +532,22 @@ fun bridgeForAny(context: COpaquePointer?, handle: Int): Any? {
           handle,
           kind,
         ) { element -> bridgeForAny(context, element) }
+
+        CollectionKind.PAIR -> return Pair(
+          containerComponent(context, handle, "first"),
+          containerComponent(context, handle, "second"),
+        )
+
+        CollectionKind.TRIPLE -> return Triple(
+          containerComponent(context, handle, "first"),
+          containerComponent(context, handle, "second"),
+          containerComponent(context, handle, "third"),
+        )
+
+        CollectionKind.ENTRY -> return ZiplineMapEntry(
+          containerComponent(context, handle, "key"),
+          containerComponent(context, handle, "value"),
+        )
 
         CollectionKind.NONE -> Unit
       }

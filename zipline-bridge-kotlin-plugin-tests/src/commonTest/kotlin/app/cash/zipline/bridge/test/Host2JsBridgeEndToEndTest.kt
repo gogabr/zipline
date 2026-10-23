@@ -267,6 +267,11 @@ class Host2JsBridgeEndToEndTest {
   }
 
   @Test
+  fun containersRoundTrip() {
+    assertEquals(BridgedTestValues.containers, host.roundTrip(BridgedTestValues.containers))
+  }
+
+  @Test
   fun guestSeesTheConvertedFields() {
     // The guest's own view of a converted value: JSON.stringify shows the field names the guest
     // will read (stable @JsName properties), with the host's values in them.

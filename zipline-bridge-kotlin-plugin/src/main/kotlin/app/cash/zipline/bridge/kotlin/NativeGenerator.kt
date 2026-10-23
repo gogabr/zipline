@@ -52,9 +52,9 @@ private fun inlineWrapExpression(field: FieldInfo, innerExpr: String): String {
 /** Renders a Kotlin type expression for generated code (short names; classes must be imported). */
 private fun renderedTypeName(type: IrType?): String {
   val simple = type as? IrSimpleType ?: return "Any"
-  val base = effectiveClassFqn(simple)
-  if (simple.arguments.isEmpty()) return base.substringAfterLast(".")
-  return base.substringAfterLast(".") + simple.arguments.joinToString(", ", "<", ">") { arg ->
+  val base = renderSimpleTypeName(effectiveClassFqn(simple))
+  if (simple.arguments.isEmpty()) return base
+  return base + simple.arguments.joinToString(", ", "<", ">") { arg ->
     renderedTypeName((arg as? IrTypeProjection)?.type ?: (arg as? IrType))
   }
 }
@@ -109,6 +109,18 @@ private fun collectRuntimeImports(
 
     else -> needsBridgeForAny.add(Unit)
   }
+}
+
+private val PAIR_KOTLIN_TYPES = setOf("kotlin.Pair")
+
+private val TRIPLE_KOTLIN_TYPES = setOf("kotlin.Triple")
+
+private val ENTRY_KOTLIN_TYPES = setOf("kotlin.collections.Map.Entry", "java.util.Map.Entry")
+
+/** How a simple class is named in generated source (nested types keep their owner). */
+private fun renderSimpleTypeName(fqn: String): String = when (fqn) {
+  "kotlin.collections.Map.Entry", "java.util.Map.Entry" -> "Map.Entry"
+  else -> fqn.substringAfterLast(".")
 }
 
 internal fun generateNativeBridgeFile(
@@ -171,6 +183,8 @@ internal fun generateNativeBridgeFile(
     appendLine("import app.cash.zipline.jsEnumOrdinal")
     appendLine("import app.cash.zipline.jsCollectionToKotlin")
     appendLine("import app.cash.zipline.jsMapToKotlin")
+    appendLine("import app.cash.zipline.jsContainerComponent")
+    appendLine("import app.cash.zipline.jsMapEntry")
     appendLine("import app.cash.zipline.CollectionKind")
     if (needsJsLong.isNotEmpty()) {
       appendLine("import app.cash.zipline.JsNumberToLong")
@@ -389,8 +403,26 @@ internal fun generateNativeBridgeFile(
           appendLine("    val ${field.name} = null")
         }
 
+        field.effectiveKtType in PAIR_KOTLIN_TYPES -> {
+          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          emitContainerField(this, field, emitPairHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref"))
+          appendLine("    ${freeRef()}")
+        }
+
+        field.effectiveKtType in TRIPLE_KOTLIN_TYPES -> {
+          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          emitContainerField(this, field, emitTripleHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref"))
+          appendLine("    ${freeRef()}")
+        }
+
+        field.effectiveKtType in ENTRY_KOTLIN_TYPES -> {
+          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          emitContainerField(this, field, emitEntryHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref"))
+          appendLine("    ${freeRef()}")
+        }
+
         field.isObjectType && field.ktType != "kotlin.Any" -> {
-          val typeName = field.ktType.substringAfterLast(".")
+          val typeName = renderedTypeName(field.type)
           appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
           appendLine("    val ${field.name}DispPtr = HermesBridge_getBridgeDispatch(ctx, ${field.name}Ref)")
           if (field.isNullable) {
@@ -607,6 +639,100 @@ private fun emitPrimitiveArrayHelper(
   return "$name(ctx, $expr)"
 }
 
+/** Declares the typed local for a container field, with the nullable tag check when needed. */
+private fun emitContainerField(
+  body: StringBuilder,
+  field: FieldInfo,
+  conv: String,
+) {
+  val rendered = renderedTypeName(field.type)
+  if (field.isNullable) {
+    body.appendLine("    val ${field.name}Tag = HermesBridge_getValueTag(ctx, ${field.name}Ref)")
+    body.appendLine("    val ${field.name}: $rendered? = if (${field.name}Tag == TAG_UNDEFINED || ${field.name}Tag == TAG_NULL) null else $conv")
+  } else {
+    body.appendLine("    val ${field.name}: $rendered = $conv")
+  }
+}
+
+/** Emits a helper decoding a JS Pair with the declared component types. */
+private fun emitPairHelper(
+  helpers: StringBuilder,
+  name: String,
+  type: IrType?,
+  ctx: String,
+  expr: String,
+): String {
+  val pending = StringBuilder()
+  val firstConv = emitElementConversion(pending, "${name}_first", typeArgument(type, 0), ctx, "firstRef")
+  val secondConv = emitElementConversion(pending, "${name}_second", typeArgument(type, 1), ctx, "secondRef")
+  helpers.appendLine("private fun $name(ctx: COpaquePointer?, handle: Int): ${renderedTypeName(type)} = run {")
+  helpers.appendLine("    val firstRef = jsContainerComponent(ctx, handle, \"first\")")
+  helpers.appendLine("    val first = $firstConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, firstRef)")
+  helpers.appendLine("    val secondRef = jsContainerComponent(ctx, handle, \"second\")")
+  helpers.appendLine("    val second = $secondConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, secondRef)")
+  helpers.appendLine("    Pair(first, second)")
+  helpers.appendLine("}")
+  helpers.appendLine()
+  helpers.append(pending)
+  return "$name(ctx, $expr)"
+}
+
+/** Emits a helper decoding a JS Triple with the declared component types. */
+private fun emitTripleHelper(
+  helpers: StringBuilder,
+  name: String,
+  type: IrType?,
+  ctx: String,
+  expr: String,
+): String {
+  val pending = StringBuilder()
+  val firstConv = emitElementConversion(pending, "${name}_first", typeArgument(type, 0), ctx, "firstRef")
+  val secondConv = emitElementConversion(pending, "${name}_second", typeArgument(type, 1), ctx, "secondRef")
+  val thirdConv = emitElementConversion(pending, "${name}_third", typeArgument(type, 2), ctx, "thirdRef")
+  helpers.appendLine("private fun $name(ctx: COpaquePointer?, handle: Int): ${renderedTypeName(type)} = run {")
+  helpers.appendLine("    val firstRef = jsContainerComponent(ctx, handle, \"first\")")
+  helpers.appendLine("    val first = $firstConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, firstRef)")
+  helpers.appendLine("    val secondRef = jsContainerComponent(ctx, handle, \"second\")")
+  helpers.appendLine("    val second = $secondConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, secondRef)")
+  helpers.appendLine("    val thirdRef = jsContainerComponent(ctx, handle, \"third\")")
+  helpers.appendLine("    val third = $thirdConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, thirdRef)")
+  helpers.appendLine("    Triple(first, second, third)")
+  helpers.appendLine("}")
+  helpers.appendLine()
+  helpers.append(pending)
+  return "$name(ctx, $expr)"
+}
+
+/** Emits a helper decoding a JS Map.Entry with the declared key and value types. */
+private fun emitEntryHelper(
+  helpers: StringBuilder,
+  name: String,
+  type: IrType?,
+  ctx: String,
+  expr: String,
+): String {
+  val pending = StringBuilder()
+  val keyConv = emitElementConversion(pending, "${name}_key", typeArgument(type, 0), ctx, "keyRef")
+  val valueConv = emitElementConversion(pending, "${name}_value", typeArgument(type, 1), ctx, "valueRef")
+  helpers.appendLine("private fun $name(ctx: COpaquePointer?, handle: Int): ${renderedTypeName(type)} = run {")
+  helpers.appendLine("    val keyRef = jsContainerComponent(ctx, handle, \"key\")")
+  helpers.appendLine("    val key = $keyConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, keyRef)")
+  helpers.appendLine("    val valueRef = jsContainerComponent(ctx, handle, \"value\")")
+  helpers.appendLine("    val value = $valueConv")
+  helpers.appendLine("    HermesBridge_freeHandle(ctx, valueRef)")
+  helpers.appendLine("    jsMapEntry(key, value)")
+  helpers.appendLine("}")
+  helpers.appendLine()
+  helpers.append(pending)
+  return "$name(ctx, $expr)"
+}
+
 /**
  * Emits the expression converting a JS value (via a handle in [expr]) of [type] into Kotlin.
  * Simple types convert inline; objects use bridge dispatch; inline value classes are wrapped;
@@ -659,9 +785,15 @@ private fun emitElementConversion(
 
     ktType in PRIMITIVE_ARRAY_ELEMENT_TYPE -> emitPrimitiveArrayHelper(helpers, name, ktType, ctx, expr)
 
+    ktType in PAIR_KOTLIN_TYPES -> emitPairHelper(helpers, name, type, ctx, expr)
+
+    ktType in TRIPLE_KOTLIN_TYPES -> emitTripleHelper(helpers, name, type, ctx, expr)
+
+    ktType in ENTRY_KOTLIN_TYPES -> emitEntryHelper(helpers, name, type, ctx, expr)
+
     else -> {
       // Object element: use bridge dispatch.
-      val typeName = ktType.substringAfterLast(".")
+      val typeName = renderedTypeName(type)
       val isNullableElem = (type as? IrSimpleType)?.isMarkedNullable() ?: false
       if (isNullableElem) {
         "(run { val d = HermesBridge_getBridgeDispatch(ctx, $expr); if (d == 0L) bridgeForAny(ctx, $expr) else d.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!.invoke(ctx, $expr)?.asStableRef<Any>()?.get() } as? $typeName)"

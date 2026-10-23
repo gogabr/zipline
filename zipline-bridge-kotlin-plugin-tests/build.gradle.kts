@@ -164,6 +164,7 @@ tasks {
   // Embed the guest bytecode as base64 constants, shared by jvmTest and nativeTest.
   val generateGuestSource = register("generateGuestSource") {
     dependsOn(compileGuestJs)
+    inputs.dir(layout.buildDirectory.dir("zipline-guest"))
     outputs.dir(generatedGuestDir)
     doLast {
       val ziplineDir = layout.buildDirectory.dir("zipline-guest").get().asFile

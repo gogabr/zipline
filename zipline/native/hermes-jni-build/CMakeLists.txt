@@ -101,6 +101,7 @@ set(GLUE_JNI_SOURCES
   ${HERMES_SRC}/../CdpJni.h
   ${HERMES_SRC}/../ContextJni.cpp
   ${HERMES_SRC}/../ContextJni.h
+  ${HERMES_SRC}/../bridge_dispatch.cpp
   ${HERMES_SRC}/../OutboundCallChannelJni.cpp
   ${HERMES_SRC}/../hermes-jni.cpp
 )

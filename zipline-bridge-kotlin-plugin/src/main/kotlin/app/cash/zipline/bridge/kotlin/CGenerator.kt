@@ -45,6 +45,12 @@ internal fun buildJniClassName(irClass: IrClass): String {
 // -- C/JNI bridge code generation (Android .so) --
 
 /** Map types recognized by the C converter (mirrors the native generator). */
+private val PAIR_C_TYPES = setOf("kotlin.Pair")
+
+private val TRIPLE_C_TYPES = setOf("kotlin.Triple")
+
+private val ENTRY_C_TYPES = setOf("kotlin.collections.Map.Entry", "java.util.Map.Entry")
+
 private val MAP_C_TYPES = setOf(
   "kotlin.collections.Map",
   "kotlin.collections.MutableMap",
@@ -287,7 +293,11 @@ internal fun generateBridgeFile(
       val helpers = StringBuilder()
       for (field in fields) {
         val kt = field.effectiveKtType
-        if (kt == "kotlin.collections.List" || kt == "kotlin.collections.MutableList" || kt in MAP_C_TYPES || kt == "kotlin.Array" || kt in PRIMITIVE_ARRAY_ELEMENT_TYPE) {
+        if (kt == "kotlin.collections.List" || kt == "kotlin.collections.MutableList" ||
+          kt in MAP_C_TYPES || kt == "kotlin.Array" ||
+          kt in PRIMITIVE_ARRAY_ELEMENT_TYPE || kt in PAIR_C_TYPES ||
+          kt in TRIPLE_C_TYPES || kt in ENTRY_C_TYPES
+        ) {
           emitCValueConverter(helpers, "conv_${field.name}", kt, field.type)
         }
       }
@@ -365,7 +375,10 @@ internal fun generateBridgeFile(
           val isCollectionField = field.isArray ||
             field.effectiveKtType == "kotlin.collections.List" ||
             field.effectiveKtType == "kotlin.collections.MutableList" ||
-            field.effectiveKtType in MAP_C_TYPES
+            field.effectiveKtType in MAP_C_TYPES ||
+            field.effectiveKtType in PAIR_C_TYPES ||
+            field.effectiveKtType in TRIPLE_C_TYPES ||
+            field.effectiveKtType in ENTRY_C_TYPES
           val cType = if (nullablePrimitive || isCollectionField) {
             "jobject"
           } else {
@@ -467,6 +480,9 @@ internal fun generateBridgeFile(
             field.effectiveKtType in MAP_C_TYPES ||
               field.effectiveKtType == "kotlin.collections.List" ||
               field.effectiveKtType == "kotlin.collections.MutableList" ||
+              field.effectiveKtType in PAIR_C_TYPES ||
+              field.effectiveKtType in TRIPLE_C_TYPES ||
+              field.effectiveKtType in ENTRY_C_TYPES ||
               field.isArray -> {
               appendLine("        $javaVar = conv_${field.name}(env, rt, js_${field.name});")
             }
@@ -772,6 +788,60 @@ private fun emitCValueConverter(
           }
           env->${info.releaseElementsFn}(arr, elems, 0);
           return arr;
+        }
+        """.trimIndent(),
+      )
+      helpers.appendLine()
+    }
+
+    "kotlin.Pair" -> {
+      val firstType = typeArgument(irType, 0)
+      val secondType = typeArgument(irType, 1)
+      val firstName = "${name}_first"
+      val secondName = "${name}_second"
+      emitCValueConverter(helpers, firstName, effectiveClassFqn(firstType), firstType)
+      emitCValueConverter(helpers, secondName, effectiveClassFqn(secondType), secondType)
+      helpers.appendLine(
+        """
+        static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
+          return jsiBridgePairToJava(env, rt, jsVal, $firstName, $secondName);
+        }
+        """.trimIndent(),
+      )
+      helpers.appendLine()
+    }
+
+    "kotlin.Triple" -> {
+      val firstType = typeArgument(irType, 0)
+      val secondType = typeArgument(irType, 1)
+      val thirdType = typeArgument(irType, 2)
+      val firstName = "${name}_first"
+      val secondName = "${name}_second"
+      val thirdName = "${name}_third"
+      emitCValueConverter(helpers, firstName, effectiveClassFqn(firstType), firstType)
+      emitCValueConverter(helpers, secondName, effectiveClassFqn(secondType), secondType)
+      emitCValueConverter(helpers, thirdName, effectiveClassFqn(thirdType), thirdType)
+      helpers.appendLine(
+        """
+        static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
+          return jsiBridgeTripleToJava(env, rt, jsVal, $firstName, $secondName, $thirdName);
+        }
+        """.trimIndent(),
+      )
+      helpers.appendLine()
+    }
+
+    in ENTRY_C_TYPES -> {
+      val keyType = typeArgument(irType, 0)
+      val valueType = typeArgument(irType, 1)
+      val keyName = "${name}_key"
+      val valueName = "${name}_value"
+      emitCValueConverter(helpers, keyName, effectiveClassFqn(keyType), keyType)
+      emitCValueConverter(helpers, valueName, effectiveClassFqn(valueType), valueType)
+      helpers.appendLine(
+        """
+        static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
+          return jsiBridgeEntryToJava(env, rt, jsVal, $keyName, $valueName);
         }
         """.trimIndent(),
       )

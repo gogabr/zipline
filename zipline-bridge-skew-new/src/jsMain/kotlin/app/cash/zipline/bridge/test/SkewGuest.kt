@@ -52,7 +52,6 @@ fun provideGrowthEnumHolder(): GrowthEnumHolder = GrowthEnumHolder(value = Growt
 @JsExport
 fun provideShiftedEnumHolder(): ShiftedEnumHolder = ShiftedEnumHolder(value = ShiftedEnum.X)
 
-
 @JsExport
 fun provideSealedLeafA(): SealedHolder = SealedHolder(s = SealedShape.LeafA(v = 11))
 

@@ -22,6 +22,7 @@ import app.cash.zipline.testing.newEndpointPair
 import app.cash.zipline.testing.signatureHash
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlinx.coroutines.Dispatchers.Unconfined
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -144,6 +145,25 @@ internal class ManualCallEncodingTest {
       """.trimMargin(),
       prettyPrint(responseJson),
     )
+  }
+
+  @Test
+  fun requestArgsCarryDefaults() = runBlocking(Unconfined) {
+    val (callee, caller) = newEndpointPair(this)
+    callee.bind<SendService>(
+      "service",
+      object : SendService {
+      override fun send(message: MessageWithDefaults) {}
+    },
+    )
+    // Capture the outbound request bytes: the caller's default must be on the wire, not
+    // recomputed by the callee.
+    var captured: String? = null
+    caller.callCodec.nextOutboundCallCallback = { call -> captured = call.encodedCall }
+    caller.take<SendService>("service").send(MessageWithDefaults(name = "x"))
+    val wire = captured!!
+    assertTrue("\"name\":\"x\"" in wire, wire)
+    assertTrue("\"color\":\"blue\"" in wire, wire)
   }
 
   @Test

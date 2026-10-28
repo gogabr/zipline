@@ -133,7 +133,6 @@ class CrossVersionTest {
     assertEquals("ShiftedEnumHolder(value=W)", host.evaluateOne(provide("provideShiftedEnumHolder", id)).toString())
   }
 
-
   /** Sealed leaf the host still has: decodes. */
   @Test fun guestToHost_sealedLeafStillPresent() = withOldGuest { host, id ->
     assertEquals("SealedHolder(s=LeafA(v=11))", host.evaluateOne(provide("provideSealedLeafA", id)).toString())

@@ -150,7 +150,6 @@ class CrossVersionTest {
     assertEquals("ShiftedEnumHolder(value=Y)", host.evaluateOne(provide("provideShiftedEnumHolder", id)).toString())
   }
 
-
   /** Sealed leaf added in the guest: this host has no class to decode it into. */
   @Test fun guestToHost_sealedLeafAddedOnGuest() = withNewGuest { host, id ->
     assertObserved(

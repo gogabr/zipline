@@ -114,8 +114,8 @@ object ZiplineTestInternals {
         object : ReturningZiplineFunction<EchoService>(
           name.signatureHash(),
           name,
-          listOf(requestSerializer),
-          responseSerializer,
+          lazyOf(listOf(requestSerializer)),
+          lazyOf(responseSerializer),
         ) {
           override fun call(service: EchoService, args: List<*>): Any {
             return service.echo(args[0] as EchoRequest)
@@ -158,8 +158,8 @@ object ZiplineTestInternals {
         object : ReturningZiplineFunction<GenericEchoService<String>>(
           name.signatureHash(),
           name,
-          listOf(requestSerializer),
-          responseSerializer,
+          lazyOf(listOf(requestSerializer)),
+          lazyOf(responseSerializer),
         ) {
           override fun call(service: GenericEchoService<String>, args: List<*>): Any {
             return service.genericEcho(args[0] as String)
@@ -202,8 +202,8 @@ object ZiplineTestInternals {
         object : ReturningZiplineFunction<EchoZiplineService>(
           name.signatureHash(),
           name,
-          listOf(requestSerializer),
-          responseSerializer,
+          lazyOf(listOf(requestSerializer)),
+          lazyOf(responseSerializer),
         ) {
           override fun call(service: EchoZiplineService, args: List<*>): Any {
             return service.echo(args[0] as EchoRequest)

@@ -121,16 +121,34 @@ class ZiplineBridgeKotlinPluginTest {
 
       // Class and constructor lookup
       assertTrue(content.contains("FindClass"))
-      assertTrue(content.contains("GetMethodID"))
+      assertTrue(content.contains("jsiGetMethodIdQuiet"))
       assertTrue(content.contains("\"()V\""))
 
       // Object construction
       assertTrue(content.contains("NewObject"))
 
       // Field setting
-      assertTrue(content.contains("GetFieldID"))
+      assertTrue(content.contains("jsiGetFieldIdQuiet"))
       assertTrue(content.contains("SetObjectField(result, _fld_name, java_name)"))
       assertTrue(content.contains("SetIntField(result, _fld_age, java_age)"))
+
+      // Host-missing body field: a NULL cached field ID (GetFieldID failed at load) throws the
+      // mismatch before any JS read, so structural skew surfaces as a catchable exception rather
+      // than a silent default or a Hermes abort. The guard precedes the JS property read.
+      assertTrue(
+        content.contains("if (_fld_name == NULL) {"),
+        "missing host-field guard, content was: $content",
+      )
+      assertTrue(
+        content.contains("jsiThrowHostFieldMissing(env, \"com.example.Bridged\", \"name\")"),
+        "missing host-field throw, content was: $content",
+      )
+      val guardIdx = content.indexOf("if (_fld_name == NULL) {")
+      val readIdx = content.indexOf("getProperty(rt, \"name\")")
+      assertTrue(
+        guardIdx in 0 until readIdx,
+        "guard must precede the JS property read (guard=$guardIdx read=$readIdx)",
+      )
 
       // Return
       assertTrue(content.contains("return result;"))
@@ -594,7 +612,7 @@ class ZiplineBridgeKotlinPluginTest {
       assertTrue(content.contains("jobject java_age;"))
 
       // Pre-lookup of boxed class and constructor
-      assertTrue(content.contains("FindClass(\"java/lang/Integer\")"))
+      assertTrue(content.contains("jsiFindClassQuiet(env, \"java/lang/Integer\")"))
       assertTrue(content.contains("_boxed_age"))
       assertTrue(content.contains("_boxedCtor_age"))
 
@@ -860,7 +878,7 @@ class ZiplineBridgeKotlinPluginTest {
       val content = cFile.readText()
 
       // JNI takes the internal class name; a dotted one is an illegal class name on ART.
-      assertTrue(content.contains("FindClass(\"com/example/protocol/TargetImpl\")"), content)
+      assertTrue(content.contains("jsiFindClassQuiet(env, \"com/example/protocol/TargetImpl\")"), content)
       assertFalse(content.contains("FindClass(\"com.example.protocol.TargetImpl\")"))
       assertTrue(content.contains("JNIEXPORT jlong JNICALL Java_com_example_protocol_TargetImpl_convertToJs"), content)
 
@@ -1085,7 +1103,7 @@ class ZiplineBridgeNativePluginTest {
 
     // String conversion frees the C string
     assertTrue(content.contains("HermesBridge_getValueString(ctx, nameRef)"))
-    assertTrue(content.contains("toKStringFromUtf8()?.also { platform.posix.free(nameStr) }"))
+    assertTrue(content.contains("nameStr!!.toKStringFromUtf8().also { platform.posix.free(nameStr) }"))
 
     // Int extraction
     assertTrue(content.contains("HermesBridge_getValueDouble(ctx, ageRef).toInt()"))
@@ -1366,7 +1384,7 @@ class ZiplineBridgeNativePluginTest {
        // an out-of-range ordinal fails loudly instead of throwing an index exception.
        assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
        assertTrue(content.contains("Color.entries.getOrNull(ordinal)"))
-       assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for Color"))
+      assertTrue(content.contains("host bridge: ordinal \$ordinal is out of range for com.example.Color"))
      } finally {
        outputDir.toFile().deleteRecursively()
      }

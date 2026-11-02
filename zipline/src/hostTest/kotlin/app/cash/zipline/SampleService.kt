@@ -68,39 +68,39 @@ interface SampleService<T> : ZiplineService {
       override val simpleName: String = "SampleService"
 
       class ZiplineFunction0<TF>(
-        argSerializers: List<KSerializer<*>>,
-        resultSerializer: KSerializer<*>,
+        argSerializersLazy: Lazy<List<KSerializer<*>>>,
+        resultSerializerLazy: Lazy<KSerializer<*>>,
       ) : ReturningZiplineFunction<SampleService<TF>>(
         id = "abcd1234",
         signature = "fun ping(app.cash.zipline.SampleRequest): app.cash.zipline.SampleResponse",
-        argSerializers = argSerializers,
-        resultSerializer = resultSerializer,
+        argSerializersLazy = argSerializersLazy,
+        resultSerializerLazy = resultSerializerLazy,
       ) {
         override fun call(service: SampleService<TF>, args: List<*>): Any? = service.ping(args[0] as SampleRequest)
       }
 
       class ZiplineFunction1<TF>(
-        argSerializers: List<KSerializer<*>>,
-        resultSerializer: KSerializer<*>,
-        suspendCallbackSerializer: KSerializer<*>,
+        argSerializersLazy: Lazy<List<KSerializer<*>>>,
+        resultSerializerLazy: Lazy<KSerializer<*>>,
+        suspendCallbackSerializerLazy: Lazy<KSerializer<*>>,
       ) : SuspendingZiplineFunction<SampleService<TF>>(
         id = "efgh5678",
         signature = "suspend fun reduce(List<T>): T",
-        argSerializers = argSerializers,
-        resultSerializer = resultSerializer,
-        suspendCallbackSerializer = suspendCallbackSerializer,
+        argSerializersLazy = argSerializersLazy,
+        resultSerializerLazy = resultSerializerLazy,
+        suspendCallbackSerializerLazy = suspendCallbackSerializerLazy,
       ) {
         override suspend fun callSuspending(service: SampleService<TF>, args: List<*>) = service.reduce(args[0] as List<TF>)
       }
 
       class ZiplineFunction2<TF>(
-        argSerializers: List<KSerializer<*>>,
-        resultSerializer: KSerializer<*>,
+        argSerializersLazy: Lazy<List<KSerializer<*>>>,
+        resultSerializerLazy: Lazy<KSerializer<*>>,
       ) : ReturningZiplineFunction<SampleService<TF>>(
         id = "jklm9012",
         signature = "fun close(): kotlin.Unit",
-        argSerializers = argSerializers,
-        resultSerializer = resultSerializer,
+        argSerializersLazy = argSerializersLazy,
+        resultSerializerLazy = resultSerializerLazy,
       ) {
         override fun call(service: SampleService<TF>, args: List<*>): Any? = service.close()
       }
@@ -109,21 +109,32 @@ interface SampleService<T> : ZiplineService {
         serializersModule: SerializersModule,
       ): List<ZiplineFunction<SampleService<TX>>> {
         val serializers = serializers
-        val sampleRequestSerializer = serializersModule.serializer<SampleRequest>()
-        val sampleResponseSerializer = serializersModule.serializer<SampleResponse>()
-        val listOfTSerializer = serializersModule.requireContextual<List<TX>>(
-          List::class,
-          listOf(serializers[0]),
-        )
-        val unitSerializer = serializersModule.serializer<Unit>()
-        val suspendCallbackTSerializer = ziplineServiceSerializer<SuspendCallback<TX>>(
-          SuspendCallback::class,
-          listOf(serializers[0]),
-        )
+        val sampleRequestSerializerLazy = lazy { serializersModule.serializer<SampleRequest>() }
+        val sampleResponseSerializerLazy = lazy { serializersModule.serializer<SampleResponse>() }
+        val listOfTSerializerLazy = lazy {
+          serializersModule.requireContextual<List<TX>>(
+            List::class,
+            listOf(serializers[0]),
+          )
+        }
+        val unitSerializerLazy = lazy { serializersModule.serializer<Unit>() }
+        val suspendCallbackTSerializerLazy = lazy {
+          ziplineServiceSerializer<SuspendCallback<TX>>(
+            SuspendCallback::class,
+            listOf(serializers[0]),
+          )
+        }
         return listOf(
-          ZiplineFunction0(listOf(sampleRequestSerializer), sampleResponseSerializer),
-          ZiplineFunction1(listOf(listOfTSerializer), serializers[0], suspendCallbackTSerializer),
-          ZiplineFunction2(listOf(), unitSerializer),
+          ZiplineFunction0(
+            lazy { listOf(sampleRequestSerializerLazy.value) },
+            sampleResponseSerializerLazy,
+          ),
+          ZiplineFunction1(
+            lazy { listOf(listOfTSerializerLazy.value) },
+            lazyOf(serializers[0]),
+            suspendCallbackTSerializerLazy,
+          ),
+          ZiplineFunction2(lazyOf(listOf()), unitSerializerLazy),
         )
       }
 

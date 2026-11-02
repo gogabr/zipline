@@ -35,40 +35,45 @@ compilation can emit a bundle without the plugin's IR injections.
 | ✅ | Compatible: values cross correctly. |
 | ✅ lossy | Compatible; one side's extra field is silently dropped. |
 | ⚠️ | Compatible shape, but a value is silently wrong/absent (default, `undefined`). |
-| ❌ | Incompatible: a caught exception with a usable message. |
+| ❌ | Incompatible: a caught `ZiplineApiMismatchException` with a usable message. |
 | ❌ silent wrong | Incompatible with **no** error: the wrong value crosses. |
-| 💀 abort | The process dies (SIGABRT, exit 134). No Kotlin `catch` can see it. |
 | ⛔ blocked | Not expressible with the current generator. |
+
+The bridge invariant: **load time is silent, use time is loud, the process never aborts.** A
+missing class, field, or mistyped read surfaces as a catchable
+`app.cash.zipline.ZiplineApiMismatchException` on every host. The old `💀 abort` verdict (a
+`jsi::JSError` reaching `std::terminate`, exit 134) is gone: the generated C reads body fields
+through checked accessors that throw the mismatch instead of letting a Hermes error escape into JNI.
 
 ## Guest → host
 
-The host's generated converter reads the guest's JS object. "Direction" names the guest bundle and the
-host tree. JVM observed values are from `jvmTest`; the Native column is `macosArm64Test`.
+The host's generated converter reads the guest's JS object. "Direction" names the guest bundle and
+the host tree. JVM observed values are from `jvmTest`; the Native column is `macosArm64Test`.
 
 | Change kind | Direction | Verdict | JVM observed | Kotlin/Native observed | Follow-up |
 |---|---|---|---|---|---|
-| Class added on guest (`OnlyInNew`) | new guest → old host | ❌ | `null` (top-level quiet decode) | `IllegalStateException: host bridge: no converter registered for JS class 'OnlyInNew'; annotate the class with @WithJS2HostBridge to send it to the host` | T1.2 |
-| Class deleted on host (`OnlyInOld`) | old guest → new host | ❌ | `null` | same loud throw for `OnlyInOld` | T1.2 |
+| Class added on guest (`OnlyInNew`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: no converter registered for JS class 'OnlyInNew'; annotate the class with @WithJS2HostBridge to send it to the host` | same | — |
+| Class deleted on host (`OnlyInOld`) | old guest → new host | ❌ | same loud throw for `OnlyInOld` | same | — |
 | Field added on guest (`AddedFieldPayload.c`) | new guest → old host | ✅ lossy | `AddedFieldPayload(a=11, b=af)` — `c` dropped | same | — |
-| Field added on host (`AddedFieldPayload.c`) | old guest → new host | ⚠️ | `AddedFieldPayload(a=11, b=af, c=0.0)` — silent default | same | T1.3 |
-| Field removed on guest (`RemovedFieldPayload.c`) | new guest → old host | ⚠️ | `RemovedFieldPayload(a=11, b=rf, c=0.0)` — silent default | same | T1.3 |
+| Field added on host (`AddedFieldPayload.c`) | old guest → new host | ❌ | `ZiplineApiMismatchException: host bridge: ...AddedFieldPayload.c expects a number but the guest sent undefined` | same | — |
+| Field removed on guest (`RemovedFieldPayload.c`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ...RemovedFieldPayload.c expects a number but the guest sent undefined` | same | — |
 | Field removed on host (`RemovedFieldPayload.c`) | old guest → new host | ✅ | `RemovedFieldPayload(a=11, b=rf)` | same | — |
-| Field renamed, no alias | both | 💀 abort | exit 134, `Value is undefined, expected a String` | not covered (fork harness is JVM-only) | T1.1, T3 |
-| Property retyped Int→String | new guest → old host | 💀 abort | exit 134, `Value is a string, expected a number` | not covered (JVM-only) | T1.1 |
-| Property retyped Int→String | old guest → new host | 💀 abort | exit 134, `Value is a number, expected a String` | not covered (JVM-only) | T1.1 |
-| `null` into non-null String | new guest → old host | 💀 abort | exit 134, `Value is null, expected a String` | not covered (JVM-only) | T1.1 |
+| Field renamed, no alias | both | ❌ | `ZiplineApiMismatchException: host bridge: ...RenamedFieldPayload.<name> expects a string but the guest sent undefined` | same | — |
+| Property retyped Int→String | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ...RetypedFieldPayload.v expects a string but the guest sent a number` | same | — |
+| Property retyped Int→String | old guest → new host | ❌ | `ZiplineApiMismatchException: host bridge: ...RetypedFieldPayload.v expects a number but the guest sent a string` | same | — |
+| `null` into non-null String | old guest → new host | ❌ | `ZiplineApiMismatchException: host bridge: ...NullabilityPayload.v expects a string but the guest sent null` | same | — |
 | Nullability widened (non-null → nullable) | old guest → new host | ✅ | `NullabilityPayload(v=nonnull)` | same | — |
 | Superclass added on guest | new guest → old host | ✅ | `HierarchyPayload(a=11, b=hp)` — old host extracts own fields only | same | — |
-| Superclass inserted on host | old guest → new host | 💀 abort | exit 134, `Value is undefined, expected a number` (host asks for `baseValue` the old guest never sent) | not covered (JVM-only) | T4 |
-| Superclass removed on guest | new guest → old host | 💀 abort | exit 134, `Value is undefined, expected a number` (old host still extracts the base's `inherited`) | not covered (JVM-only) | T4 |
+| Superclass inserted on host | old guest → new host | ❌ / ✅ | `ZiplineApiMismatchException: ...HierarchyPayload.baseValue expects a number but the guest sent undefined` | `HierarchyPayload(a=11, b=hp)` — native never extracts inherited body fields | divergence #1 |
+| Superclass removed on guest | new guest → old host | ❌ / ✅ | `ZiplineApiMismatchException: ...DroppedBasePayload.inherited expects a number but the guest sent undefined` | `DroppedBasePayload(keep=keep)` — native never asks | divergence #1 |
 | Superclass removed on host | old guest → new host | ✅ | `DroppedBasePayload(keep=keep)` | same | — |
 | Interface added on guest | new guest → old host | ✅ | `InterfacePayload(v=11)` — wire-invisible | same | — |
 | Interface gained on host | old guest → new host | ✅ | `InterfacePayload(v=11)` | same | — |
-| Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `NullPointerException: Parameter specified as non-null is null: method ...GrowthEnumHolder.<init>, parameter value` (unknown ordinal decodes to null) | `IllegalStateException: host bridge: ordinal 2 is out of range for GrowthEnum` (range check fires) | T1 |
+| Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for ...GrowthEnum` | same | — |
 | Enum appended on host | old guest → new host | ✅ | `GrowthEnumHolder(value=B)` | same | — |
 | Enum shifted on guest (`W` inserted) | new guest → old host | ❌ silent wrong | `ShiftedEnumHolder(value=Y)` — the guest sent `X` | same | T1 |
 | Enum shifted on host (`W` inserted) | old guest → new host | ❌ silent wrong | `ShiftedEnumHolder(value=W)` — the guest sent `X` | same | T1 |
-| Sealed leaf added on guest (`LeafB`) | new guest → old host | ❌ caught | `IllegalStateException: host bridge: no converter registered for JS class 'LeafB'; annotate the class with @WithJS2HostBridge to send it to the host` | same | T1 |
+| Sealed leaf added on guest (`LeafB`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: no converter registered for JS class 'LeafB'; annotate the class with @WithJS2HostBridge to send it to the host` | same | — |
 | Sealed leaf present in both | both | ✅ | `SealedHolder(s=LeafA(v=11))` | same | — |
 | Value class, Int-backed | both | ✅ | `WrappedHolder(w=WrappedValue(v=42))` | same | — |
 | Value class, reference-backed | both | ⛔ blocked | host bridge fails to compile: `cannot cast from type 'jdouble' to pointer type 'jstring'` | n/a | T5 |
@@ -92,44 +97,43 @@ sees. The guest's prototype registry is the gate on the receiving side.
 | Enum payload | both | ❌ refused by design | `IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; the guest would only see a lookalike, not an enum instance` | same (wrapped, folded) | — |
 | Hierarchy / interface change | both | ✅ | values cross unchanged | same | — |
 
+The host→guest refusals (`no registered prototype`, `is an enum`) stay `IllegalStateException`, not
+`ZiplineApiMismatchException`: they are programmer/setup errors (the guest never registered the class,
+or the host tried to send a type the bridge refuses by design), not version skew. The guest→host
+reads above are the skew path and use the mismatch type.
+
 ## JVM vs Kotlin/Native divergence
 
-Four behavior splits the matrix pins with `assertObserved(..., nativeExpected = ...)`. These are real
+Two behavior splits the matrix pins with `assertObserved(..., nativeExpected = ...)`. These are real
 host-implementation differences, not test artifacts:
 
-1. **Top-level unknown class.** JVM decodes it to `null` (`ContextJni.cpp` passes
-   `throwOnUnsupportedType = false`); Kotlin/Native throws the loud `no converter registered` error.
-   A field-level unknown class is loud on both.
-2. **Enum ordinal out of range.** JVM decodes the unknown ordinal to `null` and the holder's non-null
-   parameter raises an NPE; Kotlin/Native fires the generated range check and throws
-   `ordinal N is out of range`.
-3. **Retyped Int→String host→guest.** The guest stringifies the JS number: `99` on JVM, `99.0` on
+1. **Non-constructor `val` body fields.** The gate is `extractFields`'s `includeValBodyFields`
+   flag, not inheritance: the JVM C generator passes `true`, the native generator leaves the
+   default `false`, so a `val` that is not a constructor parameter (own or inherited — the
+   fixture's `baseValue` happens to be inherited) is read and populated on JVM but never asked
+   for on native, which silently keeps the host's own default. The flag exists because the two
+   backends write fields with different primitives: JNI `SetIntField`/`SetObjectField` pokes the
+   backing field directly and can set a `val` after construction, while the native generator's
+   `_obj.name = value` is ordinary Kotlin and won't compile against a `val`. `var` body fields
+   pass on both. Left as-is: native's constructor-only model matches Kotlin semantics, and the
+   silent default only bites when the host's default differs from what the guest meant to send.
+2. **Retyped Int→String host→guest.** The guest stringifies the JS number: `99` on JVM, `99.0` on
    Kotlin/Native.
-4. **Host→JS conversion failure type.** Kotlin/Native's `callGuestFunction` wraps it in `JsException`
-   with a `cannot convert argument N of class X to JS:` prefix; the JVM throws `IllegalStateException`
-   with the same inner message. `normalizeBridgeMessage` folds the wrapper because it is a
-   harness-path difference, not a bridge-semantics one.
 
 Message dialect is also folded: JVM C-generated messages are lowercase `host2js:` with a bare class
-name; Kotlin/Native's are uppercase `HOST2JS:` and quote it.
+name; Kotlin/Native's are uppercase `HOST2JS:` and quote it. `normalizeBridgeMessage` folds the
+`JsException` wrapper on the host→guest path because it is a harness-path difference, not a
+bridge-semantics one.
 
-## 💀 abort rows
+## No abort
 
-A guest→host read of an absent or mistyped **String** or **number** property throws a C++
-`jsi::JSError` inside Hermes. It has no JNI landing pad, so it reaches `std::terminate` and the
-process dies with SIGABRT (exit 134). No Kotlin `catch` can see it, and `forkEvery=1` is per-class,
-not per-method, so an in-process assertion would take the whole test class down. `SkewAbortForkTest`
-(jvmTest) forks a JVM per scenario and pins the exit code plus the Hermes message:
-
-| Scenario | Hermes message |
-|---|---|
-| `fieldRenamed` | `Value is undefined, expected a String` |
-| `fieldRetyped` (new host) | `Value is a number, expected a String` |
-| `fieldRetyped` (old host) | `Value is a string, expected a number` |
-| `nullIntoNonNullable` | `Value is null, expected a String` |
-| `superclassInserted` / `superclassRemovedOnGuest` | `Value is undefined, expected a number` |
-
-These are the headline evidence for T1: the failure is a crash, not a caught exception.
+The old `💀 abort` rows (a guest→host read of an absent or mistyped String/number throwing a
+`jsi::JSError` inside Hermes with no JNI landing pad, reaching `std::terminate` at exit 134) are
+gone. The generated C now reads every body field through a checked accessor guarded by
+`if (_fld_<name> == NULL)` and a tag check, throwing `ZiplineApiMismatchException` before any
+Hermes error can escape. No scenario in the matrix kills the process; every incompatible read is a
+catchable Kotlin exception on both hosts. The fork harness (`SkewAbortForkTest`) that pinned those
+exit codes is deleted.
 
 ## Frozen-snapshot convention
 

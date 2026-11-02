@@ -12,6 +12,7 @@
  */
 package app.cash.zipline.bridge.test
 
+import app.cash.zipline.ZiplineApiMismatchException
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -392,7 +393,7 @@ class Host2JsBridgeEndToEndTest {
         "}; 0",
     )
     try {
-      val e = assertFailsWith<IllegalStateException> {
+      val e = assertFailsWith<ZiplineApiMismatchException> {
         host.callGuestFunction("__provideNotBridgedGuest", emptyList())
       }
       assertEquals(true, e.message!!.contains("NotBridgedGuest"), "message was: " + e.message)

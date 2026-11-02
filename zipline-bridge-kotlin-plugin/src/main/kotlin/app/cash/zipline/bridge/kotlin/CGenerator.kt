@@ -18,6 +18,16 @@ import org.jetbrains.kotlin.name.FqName
 
 internal const val KEEP_NAMES_FILE = "bridge-keep-names.txt"
 
+// Tag values mirroring the JS tag enum in bridge_dispatch.h, used by the generated
+// runtime type checks. Kept in sync with that header by hand.
+private const val JS_TAG_INT = 0
+private const val JS_TAG_BOOL = 1
+private const val JS_TAG_NULL = 2
+private const val JS_TAG_UNDEFINED = 3
+private const val JS_TAG_STRING = 4
+private const val JS_TAG_OBJECT = 5
+private const val JS_TAG_FLOAT64 = 7
+
 internal fun cFunctionPrefix(fqName: FqName): String = fqName.asString().replace(".", "_")
 
 internal fun cFileName(fqName: FqName): String = cFunctionPrefix(fqName) + ".cpp"
@@ -71,6 +81,10 @@ internal fun generateBridgeFile(
   // name. The dotted form ([protoFqn]) remains the bridge key shared with the guest's registration.
   val jniClassName = targetFqn?.replace('.', '/') ?: buildJniClassName(annotatedClass)
   val jsClassName = fqName.asString()
+  // The class name in mismatch messages is the dotted host FQN, not the JNI internal name: the
+  // Kotlin/Native decoder names the same class with dots, and the invariant requires one message
+  // form on both hosts. JNI lookups keep [jniClassName]; only messages use this.
+  val msgClassName = targetFqn ?: jsClassName
   // Prototype lookup key: identical to the JS-side module-load registration key.
   val protoFqn = targetFqn ?: fqName.asString()
 
@@ -165,89 +179,79 @@ internal fun generateBridgeFile(
     appendLine()
 
     // -- _init: cache JNI references (called once from main thread via init_all) --
+    //
+    // Load time never throws. Every lookup here clears the exception it raises and records the
+    // reference as NULL; the failure is reported at use time, when the bridged class is actually
+    // touched (jsiThrowClassInitFailed / jsiThrowHostFieldMissing / jsiThrowFieldMismatch).
+    // Leaving a pending NoSuchFieldError/NoClassDefFoundError here would surface during library
+    // load, before any user code runs, which is the wrong time and the wrong place.
     appendLine("void ${functionPrefix}_init(JNIEnv *env) {")
-    appendLine("    if (_cls != NULL) return;")
-    appendLine("    jclass local = env->FindClass(\"$jniClassName\");")
-    appendLine("    if (env->ExceptionCheck()) {")
+    appendLine("    // Runs exactly once regardless of outcome: a cleared NULL class must not make")
+    appendLine("    // every later call re-resolve.")
+    appendLine("    static bool _init_attempted = false;")
+    appendLine("    if (_init_attempted) return;")
+    appendLine("    _init_attempted = 1;")
+    appendLine("    jclass local = jsiFindClassQuiet(env, \"$jniClassName\");")
+    appendLine("    if (local == NULL) {")
     appendLine("#ifdef __ANDROID__")
-    appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_init FAILED: FindClass for $jniClassName\");")
+    appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_init: $jniClassName not found; use will report it\");")
     appendLine("#endif")
-    appendLine("        // Leave the pending exception pending: it propagates to the JVM and crashes.")
+    appendLine("        _cls = NULL;")
     appendLine("        return;")
     appendLine("    }")
     appendLine("    _cls = (jclass)env->NewGlobalRef(local);")
+    appendLine("    env->DeleteLocalRef(local);")
     if (!isObject && !isEnum) {
-      appendLine("    _ctor = env->GetMethodID(_cls, \"<init>\", \"$constructorSig\");")
-      appendLine("    if (env->ExceptionCheck()) {")
-      appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
-      appendLine("        _ctor = NULL;")
-      appendLine("    }")
+      appendLine("    _ctor = jsiGetMethodIdQuiet(env, _cls, \"<init>\", \"$constructorSig\");")
     }
     if (isEnum) {
-      appendLine("    _valuesMethod = env->GetStaticMethodID(_cls, \"values\", \"()[L$jniClassName;\");")
-      appendLine("    if (env->ExceptionCheck()) {")
-      appendLine("        // Let the pending NoSuchMethodError propagate instead of clearing it.")
-      appendLine("        _valuesMethod = NULL;")
-      appendLine("    }")
+      appendLine("    _valuesMethod = jsiGetStaticMethodIdQuiet(env, _cls, \"values\", \"()[L$jniClassName;\");")
     }
     if (isCompanion) {
       val outerJni = buildJniClassName(annotatedClass.parent as IrClass)
       appendLine("    {")
-      appendLine("        jclass outerLocal = env->FindClass(\"$outerJni\");")
-      appendLine("        if (env->ExceptionCheck()) { /* pending exception propagates */ return; }")
+      appendLine("        jclass outerLocal = jsiFindClassQuiet(env, \"$outerJni\");")
+      appendLine("        if (outerLocal == NULL) { _outerCls = NULL; _companionField = NULL; return; }")
       appendLine("        _outerCls = (jclass)env->NewGlobalRef(outerLocal);")
-      appendLine("        _companionField = env->GetStaticFieldID(_outerCls, \"Companion\", \"$instanceSig\");")
+      appendLine("        env->DeleteLocalRef(outerLocal);")
+      appendLine("        _companionField = jsiGetStaticFieldIdQuiet(env, _outerCls, \"Companion\", \"$instanceSig\");")
       appendLine("    }")
     } else if (isObject) {
-      appendLine("    _instField = env->GetStaticFieldID(_cls, \"INSTANCE\", \"$instanceSig\");")
+      appendLine("    _instField = jsiGetStaticFieldIdQuiet(env, _cls, \"INSTANCE\", \"$instanceSig\");")
     }
     for (f in nullablePrimitiveFields) {
       val info = boxedPrimitiveInfo[f.ktType]!!
       appendLine("    {")
-      appendLine("        jclass boxed = env->FindClass(\"${info.wrapperClass}\");")
-      appendLine("        _boxed_${f.name} = (jclass)env->NewGlobalRef(boxed);")
-      appendLine("        _boxedCtor_${f.name} = env->GetMethodID(_boxed_${f.name}, \"<init>\", \"${info.ctorSig}\");")
+      appendLine("        jclass boxed = jsiFindClassQuiet(env, \"${info.wrapperClass}\");")
+      appendLine("        if (boxed != NULL) {")
+      appendLine("            _boxed_${f.name} = (jclass)env->NewGlobalRef(boxed);")
+      appendLine("            env->DeleteLocalRef(boxed);")
+      appendLine("            _boxedCtor_${f.name} = jsiGetMethodIdQuiet(env, _boxed_${f.name}, \"<init>\", \"${info.ctorSig}\");")
+      appendLine("        }")
       appendLine("    }")
     }
     if (hasAnyField || hasCollectionField) {
       appendLine("    // Init boxed type refs for Any? value dispatch")
-      appendLine("    if (_any_boxed_Integer_cls == NULL) {")
-      appendLine("        jclass intLocal = env->FindClass(\"java/lang/Integer\");")
-      appendLine("        _any_boxed_Integer_cls = (jclass)env->NewGlobalRef(intLocal);")
-      appendLine("        _any_boxed_Integer_ctor = env->GetMethodID(_any_boxed_Integer_cls, \"<init>\", \"(I)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Double_cls == NULL) {")
-      appendLine("        jclass dblLocal = env->FindClass(\"java/lang/Double\");")
-      appendLine("        _any_boxed_Double_cls = (jclass)env->NewGlobalRef(dblLocal);")
-      appendLine("        _any_boxed_Double_ctor = env->GetMethodID(_any_boxed_Double_cls, \"<init>\", \"(D)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Boolean_cls == NULL) {")
-      appendLine("        jclass boolLocal = env->FindClass(\"java/lang/Boolean\");")
-      appendLine("        _any_boxed_Boolean_cls = (jclass)env->NewGlobalRef(boolLocal);")
-      appendLine("        _any_boxed_Boolean_ctor = env->GetMethodID(_any_boxed_Boolean_cls, \"<init>\", \"(Z)V\");")
-      appendLine("    }")
-      appendLine("    if (_any_boxed_Float_cls == NULL) {")
-      appendLine("        jclass fltLocal = env->FindClass(\"java/lang/Float\");")
-      appendLine("        _any_boxed_Float_cls = (jclass)env->NewGlobalRef(fltLocal);")
-      appendLine("        _any_boxed_Float_ctor = env->GetMethodID(_any_boxed_Float_cls, \"<init>\", \"(F)V\");")
-      appendLine("    }")
+      for (boxed in listOf("Integer" to "(I)V", "Double" to "(D)V", "Boolean" to "(Z)V", "Float" to "(F)V")) {
+        val (name, sig) = boxed
+        appendLine("    if (_any_boxed_${name}_cls == NULL) {")
+        appendLine("        jclass local$name = jsiFindClassQuiet(env, \"java/lang/$name\");")
+        appendLine("        if (local$name != NULL) {")
+        appendLine("            _any_boxed_${name}_cls = (jclass)env->NewGlobalRef(local$name);")
+        appendLine("            env->DeleteLocalRef(local$name);")
+        appendLine("            _any_boxed_${name}_ctor = jsiGetMethodIdQuiet(env, _any_boxed_${name}_cls, \"<init>\", \"$sig\");")
+        appendLine("        }")
+        appendLine("    }")
+      }
     }
     if (!isEnum) {
       for (f in bodyFields) {
-        appendLine("    _fld_${f.name} = env->GetFieldID(_cls, \"${f.name}\", \"${f.jniFieldType}\");")
-        appendLine("    if (env->ExceptionCheck()) {")
-        appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
-        appendLine("        _fld_${f.name} = NULL;")
-        appendLine("    }")
+        appendLine("    _fld_${f.name} = jsiGetFieldIdQuiet(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
       }
     }
     if (host2JsImpl) {
       for (f in host2JsFields) {
-        appendLine("    _h2j_fld_${f.name} = env->GetFieldID(_cls, \"${f.name}\", \"${f.jniFieldType}\");")
-        appendLine("    if (env->ExceptionCheck()) {")
-        appendLine("        // Let the pending NoSuchFieldError propagate instead of clearing it.")
-        appendLine("        _h2j_fld_${f.name} = NULL;")
-        appendLine("    }")
+        appendLine("    _h2j_fld_${f.name} = jsiGetFieldIdQuiet(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
       }
       for (f in host2JsUnboxFields) {
         val underlying = f.underlyingKtType
@@ -263,16 +267,9 @@ internal fun generateBridgeFile(
         // inline class), and FindClass takes an internal name, never a JNI descriptor.
         val inlineJni = f.irClass?.let { buildJniClassName(it) } ?: f.ktType.replace('.', '/')
         appendLine("    {")
-        appendLine("        jclass _inlineCls = env->FindClass(\"$inlineJni\");")
-        appendLine("        if (env->ExceptionCheck()) {")
-        appendLine("            // Let the pending ClassNotFoundException propagate instead of clearing it.")
-        appendLine("            _h2j_unbox_${f.name} = NULL;")
-        appendLine("        } else {")
-        appendLine("            _h2j_unbox_${f.name} = env->GetMethodID(_inlineCls, \"unbox-impl\", \"$unboxSig\");")
-        appendLine("            if (env->ExceptionCheck()) {")
-        appendLine("                // Let the pending NoSuchMethodError propagate instead of clearing it.")
-        appendLine("                _h2j_unbox_${f.name} = NULL;")
-        appendLine("            }")
+        appendLine("        jclass _inlineCls = jsiFindClassQuiet(env, \"$inlineJni\");")
+        appendLine("        if (_inlineCls != NULL) {")
+        appendLine("            _h2j_unbox_${f.name} = jsiGetMethodIdQuiet(env, _inlineCls, \"unbox-impl\", \"$unboxSig\");")
         appendLine("            env->DeleteLocalRef(_inlineCls);")
         appendLine("        }")
         appendLine("    }")
@@ -296,33 +293,34 @@ internal fun generateBridgeFile(
         appendLine()
       }
 
-      appendLine("static jobject ${functionPrefix}_toJavaObject(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsObj) {")
+      // The pad is the backstop for every nested decode inside this converter: a collection
+      // element, a sub-object converter, or a getProperty on a proxy can still raise a C++
+      // exception. Without a catch here it unwinds out of the extern "C" JNI frame and reaches
+      // std::terminate. Catch jsi::JSIException, the common base: the number/bool reads throw
+      // JSINativeException, a sibling of jsi::JSError, so catching JSError alone leaves those
+      // aborting.
+      appendLine("static jobject ${functionPrefix}_toJavaObjectInner(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsObj) {")
+      // Use time is loud: a NULL cached reference means the load-time init failed (the JVM class
+      // or one of its members is missing), so the first use reports the mismatch instead of
+      // returning a silent NULL.
       if (isEnum) {
         appendLine("    if (_cls == NULL || _valuesMethod == NULL) {")
-        appendLine("#ifdef __ANDROID__")
-        appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_toJavaObject: cached refs NULL for $jniClassName\");")
-        appendLine("#endif")
+        appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
         appendLine("        return NULL;")
         appendLine("    }")
       } else if (!isObject) {
         appendLine("    if (_cls == NULL || _ctor == NULL) {")
-        appendLine("#ifdef __ANDROID__")
-        appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_toJavaObject: cached refs NULL for $jniClassName\");")
-        appendLine("#endif")
+        appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
         appendLine("        return NULL;")
         appendLine("    }")
       } else if (isCompanion) {
         appendLine("    if (_cls == NULL || _outerCls == NULL || _companionField == NULL) {")
-        appendLine("#ifdef __ANDROID__")
-        appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_toJavaObject: cached refs NULL for $jniClassName\");")
-        appendLine("#endif")
+        appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
         appendLine("        return NULL;")
         appendLine("    }")
       } else {
         appendLine("    if (_cls == NULL || _instField == NULL) {")
-        appendLine("#ifdef __ANDROID__")
-        appendLine("        __android_log_print(ANDROID_LOG_WARN, \"BRIDGE\", \"_toJavaObject: cached refs NULL for $jniClassName\");")
-        appendLine("#endif")
+        appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
         appendLine("        return NULL;")
         appendLine("    }")
       }
@@ -335,8 +333,8 @@ internal fun generateBridgeFile(
         appendLine("    jint ordinal = jsiBridgeEnumOrdinal(env, rt, jsObj);")
         appendLine("    if (env->ExceptionCheck()) return NULL;")
         appendLine("    if (ordinal < 0) {")
-        appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"),")
-        appendLine("            \"host bridge: the guest value for $jsClassName is not an enum instance\");")
+        appendLine("        jsiThrowApiMismatch(env,")
+        appendLine("            \"host bridge: the guest value for $msgClassName is not an enum instance\");")
         appendLine("        return NULL;")
         appendLine("    }")
         appendLine("    jobjectArray values = (jobjectArray)env->CallStaticObjectMethod(_cls, _valuesMethod);")
@@ -344,8 +342,8 @@ internal fun generateBridgeFile(
         appendLine("    // Out-of-range index here would abort the VM inside GetObjectArrayElement.")
         appendLine("    if (ordinal >= env->GetArrayLength(values)) {")
         appendLine("        std::string _msg = \"host bridge: ordinal \" + std::to_string(ordinal) +")
-        appendLine("            \" is out of range for $jsClassName\";")
-        appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"), _msg.c_str());")
+        appendLine("            \" is out of range for $msgClassName\";")
+        appendLine("        jsiThrowApiMismatch(env, _msg.c_str());")
         appendLine("        return NULL;")
         appendLine("    }")
         appendLine("    jobject result = env->GetObjectArrayElement(values, ordinal);")
@@ -358,6 +356,16 @@ internal fun generateBridgeFile(
         }
 
         // Extract each field from the JS object
+        // Use time is loud. A scalar read that the guest's value cannot supply throws
+        // ZiplineApiMismatchException naming the class, field, expected type and the JS kind seen,
+        // instead of coercing to 0 / "" / false or aborting inside Hermes.
+        fun StringBuilder.requireTag(name: String, accepted: Set<Int>, expected: String) {
+          appendLine("        int tag_$name = jsi_value_tag(rt, js_$name);")
+          appendLine("        if (${accepted.joinToString(" && ") { "tag_$name != $it" }}) {")
+          appendLine("            jsiThrowFieldMismatch(env, \"$msgClassName\", \"$name\", \"$expected\", tag_$name);")
+          appendLine("            return NULL;")
+          appendLine("        }")
+        }
         for (field in fields) {
           val nullablePrimitive = field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType)
           // Non-nullable inline value classes are erased to their underlying JNI primitive on JVM,
@@ -373,6 +381,18 @@ internal fun generateBridgeFile(
           }
           val javaVar = "java_${field.name}"
 
+          // Host-missing field, checked first: a NULL cached field ID means GetFieldID failed at
+          // load, so the runtime host class does not declare this body field even though the
+          // compiled bridge expects it. That is structural skew and throws regardless of
+          // nullability - a nullable field the host cannot hold is still a field the host lacks.
+          // Constructor-field skew surfaces differently (_ctor == NULL) and is caught by the
+          // class-level guard above.
+          if (!field.isConstructorParam) {
+            appendLine("    if (_fld_${field.name} == NULL) {")
+            appendLine("        jsiThrowHostFieldMissing(env, \"$msgClassName\", \"${field.name}\");")
+            appendLine("        return NULL;")
+            appendLine("    }")
+          }
           appendLine("    jsi::Value js_${field.name} = jsObj.asObject(rt).getProperty(rt, \"${field.jsPropertyName}\");")
           // For Long-backed inline classes (e.g. Color), the JS object may be unboxed —
           // *jsObj IS the Long {low_1, high_1} with no .value wrapper. If .value is
@@ -406,18 +426,22 @@ internal fun generateBridgeFile(
             }
 
             field.effectiveKtType == "kotlin.Boolean" -> {
+              requireTag(field.name, setOf(JS_TAG_BOOL), "a boolean")
               appendLine("        $javaVar = (jboolean)js_${field.name}.asBool();")
             }
 
             field.effectiveKtType == "kotlin.Byte" -> {
+              requireTag(field.name, setOf(JS_TAG_INT, JS_TAG_FLOAT64), "a number")
               appendLine("        $javaVar = (jbyte)jsi_value_get_int(js_${field.name});")
             }
 
             field.effectiveKtType == "kotlin.Short" -> {
+              requireTag(field.name, setOf(JS_TAG_INT, JS_TAG_FLOAT64), "a number")
               appendLine("        $javaVar = (jshort)jsi_value_get_int(js_${field.name});")
             }
 
             field.effectiveKtType == "kotlin.Int" -> {
+              requireTag(field.name, setOf(JS_TAG_INT, JS_TAG_FLOAT64), "a number")
               appendLine("        $javaVar = (jint)jsi_value_get_int(js_${field.name});")
             }
 
@@ -432,10 +456,8 @@ internal fun generateBridgeFile(
               appendLine("            $javaVar = jsiBridgeLongValue(env, rt, js_${field.name});")
               appendLine("            if (env->ExceptionCheck()) return NULL;")
               appendLine("        } else {")
-              appendLine("#ifdef __ANDROID__")
-              appendLine("            __android_log_print(ANDROID_LOG_ERROR, \"BRIDGE\", \"Long field ${field.name}: unexpected JS tag %d\", tag_${field.name});")
-              appendLine("#endif")
-              appendLine("            $javaVar = 0;")
+              appendLine("            jsiThrowFieldMismatch(env, \"$msgClassName\", \"${field.name}\", \"a number\", tag_${field.name});")
+              appendLine("            return NULL;")
               appendLine("        }")
             }
 
@@ -447,19 +469,20 @@ internal fun generateBridgeFile(
               appendLine("        } else if (tag_${field.name}_d == JS_TAG_INT) {")
               appendLine("            $javaVar = ${cast}jsi_value_get_int(js_${field.name});")
               appendLine("        } else {")
-              appendLine("#ifdef __ANDROID__")
-              appendLine("            __android_log_print(ANDROID_LOG_ERROR, \"BRIDGE\", \"Float/Double field ${field.name}: unexpected JS tag %d\", tag_${field.name}_d);")
-              appendLine("#endif")
-              appendLine("            /* JS_TAG_UNDEFINED=3, JS_TAG_NULL=2 */")
-              appendLine("            $javaVar = 0;")
+              appendLine("            jsiThrowFieldMismatch(env, \"$msgClassName\", \"${field.name}\", \"a number\", tag_${field.name}_d);")
+              appendLine("            return NULL;")
               appendLine("        }")
             }
 
             field.effectiveKtType == "kotlin.Char" -> {
+              requireTag(field.name, setOf(JS_TAG_INT, JS_TAG_FLOAT64), "a number")
               appendLine("        $javaVar = (jchar)jsi_value_get_int(js_${field.name});")
             }
 
             field.effectiveKtType == "kotlin.String" -> {
+              // asString() throws jsi::JSError on a non-string; the tag check keeps it behind the
+              // check so the failure is the catchable mismatch, never an escaping C++ exception.
+              requireTag(field.name, setOf(JS_TAG_STRING), "a string")
               appendLine("        std::string str_${field.name} = js_${field.name}.asString(rt).utf8(rt);")
               appendLine("        $javaVar = env->NewStringUTF(str_${field.name}.c_str());")
             }
@@ -491,6 +514,9 @@ internal fun generateBridgeFile(
               appendLine("        } else {")
               appendLine("            JniBridgeDispatch *disp_${field.name} = (JniBridgeDispatch *)_bridge_ptr_${field.name};")
               appendLine("            $javaVar = disp_${field.name}->toJavaObject(env, rt, js_${field.name});")
+              appendLine("            // A nested converter that failed leaves its own exception pending; return so it")
+              appendLine("            // propagates instead of a null argument firing the constructor's null check.")
+              appendLine("            if (env->ExceptionCheck()) return NULL;")
               appendLine("        }")
             }
           }
@@ -523,7 +549,8 @@ internal fun generateBridgeFile(
         appendLine("    if (env->ExceptionCheck()) return NULL;")
         appendLine()
 
-        // Set body fields using cached field IDs
+        // Set body fields. The host-missing check at each field's decode already returned for a
+        // NULL field ID, so every _fld_* here is present; the old `!= NULL` skip is gone.
         if (!isEnum && bodyFields.isNotEmpty()) {
           appendLine("    // Set non-constructor fields")
           for (field in bodyFields) {
@@ -532,9 +559,7 @@ internal fun generateBridgeFile(
               field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType) -> "SetObjectField"
               else -> kotlinToSetFieldFunction[field.effectiveKtType] ?: "SetObjectField"
             }
-            appendLine("    if (_fld_${field.name} != NULL) {")
-            appendLine("        env->$setFn(result, _fld_${field.name}, $javaVar);")
-            appendLine("    }")
+            appendLine("    env->$setFn(result, _fld_${field.name}, $javaVar);")
           }
           appendLine()
         }
@@ -543,13 +568,28 @@ internal fun generateBridgeFile(
         appendLine("}")
       } // end else (non-enum)
 
+      appendLine("static jobject ${functionPrefix}_toJavaObject(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsObj) {")
+      appendLine("    try {")
+      appendLine("        return ${functionPrefix}_toJavaObjectInner(env, rt, jsObj);")
+      appendLine("    } catch (const jsi::JSIException &e) {")
+      appendLine("        jsiThrowBridgeEscape(env, \"$msgClassName\", e.what());")
+      appendLine("        return NULL;")
+      appendLine("    } catch (const std::exception &e) {")
+      appendLine("        jsiThrowBridgeEscape(env, \"$msgClassName\", e.what());")
+      appendLine("        return NULL;")
+      appendLine("    }")
+      appendLine("}")
+
       if (isInlineClass(annotatedClass) && !isObject && constructorFields.size == 1) {
         val underlyingField = constructorFields[0]
         val underlyingCType = kotlinToCType[underlyingField.effectiveKtType] ?: "jobject"
         appendLine()
         appendLine("jobject ${functionPrefix}_fromValue(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {")
         appendLine("    ${functionPrefix}_init(env);")
-        appendLine("    if (_cls == NULL || _ctor == NULL) return NULL;")
+        appendLine("    if (_cls == NULL || _ctor == NULL) {")
+        appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
+        appendLine("        return NULL;")
+        appendLine("    }")
         appendLine("    $underlyingCType java_v;")
         appendLine("    {")
         appendLine("        int tag_v = jsi_value_tag(rt, jsVal);")
@@ -563,11 +603,11 @@ internal fun generateBridgeFile(
           appendLine("            java_v = ($underlyingCType)jsiBridgeLongValue(env, rt, jsVal);")
           appendLine("            if (env->ExceptionCheck()) return NULL;")
         }
+        // The old branch folded an unexpected tag to 0; the invariant makes it a loud mismatch.
+        // The accepted tag set is unchanged from before (numbers, plus a boxed Long object).
         appendLine("        } else {")
-        appendLine("#ifdef __ANDROID__")
-        appendLine("            __android_log_print(ANDROID_LOG_ERROR, \"BRIDGE\", \"_fromValue: unexpected JS tag %d\", tag_v);")
-        appendLine("#endif")
-        appendLine("            java_v = 0;")
+        appendLine("            jsiThrowFieldMismatch(env, \"$msgClassName\", \"${underlyingField.name}\", \"a number\", tag_v);")
+        appendLine("            return NULL;")
         appendLine("        }")
         appendLine("    }")
         appendLine("    jobject result = env->NewObject(_cls, _ctor, java_v);")

@@ -665,6 +665,12 @@ const char* HermesContext_getLastError(void* context) {
     return g_lastError;
 }
 
+void HermesContext_setHostError(void* context, const char* message) {
+    if (context) {
+        asNativeContext(context)->lastError = message ? message : "";
+    }
+}
+
 int HermesContext_setupOutboundCallChannel(void* context) {
     if (!context) {
         snprintf(g_lastError, sizeof(g_lastError), "Invalid context");
@@ -690,11 +696,23 @@ int HermesContext_setupOutboundCallChannel(void* context) {
 
             ContextNative* ctx = asNativeContext(context);
             if (ctx->outboundCallFn) {
+                // Clear any stale error so the NULL branch below can tell a
+                // Kotlin-side throw (message recorded via
+                // HermesContext_setHostError) from a genuine null result.
+                ctx->lastError.clear();
                 char* result = (char*)ctx->outboundCallFn(context, callJson.c_str());
                 if (result) {
                     jsi::Value jsResult = jsi::String::createFromUtf8(runtime, std::string(result));
                     free(result);
                     return jsResult;
+                }
+                if (!ctx->lastError.empty()) {
+                    // The Kotlin callback caught an exception (e.g. a missing
+                    // serializer) and recorded its message. Re-raise it as a
+                    // JS error so it propagates through JS and surfaces on
+                    // the outer evaluate boundary with its message intact,
+                    // mirroring the JNI path's throwJavaExceptionFromJs.
+                    throw jsi::JSError(runtime, ctx->lastError);
                 }
             }
             return jsi::Value::undefined();
@@ -712,7 +730,13 @@ int HermesContext_setupOutboundCallChannel(void* context) {
 
             ContextNative* ctx = asNativeContext(context);
             if (ctx->outboundDisconnectFn) {
+                // See the call lambda above: a Kotlin-side throw is recorded
+                // on the context and re-raised here as a JS error.
+                ctx->lastError.clear();
                 int result = ctx->outboundDisconnectFn(context, instanceName.c_str());
+                if (!ctx->lastError.empty()) {
+                    throw jsi::JSError(runtime, ctx->lastError);
+                }
                 return jsi::Value(result != 0);
             }
             return jsi::Value(false);

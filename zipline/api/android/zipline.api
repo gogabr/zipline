@@ -500,7 +500,7 @@ public abstract interface class app/cash/zipline/internal/bridge/PassByReference
 }
 
 public abstract class app/cash/zipline/internal/bridge/ReturningZiplineFunction : app/cash/zipline/ZiplineFunction {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlinx/serialization/KSerializer;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/Lazy;Lkotlin/Lazy;)V
 	public abstract fun call (Lapp/cash/zipline/ZiplineService;Ljava/util/List;)Ljava/lang/Object;
 	public final fun getArgsListSerializer ()Lapp/cash/zipline/internal/bridge/ArgsListSerializer;
 	public fun getId ()Ljava/lang/String;
@@ -568,7 +568,7 @@ public final class app/cash/zipline/internal/bridge/SuspendCallback$DefaultImpls
 }
 
 public abstract class app/cash/zipline/internal/bridge/SuspendingZiplineFunction : app/cash/zipline/ZiplineFunction {
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/List;Lkotlinx/serialization/KSerializer;Lkotlinx/serialization/KSerializer;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Lkotlin/Lazy;Lkotlin/Lazy;Lkotlin/Lazy;)V
 	public abstract fun callSuspending (Lapp/cash/zipline/ZiplineService;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getArgsListSerializer ()Lapp/cash/zipline/internal/bridge/ArgsListSerializer;
 	public fun getId ()Ljava/lang/String;

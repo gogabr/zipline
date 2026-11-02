@@ -17,8 +17,10 @@ package app.cash.zipline.kotlin
 
 import org.jetbrains.kotlin.backend.common.ScopeWithIr
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
@@ -50,6 +52,7 @@ import org.jetbrains.kotlin.ir.declarations.IrTypeParametersContainer
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrContainerExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrFunctionExpressionImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
@@ -67,7 +70,10 @@ import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.isGetter
 import org.jetbrains.kotlin.ir.util.isSuspend
 import org.jetbrains.kotlin.ir.util.patchDeclarationParents
+import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.remapTypeParameters
+import org.jetbrains.kotlin.name.CallableId
+import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
 
 /**
@@ -313,6 +319,7 @@ internal class AdapterGenerator(
       adapterClass = adapterClass,
       ziplineFunctionClasses = ziplineFunctionClasses,
       serializersProperty = serializersProperty,
+      serialNameProperty = serialNameProperty,
     )
 
     val outboundServiceClass = irOutboundServiceClass(bridgedInterface, adapterClass)
@@ -393,6 +400,7 @@ internal class AdapterGenerator(
     adapterClass: IrClass,
     ziplineFunctionClasses: Map<IrSimpleFunctionSymbol, IrClass>,
     serializersProperty: IrProperty,
+    serialNameProperty: IrProperty,
   ): IrSimpleFunction {
     // override fun ziplineFunctions(
     //   serializersModule: SerializersModule,
@@ -435,35 +443,58 @@ internal class AdapterGenerator(
         origin = IrDeclarationOrigin.DEFINED
       }
 
+      // Read serialName into a local so the lazy lambdas capture a plain local variable rather than
+      // the adapter receiver; the JVM closure converter cannot map a captured receiver into a local
+      // function's frame.
+      val serialNameLocal = irTemporary(
+        value = irCall(serialNameProperty.getter!!).apply {
+          dispatchReceiver = irGet(ziplineFunctionsFunction.parameters[0])
+        },
+        nameHint = "serialName",
+        isMutable = false,
+      )
+
       val serializers = bridgedInterface.declareSerializerTemporaries(
         statementsBuilder = this@irFunctionBody,
         serializersModuleParameter = ziplineFunctionsFunction.parameters[1],
         serializersExpression = serializersLocal,
+        serviceSerialNameExpression = irGet(serialNameLocal),
+        enclosingDeclaration = ziplineFunctionsFunction,
       )
 
       // Call each ZiplineFunction constructor.
+      val lazyClass = pluginContext.referenceClass(lazyClassId)!!
+      val lazyValueGetter = lazyClass.owner.properties.single {
+        it.name.identifier == "value"
+      }.getter!!
       val expressions = mutableListOf<IrExpression>()
       for ((bridgedFunction, handlerClass) in ziplineFunctionClasses) {
         // ZiplineFunction0(
-        //   listOf<KSerializer<*>>(
-        //     serializer1,
-        //     serializer2,
-        //   ),
-        //   sampleResponseSerializer,
+        //   lazy { listOf(serializer1, serializer2) },
+        //   sampleResponseSerializerLazy,
         // )
         expressions += irCallConstructor(
           callee = handlerClass.constructors.single().symbol,
           typeArguments = adapterClass.typeParameters.map { it.defaultType },
         ).apply {
           type = ziplineFunctionT
-          arguments[0] = irCall(ziplineApis.listOfFunction).apply {
-            typeArguments[0] = ziplineApis.kSerializer.starProjectedType
-            arguments[0] = irVararg(
-              ziplineApis.kSerializer.starProjectedType,
-              bridgedFunction.owner.parameters
-                .filter { it.kind == IrParameterKind.Regular }
-                .map { irGet(serializers[it.type]!!) },
-            )
+          arguments[0] = pluginContext.irLazy(
+            valueType = ziplineApis.listOfKSerializerStar,
+            enclosingDeclaration = ziplineFunctionsFunction,
+          ) { bodyBuilder, _ ->
+            bodyBuilder.irCall(ziplineApis.listOfFunction).apply {
+              typeArguments[0] = ziplineApis.kSerializer.starProjectedType
+              arguments[0] = bodyBuilder.irVararg(
+                ziplineApis.kSerializer.starProjectedType,
+                bridgedFunction.owner.parameters
+                  .filter { it.kind == IrParameterKind.Regular }
+                  .map {
+                    bodyBuilder.irCall(lazyValueGetter).apply {
+                      dispatchReceiver = bodyBuilder.irGet(serializers[it.type]!!)
+                    }
+                  },
+              )
+            }
           }
           val returnType = bridgedFunction.owner.returnType
           arguments[1] = irGet(serializers[returnType]!!)
@@ -534,20 +565,23 @@ internal class AdapterGenerator(
     }.apply {
       addValueParameter {
         initDefaults(original)
-        name = Name.identifier("argSerializers")
-        type = ziplineApis.listOfKSerializerStar
+        name = Name.identifier("argSerializersLazy")
+        type = pluginContext.referenceClass(lazyClassId)!!
+          .typeWith(ziplineApis.listOfKSerializerStar)
       }
       addValueParameter {
         initDefaults(original)
-        name = Name.identifier("resultSerializer")
-        type = ziplineApis.kSerializer.starProjectedType
+        name = Name.identifier("resultSerializerLazy")
+        type = pluginContext.referenceClass(lazyClassId)!!
+          .typeWith(ziplineApis.kSerializer.starProjectedType)
       }
       val valueArgumentsCount: Int
       if (bridgedFunction.isSuspend) {
         addValueParameter {
           initDefaults(original)
-          name = Name.identifier("suspendCallbackSerializer")
-          type = ziplineApis.kSerializer.starProjectedType
+          name = Name.identifier("suspendCallbackSerializerLazy")
+          type = pluginContext.referenceClass(lazyClassId)!!
+            .typeWith(ziplineApis.kSerializer.starProjectedType)
         }
         valueArgumentsCount = 5
       } else {

@@ -66,16 +66,14 @@ class CrossVersionTest {
   // ------------------------------------------------------------------------------------------
 
   /**
-   * A class the old guest sends that this host never declares. A top-level decode is quiet: the JVM
-   * entry point passes `throwOnUnsupportedType = false` (ContextJni.cpp), so the unknown object
-   * arrives as `null`. The loud "no converter registered" throw fires only for a *field* value,
-   * where the declared type makes silence wrong.
+   * A class the old guest sends that this host never declares. The decode is loud on both hosts:
+   * the JVM entry point passes `throwOnUnsupportedType = true` (ContextJni.cpp) and Kotlin/Native
+   * throws the same message, so the unknown object surfaces as a catchable mismatch naming the class.
    */
   @Test fun guestToHost_classDeletedOnHost() = withOldGuest { host, id ->
     assertObserved(
       "deleted-class/OnlyInOld",
-      "null",
-      nativeExpected = "throws IllegalStateException: host bridge: no converter registered for " +
+      "throws ZiplineApiMismatchException: host bridge: no converter registered for " +
         "JS class 'OnlyInOld'; annotate the class with @WithJS2HostBridge to send it to the host",
     ) {
       host.evaluateOne(provide("provideOnlyInOld", id))
@@ -84,10 +82,15 @@ class CrossVersionTest {
 
   /**
    * Field added on the host since the guest was built: the guest's object has no `c` property, so the
-   * host converter reads a missing JS property for a Double field.
+   * host converter reads a missing JS property for a non-null Double field and throws rather than
+   * silently defaulting to 0.0.
    */
   @Test fun guestToHost_fieldAbsentOnGuest() = withOldGuest { host, id ->
-    assertObserved("field-absent/AddedFieldPayload.c", "AddedFieldPayload(a=11, b=af, c=0.0)") {
+    assertObserved(
+      "field-absent/AddedFieldPayload.c",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.AddedFieldPayload.c " +
+        "expects a number but the guest sent undefined",
+    ) {
       host.evaluateOne(provide("provideAddedField", id))
     }
   }
@@ -97,18 +100,57 @@ class CrossVersionTest {
     assertEquals("RemovedFieldPayload(a=11, b=rf)", host.evaluateOne(provide("provideRemovedField", id)).toString())
   }
 
-  // Field renamed with no alias, and property retyped Int -> String, are NOT assertable here: the
-  // decoder aborts the process instead of throwing catchably. See `SkewAbortForkTest` (jvmTest),
-  // which pins the SIGABRT and the Hermes message from a forked JVM.
+  /**
+   * Field renamed with no alias: the host reads `newName`, the old guest's object only has `oldName`,
+   * so the property is absent and the non-null String read throws naming the field and the JS kind.
+   */
+  @Test fun guestToHost_fieldRenamed() = withOldGuest { host, id ->
+    assertObserved(
+      "renamed/RenamedFieldPayload.newName",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.RenamedFieldPayload.newName " +
+        "expects a string but the guest sent undefined",
+    ) {
+      host.evaluateOne(provide("provideRenamedField", id))
+    }
+  }
+
+  /**
+   * Property retyped Int -> String: the old guest sends a number where this host's converter expects a
+   * string, so the tag check fires and names the kind seen.
+   */
+  @Test fun guestToHost_fieldRetyped() = withOldGuest { host, id ->
+    assertObserved(
+      "retyped/RetypedFieldPayload.v",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.RetypedFieldPayload.v " +
+        "expects a string but the guest sent a number",
+    ) {
+      host.evaluateOne(provide("provideRetypedField", id))
+    }
+  }
 
   /** Old guest sends a non-null String into a field that is nullable now: compatible. */
   @Test fun guestToHost_nullabilityWidened() = withOldGuest { host, id ->
     assertEquals("NullabilityPayload(v=nonnull)", host.evaluateOne(provide("provideNullability", id)).toString())
   }
 
-  // Supertype inserted on the host is NOT wire-invisible: the converter extracts inherited
-  // properties too, so this host asks the old guest's object for `baseValue`, which it never sent,
-  // and the decode aborts. See `SkewAbortForkTest.superclassInserted_abortsProcess`.
+  /**
+   * Supertype inserted on the host is NOT wire-invisible on the JVM host: its converter extracts
+   * inherited properties too, so it asks the old guest's object for `baseValue`, which it never
+   * sent, and the read throws naming the inherited field. The Kotlin/Native host never extracts
+   * inherited body fields at all (its `extractFields` default excludes them), so it never asks and
+   * decodes the object silently — a pre-existing host asymmetry in *which* fields are read, not in
+   * the loud/quiet invariant. The JVM row is the loud one; the native row records the divergence.
+   */
+  @Test fun guestToHost_superclassInserted() = withOldGuest { host, id ->
+    assertObserved(
+      "superclass-inserted/HierarchyPayload.baseValue",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.HierarchyPayload.baseValue " +
+        "expects a number but the guest sent undefined",
+      nativeExpected = "HierarchyPayload(a=11, b=hp)",
+    ) {
+      host.evaluateOne(provide("provideHierarchy", id))
+    }
+  }
 
   /** Supertype removed on the host: the base's field was never on the wire either way. */
   @Test fun guestToHost_superclassRemoved() = withOldGuest { host, id ->

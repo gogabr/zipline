@@ -343,7 +343,10 @@ jobject ContextJni::execute(JNIEnv* env, jbyteArray byteCode, jstring fileName) 
     throwJsExceptionFmt(env, this, "Hermes execute failed: %s", e.what());
     return nullptr;
   }
-  return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
+  // Use time is loud: an unbridged class instance returned to the host throws
+  // ZiplineApiMismatchException instead of decoding to a silent null. Plain JS data and
+  // kotlin.Unit stay exempt (jsiIsUnbridgedDecodeExemptClass).
+  return toJavaObject(env, result, /*throwOnUnsupportedType=*/true);
 }
 
 jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
@@ -379,7 +382,7 @@ jobject ContextJni::evaluate(JNIEnv* env, jstring source, jstring fileName) {
     throwJsExceptionFmt(env, this, "Hermes evaluate failed: %s", e.what());
     return nullptr;
   }
-  return toJavaObject(env, result, /*throwOnUnsupportedType=*/false);
+  return toJavaObject(env, result, /*throwOnUnsupportedType=*/true);
 #endif // HERMESVM_LEAN
 }
 
@@ -498,8 +501,25 @@ void ContextJni::setOutboundCallChannel(JNIEnv* env, jstring name, jobject callC
   outboundChannels.push_back(occ);
 }
 
+// The padded public entry: no C++ exception may escape into the JNI frame, where it would
+// reach std::terminate. Every JS->host decode crosses here.
 jobject
 ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsupportedType) {
+  try {
+    return toJavaObjectUnchecked(env, value, throwOnUnsupportedType);
+  } catch (const jsi::JSIException& e) {
+    // jsi::JSError and JSINativeException both derive from JSIException; the number/bool
+    // reads throw the sibling of JSError, so catching only JSError leaves those aborting.
+    jsiThrowBridgeEscape(env, "toJavaObject", e.what());
+    return nullptr;
+  } catch (const std::exception& e) {
+    jsiThrowBridgeEscape(env, "toJavaObject", e.what());
+    return nullptr;
+  }
+}
+
+jobject
+ContextJni::toJavaObjectUnchecked(JNIEnv* env, const jsi::Value& value, bool throwOnUnsupportedType) {
   // A pending Java exception (e.g. a host bridge that threw while guest code ran) makes every
   // further JNI call undefined; never start a conversion on top of one.
   if (env->ExceptionCheck()) return nullptr;
@@ -542,7 +562,7 @@ ContextJni::toJavaObject(JNIEnv* env, const jsi::Value& value, bool throwOnUnsup
       size_t len = arr.length(*runtime);
       jobjectArray result = env->NewObjectArray(static_cast<jsize>(len), objectClass, nullptr);
       for (size_t i = 0; i < len && !env->ExceptionCheck(); i++) {
-        jobject el = toJavaObject(env, arr.getValueAtIndex(*runtime, i), false);
+        jobject el = toJavaObjectUnchecked(env, arr.getValueAtIndex(*runtime, i), false);
         if (env->ExceptionCheck()) break;
         env->SetObjectArrayElement(result, static_cast<jsize>(i), el);
         if (el) env->DeleteLocalRef(el);
@@ -650,6 +670,14 @@ jobject ContextJni::callGuestFunction(JNIEnv* env, jstring name, jobject argsLis
     return toJavaObject(env, result, true);
   } catch (const jsi::JSError& e) {
     throwJsException(env, const_cast<jsi::JSError&>(e));
+    return nullptr;
+  } catch (const jsi::JSIException& e) {
+    // JSINativeException (thrown by number/bool reads) is a sibling of JSError; catching
+    // only JSError left those aborting the process.
+    throwJsExceptionFmt(env, this, "callGuestFunction failed: %s", e.what());
+    return nullptr;
+  } catch (const std::exception& e) {
+    throwJsExceptionFmt(env, this, "callGuestFunction failed: %s", e.what());
     return nullptr;
   }
 }

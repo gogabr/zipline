@@ -24,13 +24,13 @@ import kotlinx.serialization.Serializable
 internal abstract class ReturningZiplineFunction<T : ZiplineService>(
   override val id: String,
   override val signature: String,
-  argSerializers: List<KSerializer<*>>,
-  resultSerializer: KSerializer<*>,
+  private val argSerializersLazy: Lazy<List<KSerializer<*>>>,
+  private val resultSerializerLazy: Lazy<KSerializer<*>>,
 ) : ZiplineFunction<T> {
-  val argsListSerializer = ArgsListSerializer(argSerializers)
+  val argsListSerializer get() = ArgsListSerializer(argSerializersLazy.value)
 
   /** A serializer for a `kotlin.Result<T>` which supports success or failure. */
-  val resultSerializer = ResultOrCallbackSerializer(resultSerializer)
+  val resultSerializer get() = ResultOrCallbackSerializer(resultSerializerLazy.value)
 
   override val isSuspending get() = false
 
@@ -46,15 +46,17 @@ internal abstract class ReturningZiplineFunction<T : ZiplineService>(
 internal abstract class SuspendingZiplineFunction<T : ZiplineService>(
   override val id: String,
   override val signature: String,
-  argSerializers: List<KSerializer<*>>,
-  resultSerializer: KSerializer<*>,
+  private val argSerializersLazy: Lazy<List<KSerializer<*>>>,
+  private val resultSerializerLazy: Lazy<KSerializer<*>>,
 
   /** A serializer for a `SuspendCallback<R>` where `R` is the response type. */
-  val suspendCallbackSerializer: KSerializer<*>,
+  private val suspendCallbackSerializerLazy: Lazy<KSerializer<*>>,
 ) : ZiplineFunction<T> {
-  val argsListSerializer = ArgsListSerializer(argSerializers)
+  val argsListSerializer get() = ArgsListSerializer(argSerializersLazy.value)
 
-  val resultOrCallbackSerializer = ResultOrCallbackSerializer(resultSerializer)
+  val resultOrCallbackSerializer get() = ResultOrCallbackSerializer(resultSerializerLazy.value)
+
+  val suspendCallbackSerializer get() = suspendCallbackSerializerLazy.value
 
   override val isSuspending get() = true
   override val isClose get() = false

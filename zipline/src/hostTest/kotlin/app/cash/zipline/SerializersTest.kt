@@ -52,18 +52,26 @@ class SerializersTest {
     ziplineResponseOnly.close()
   }
 
-  @Test fun missingGetReturnValueSerializerFailsFast() = runBlocking(dispatcher) {
-    val e = assertFailsWith<IllegalArgumentException> {
-      ziplineRequestOnly.take<AdaptersService>("adaptersService")
+  @Test fun missingGetReturnValueSerializerThrowsAtCallTime() = runBlocking(dispatcher) {
+    val service = ziplineRequestOnly.take<AdaptersService>("adaptersService")
+    ziplineRequestOnly.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareAdaptersJsBridges()")
+
+    val e = assertFailsWith<ZiplineApiMismatchException> {
+      service.echo(AdaptersRequest("Andrew"))
     }
-    assertThat(e.message!!).contains("Serializer for class 'AdaptersResponse' is not found.")
+    assertThat(e.message!!)
+      .contains("json bridge: no serializer registered for app.cash.zipline.testing.AdaptersResponse")
   }
 
-  @Test fun missingGetParameterSerializerFailsFast() = runBlocking(dispatcher) {
-    val e = assertFailsWith<IllegalArgumentException> {
-      ziplineResponseOnly.take<AdaptersService>("adaptersService")
+  @Test fun missingGetParameterSerializerThrowsAtCallTime() = runBlocking(dispatcher) {
+    val service = ziplineResponseOnly.take<AdaptersService>("adaptersService")
+    ziplineResponseOnly.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareAdaptersJsBridges()")
+
+    val e = assertFailsWith<ZiplineApiMismatchException> {
+      service.echo(AdaptersRequest("Andrew"))
     }
-    assertThat(e.message!!).contains("Serializer for class 'AdaptersRequest' is not found.")
+    assertThat(e.message!!)
+      .contains("json bridge: no serializer registered for app.cash.zipline.testing.AdaptersRequest")
   }
 
   @Test fun presentGetSerializersSucceeds() = runBlocking(dispatcher) {
@@ -74,25 +82,43 @@ class SerializersTest {
       .isEqualTo(AdaptersResponse("thank you for using your serializers, Andrew"))
   }
 
-  @Test fun missingSetReturnValueSerializerFailsFast() = runBlocking(dispatcher) {
-    val e = assertFailsWith<IllegalArgumentException> {
-      ziplineRequestOnly.bind<AdaptersService>(
-        "adaptersService",
-        HostAdaptersService(),
-      )
-    }
-    assertThat(e.message!!).contains("Serializer for class 'AdaptersResponse' is not found.")
-  }
+  @Test fun missingSerializerIsIsolatedPerFunction() = runBlocking(dispatcher) {
+    // take() succeeds even though AdaptersResponse has no serializer registered: the serializer is
+    // resolved lazily, per call. A function that needs no custom serializer still works.
+    val service = ziplineRequestOnly.take<AdaptersService>("adaptersService")
+    ziplineRequestOnly.jsEngine.evaluate("testing.app.cash.zipline.testing.prepareAdaptersJsBridges()")
 
-  @Test fun missingSetParameterSerializerFailsFast() = runBlocking(dispatcher) {
-    val e = assertFailsWith<IllegalArgumentException> {
-      ziplineResponseOnly.bind<AdaptersService>(
-        "adaptersService",
-        HostAdaptersService(),
-      )
+    service.ping()
+
+    val e = assertFailsWith<ZiplineApiMismatchException> {
+      service.echo(AdaptersRequest("Andrew"))
     }
     assertThat(e.message!!)
-      .contains("Serializer for class 'AdaptersRequest' is not found.")
+      .contains("json bridge: no serializer registered for app.cash.zipline.testing.AdaptersResponse")
+  }
+
+  @Test fun missingSetReturnValueSerializerThrowsAtCallTime() = runBlocking(dispatcher) {
+    ziplineRequestOnly.bind<AdaptersService>(
+      "adaptersService",
+      HostAdaptersService(),
+    )
+    val e = assertFailsWith<Exception> {
+      ziplineRequestOnly.jsEngine.evaluate("testing.app.cash.zipline.testing.callAdaptersService()")
+    }
+    assertThat(e.message!!)
+      .contains("json bridge: no serializer registered for app.cash.zipline.testing.AdaptersResponse")
+  }
+
+  @Test fun missingSetParameterSerializerThrowsAtCallTime() = runBlocking(dispatcher) {
+    ziplineResponseOnly.bind<AdaptersService>(
+      "adaptersService",
+      HostAdaptersService(),
+    )
+    val e = assertFailsWith<Exception> {
+      ziplineResponseOnly.jsEngine.evaluate("testing.app.cash.zipline.testing.callAdaptersService()")
+    }
+    assertThat(e.message!!)
+      .contains("json bridge: no serializer registered for app.cash.zipline.testing.AdaptersRequest")
   }
 
   @Test fun presentSetSerializersSucceeds() = runBlocking(dispatcher) {
@@ -105,6 +131,10 @@ class SerializersTest {
   }
 
   private class HostAdaptersService : AdaptersService {
+    override fun ping() {
+      // No-op.
+    }
+
     override fun echo(request: AdaptersRequest): AdaptersResponse {
       return AdaptersResponse("nice adapters, ${request.message}")
     }

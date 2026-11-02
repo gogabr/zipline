@@ -67,19 +67,15 @@ class CrossVersionTest {
   // ------------------------------------------------------------------------------------------
 
   /**
-   * A class the new guest sends that this host never declares. The JVM top-level decode is quiet:
-   * the entry point passes `throwOnUnsupportedType = false` (ContextJni.cpp), so the unknown
-   * object arrives as `null`. Kotlin/Native has no such flag and throws the loud
-   * "no converter registered" error instead. The loud throw also fires on JVM for a *field*
-   * value, where the declared type makes silence wrong (see [guestToHost_sealedLeafAddedOnGuest]).
+   * A class the new guest sends that this host never declares. The decode is loud on both hosts:
+   * the JVM entry point passes `throwOnUnsupportedType = true` (ContextJni.cpp) and Kotlin/Native
+   * throws the same message, so the unknown object surfaces as a catchable mismatch naming the class.
    */
   @Test fun guestToHost_classAddedOnGuest() = withNewGuest { host, id ->
     assertObserved(
       "added-class/OnlyInNew",
-      "null",
-      nativeExpected =
-        "throws IllegalStateException: host bridge: no converter registered for JS class 'OnlyInNew'; " +
-          "annotate the class with @WithJS2HostBridge to send it to the host",
+      "throws ZiplineApiMismatchException: host bridge: no converter registered for JS class 'OnlyInNew'; " +
+        "annotate the class with @WithJS2HostBridge to send it to the host",
     ) {
       host.evaluateOne(provide("provideOnlyInNew", id))
     }
@@ -95,17 +91,59 @@ class CrossVersionTest {
 
   /**
    * Field removed in the guest: this host still reads `c`, and the guest's object has no such
-   * property.
+   * property, so the non-null Double read throws rather than silently defaulting to 0.0.
    */
   @Test fun guestToHost_fieldAbsentOnGuest() = withNewGuest { host, id ->
-    assertObserved("field-absent/RemovedFieldPayload.c", "RemovedFieldPayload(a=11, b=rf, c=0.0)") {
+    assertObserved(
+      "field-absent/RemovedFieldPayload.c",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.RemovedFieldPayload.c " +
+        "expects a number but the guest sent undefined",
+    ) {
       host.evaluateOne(provide("provideRemovedField", id))
     }
   }
 
-  // Field renamed with no alias, property retyped Int -> String, and null sent into a non-null String
-  // are NOT assertable here: the decoder aborts the process instead of throwing catchably. See
-  // `SkewAbortForkTest` (jvmTest), which pins the SIGABRT and the Hermes message from a forked JVM.
+  /**
+   * Field renamed with no alias: the new guest sends `newName`, this host reads `oldName`, so the
+   * property is absent and the non-null String read throws naming the field and the JS kind.
+   */
+  @Test fun guestToHost_fieldRenamed() = withNewGuest { host, id ->
+    assertObserved(
+      "renamed/RenamedFieldPayload.oldName",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.RenamedFieldPayload.oldName " +
+        "expects a string but the guest sent undefined",
+    ) {
+      host.evaluateOne(provide("provideRenamedField", id))
+    }
+  }
+
+  /**
+   * Property retyped String -> Int: the new guest sends a string where this host's converter expects
+   * a number, so the tag check fires and names the kind seen.
+   */
+  @Test fun guestToHost_fieldRetyped() = withNewGuest { host, id ->
+    assertObserved(
+      "retyped/RetypedFieldPayload.v",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.RetypedFieldPayload.v " +
+        "expects a number but the guest sent a string",
+    ) {
+      host.evaluateOne(provide("provideRetypedField", id))
+    }
+  }
+
+  /**
+   * Null sent into a field this host declares non-null: the tag check fires on the null value and
+   * names the kind seen rather than letting a null reach the constructor.
+   */
+  @Test fun guestToHost_nullIntoNonNullable() = withNewGuest { host, id ->
+    assertObserved(
+      "null-into-nonnull/NullabilityPayload.v",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.NullabilityPayload.v " +
+        "expects a string but the guest sent null",
+    ) {
+      host.evaluateOne(provide("provideNullability", id))
+    }
+  }
 
   /**
    * Supertype added in the guest: field extraction is own-class-only, so the wire shape never
@@ -115,9 +153,23 @@ class CrossVersionTest {
     assertEquals("HierarchyPayload(a=11, b=hp)", host.evaluateOne(provide("provideHierarchy", id)).toString())
   }
 
-  // Supertype removed in the guest is NOT wire-neutral: this host's converter still extracts the
-  // base's `inherited` property, which the new guest never sends, so the decode aborts. See
-  // `SkewAbortForkTest.superclassRemovedOnGuest_abortsProcess`.
+  /**
+   * Supertype removed in the guest is NOT wire-neutral on the JVM host: its converter still extracts
+   * the base's `inherited` property, which the new guest never sends, so the read throws naming the
+   * inherited field. The Kotlin/Native host never extracts inherited body fields at all (its
+   * `extractFields` default excludes them), so it never asks and decodes the object silently — a
+   * pre-existing host asymmetry in *which* fields are read, not in the loud/quiet invariant.
+   */
+  @Test fun guestToHost_superclassRemovedOnGuest() = withNewGuest { host, id ->
+    assertObserved(
+      "superclass-removed/DroppedBasePayload.inherited",
+      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.DroppedBasePayload.inherited " +
+        "expects a number but the guest sent undefined",
+      nativeExpected = "DroppedBasePayload(keep=keep)",
+    ) {
+      host.evaluateOne(provide("provideDroppedBase", id))
+    }
+  }
 
   /** Interface added in the guest: wire-invisible. */
   @Test fun guestToHost_interfaceAddedOnGuest() = withNewGuest { host, id ->
@@ -125,18 +177,14 @@ class CrossVersionTest {
   }
 
   /**
-   * Enum entry appended in the guest: ordinal 2 has no constant in this host's enum. The JVM
-   * converter decodes the unknown ordinal to null instead of firing its range check, and the
-   * holder's non-null constructor parameter turns that into a caught NPE. Kotlin/Native fires
-   * the generated range check and throws the explicit out-of-range error.
+   * Enum entry appended in the guest: ordinal 2 has no constant in this host's enum. Both hosts fire
+   * the generated range check and throw the same loud out-of-range message naming the enum.
    */
   @Test fun guestToHost_enumOutOfRange() = withNewGuest { host, id ->
     assertObserved(
       "enum-out-of-range/GrowthEnum.C",
-      "throws NullPointerException: Parameter specified as non-null is null: " +
-        "method app.cash.zipline.bridge.test.GrowthEnumHolder.<init>, parameter value",
-      nativeExpected =
-        "throws IllegalStateException: host bridge: ordinal 2 is out of range for GrowthEnum",
+      "throws ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for " +
+        "app.cash.zipline.bridge.test.GrowthEnum",
     ) {
       host.evaluateOne(provide("provideGrowthEnumHolder", id))
     }
@@ -154,7 +202,7 @@ class CrossVersionTest {
   @Test fun guestToHost_sealedLeafAddedOnGuest() = withNewGuest { host, id ->
     assertObserved(
       "added-class/SealedShape.LeafB",
-      "throws IllegalStateException: host bridge: no converter registered for JS class 'LeafB'; " +
+      "throws ZiplineApiMismatchException: host bridge: no converter registered for JS class 'LeafB'; " +
         "annotate the class with @WithJS2HostBridge to send it to the host",
     ) {
       host.evaluateOne(provide("provideSealedLeafB", id))

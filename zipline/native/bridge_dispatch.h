@@ -82,6 +82,140 @@ enum {
   JS_TAG_STRING = 4, JS_TAG_OBJECT = 5, JS_TAG_FLOAT64 = 7
 };
 
+/** The JS kind name for a tag, matching the mismatch-message vocabulary. */
+static inline const char *jsiKindName(int tag) {
+  switch (tag) {
+    case JS_TAG_INT:
+    case JS_TAG_FLOAT64: return "a number";
+    case JS_TAG_BOOL:    return "a boolean";
+    case JS_TAG_NULL:    return "null";
+    case JS_TAG_UNDEFINED: return "undefined";
+    case JS_TAG_STRING:  return "a string";
+    case JS_TAG_OBJECT:  return "an object";
+    default:             return "an unknown JS type";
+  }
+}
+
+/**
+ * Throw ZiplineApiMismatchException with [message]. Falls back to IllegalStateException when
+ * ZiplineApiMismatchException is not on the classpath, so a decode never leaves a
+ * NoClassDefFoundError pending.
+ */
+static inline void jsiThrowApiMismatch(JNIEnv *env, const char *message) {
+  jclass cls = env->FindClass("app/cash/zipline/ZiplineApiMismatchException");
+  if (cls == nullptr) {
+    env->ExceptionClear();
+    cls = env->FindClass("java/lang/IllegalStateException");
+  }
+  env->ThrowNew(cls, message);
+  env->DeleteLocalRef(cls);
+}
+
+/**
+ * Throw ZiplineApiMismatchException for a field the guest's object cannot supply.
+ * Names the class, the field, the expected type, and the JS kind seen.
+ */
+static inline void jsiThrowFieldMismatch(JNIEnv *env, const char *className,
+                                        const char *fieldName,
+                                        const char *expectedType,
+                                        int seenTag) {
+  char msg[512];
+  snprintf(msg, sizeof(msg), "host bridge: %s.%s expects %s but the guest sent %s",
+           className, fieldName, expectedType, jsiKindName(seenTag));
+  jsiThrowApiMismatch(env, msg);
+}
+
+/**
+ * Throw ZiplineApiMismatchException when the compiled bridge references a host field that the
+ * runtime host class does not declare (GetFieldID failed at load).
+ */
+static inline void jsiThrowHostFieldMissing(JNIEnv *env, const char *className,
+                                          const char *fieldName) {
+  char msg[512];
+  snprintf(msg, sizeof(msg),
+           "host bridge: the host class %s has no field %s; the compiled bridge and the host "
+           "class are out of sync",
+           className, fieldName);
+  jsiThrowApiMismatch(env, msg);
+}
+
+/** Throw ZiplineApiMismatchException for a bridged class whose load-time init failed. */
+static inline void jsiThrowClassInitFailed(JNIEnv *env, const char *className) {
+  char msg[512];
+  snprintf(msg, sizeof(msg), "host bridge: %s failed to initialize; the JVM class is missing",
+           className);
+  jsiThrowApiMismatch(env, msg);
+}
+
+/** Throw ZiplineApiMismatchException wrapping a C++ exception that escaped a bridge decode. */
+static inline void jsiThrowBridgeEscape(JNIEnv *env, const char *className, const char *what) {
+  char msg[512];
+  snprintf(msg, sizeof(msg), "host bridge: %s: %s", className, what);
+  jsiThrowApiMismatch(env, msg);
+}
+
+// -- Load-time lookup helpers --
+//
+// Invariant: load time never throws. A generated `_init` runs at shared-library load, where a
+// pending JNI exception would propagate into the JVM as NoSuchFieldError/NoClassDefFoundError
+// before any bridged class is used. Each lookup below clears the exception it raises and returns
+// NULL, so a missing reference is *recorded* rather than *reported*; the report happens at use
+// time (jsiThrowClassInitFailed / jsiThrowHostFieldMissing / jsiThrowFieldMismatch).
+
+/** FindClass that records absence as NULL instead of leaving NoClassDefFoundError pending. */
+static inline jclass jsiFindClassQuiet(JNIEnv *env, const char *name) {
+  jclass c = env->FindClass(name);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return NULL;
+  }
+  return c;
+}
+
+static inline jmethodID jsiGetMethodIdQuiet(JNIEnv *env, jclass c, const char *name,
+                                          const char *sig) {
+  if (c == NULL) return NULL;
+  jmethodID m = env->GetMethodID(c, name, sig);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return NULL;
+  }
+  return m;
+}
+
+static inline jmethodID jsiGetStaticMethodIdQuiet(JNIEnv *env, jclass c, const char *name,
+                                                const char *sig) {
+  if (c == NULL) return NULL;
+  jmethodID m = env->GetStaticMethodID(c, name, sig);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return NULL;
+  }
+  return m;
+}
+
+static inline jfieldID jsiGetFieldIdQuiet(JNIEnv *env, jclass c, const char *name,
+                                        const char *sig) {
+  if (c == NULL) return NULL;
+  jfieldID f = env->GetFieldID(c, name, sig);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return NULL;
+  }
+  return f;
+}
+
+static inline jfieldID jsiGetStaticFieldIdQuiet(JNIEnv *env, jclass c, const char *name,
+                                              const char *sig) {
+  if (c == NULL) return NULL;
+  jfieldID f = env->GetStaticFieldID(c, name, sig);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return NULL;
+  }
+  return f;
+}
+
 // Tag emulation: maps jsi::Value to a numeric tag
 static inline int jsi_value_tag(jsi::Runtime &rt, const jsi::Value &v) {
   if (v.isNumber()) {
@@ -267,7 +401,7 @@ static inline bool jsiIsUnbridgedDecodeExemptClass(const std::string &name) {
 }
 
 /**
- * Throw IllegalStateException naming the JS class of [v] when it looks like a Kotlin class
+ * Throw ZiplineApiMismatchException naming the JS class of [v] when it looks like a Kotlin class
  * instance that no bridge converter was registered for. Returning null here used to surface as a
  * confusing cast/NPE far from the cause (e.g. a List<TopBarIcon> arriving as [null] because
  * TopBarIcon was not annotated), so name the class instead.
@@ -286,7 +420,7 @@ static inline void jsiThrowUnbridgedJsObject(JNIEnv *env, jsi::Runtime &rt, cons
 
   std::string message = "host bridge: no converter registered for JS class '" + className +
                         "'; annotate the class with @WithJS2HostBridge to send it to the host";
-  env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
+  jsiThrowApiMismatch(env, message.c_str());
 }
 
 // JNI caches for the collection decoder. Function-local statics inside this inline function give

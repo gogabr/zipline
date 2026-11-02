@@ -25,6 +25,9 @@ import kotlinx.serialization.modules.SerializersModule
 
 /** This is a service that requires a kotlinx.serialization adapter to be registered for use. */
 interface AdaptersService : ZiplineService {
+  /** No custom serializer needed; used to prove one function's missing serializer is isolated. */
+  fun ping()
+
   fun echo(request: AdaptersRequest): AdaptersResponse
 }
 

@@ -20,22 +20,28 @@ import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
+import org.jetbrains.kotlin.ir.builders.irUnit
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationParent
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
 import org.jetbrains.kotlin.ir.expressions.IrBlockBody
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
+import org.jetbrains.kotlin.ir.expressions.impl.IrCatchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.getClass
@@ -49,6 +55,68 @@ import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
+
+/**
+ * A resolved bridge-registration entry point. [isRaw] is true for the `__bridgeRegister` /
+ * `__bridgeRegisterRuntime` externals this plugin synthesizes, false for zipline's tolerant
+ * `registerBridge`, which guards the global itself. Call sites use it to decide whether the
+ * call needs a swallowing `try` around it.
+ */
+internal class BridgeRegisterTarget(
+  val symbol: IrSimpleFunctionSymbol,
+  val isRaw: Boolean,
+)
+
+/**
+ * Returns [call] wrapped so a missing host cannot break the guest: when the callee is a raw
+ * bridge external, a JS runtime with no host installed raises `ReferenceError` on the missing
+ * global, and that must be swallowed rather than escape. Escaping would kill the companion
+ * initializer (and with it the module's class initialization) or the module-load hook.
+ *
+ * The catch parameter is typed `Throwable` so the JS backend emits `instanceof Error`, which
+ * covers `ReferenceError` and `TypeError`. The body is `Unit`, so the try is a statement like
+ * the call it wraps.
+ *
+ * [raw] false returns [call] untouched: the tolerant `registerBridge` already checks
+ * `typeof globalThis.__bridgeRegister === 'function'`, and wrapping it again would only hide
+ * errors that helper is meant to propagate.
+ */
+internal fun IrBuilderWithScope.tolerantBridgeCall(
+  call: IrExpression,
+  raw: Boolean,
+  parent: IrDeclarationParent,
+): IrExpression {
+  if (!raw) return call
+  val builtIns = context.irBuiltIns
+  val catchParameter = IrVariableImpl(
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    IrDeclarationOrigin.CATCH_PARAMETER,
+    IrVariableSymbolImpl(),
+    Name.identifier("e"),
+    builtIns.throwableType,
+    isVar = false,
+    isConst = false,
+    isLateinit = false,
+  ).apply {
+    this.parent = parent
+  }
+  val catchClause = IrCatchImpl(
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    catchParameter,
+    irUnit(),
+    null,
+  )
+  return IrTryImpl(
+    UNDEFINED_OFFSET,
+    UNDEFINED_OFFSET,
+    builtIns.unitType,
+    call,
+    listOf(catchClause),
+    null,
+  )
+}
 
 // -- JS IR transformations (bridge_dispatch injection) --
 
@@ -76,7 +144,7 @@ internal fun injectCompanionInitBlocks(
   // Companion constructors register through the same symbol the module-load hook uses: zipline's
   // tolerant `registerBridge` when it is on the classpath, otherwise the raw `__bridgeRegister`
   // external. See findOrCreateBridgeRegister.
-  val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
 
   for (clazz in dispatchClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
@@ -88,7 +156,7 @@ internal fun injectCompanionInitBlocks(
         targetFqn,
         clazz,
         kclassJsGetterSymbol,
-        bridgeRegisterSymbol,
+        bridgeRegister,
         pluginContext,
       )
       continue
@@ -105,25 +173,30 @@ internal fun injectCompanionInitBlocks(
       targetFqn,
       clazz,
       kclassJsGetterSymbol,
-      bridgeRegisterSymbol,
+      bridgeRegister,
       pluginContext,
     )
   }
 }
 
 /**
- * Inserts a direct __bridgeRegister call into the companion's primary constructor,
- * equivalent to: __bridgeRegister("targetFqn", Foo::class.js)
+ * Inserts the bridge registration into the companion's primary constructor, equivalent to:
+ * `registerBridge("targetFqn", Foo::class.js)`.
  *
  * IrClassReferenceImpl is used directly as the extension receiver for kClass.js —
  * no deprecated IrGetValue or parameter references needed.
+ *
+ * When [bridgeRegister] is the raw `__bridgeRegister` external (no tolerant `registerBridge`
+ * on the classpath) the call is wrapped in a `try`/`catch` that swallows: a guest loaded into a
+ * JS runtime with no host installed must still load, and a `ReferenceError` out of a companion
+ * initializer would take the whole module down with it.
  */
 internal fun injectBridgeIntoConstructor(
   companion: IrClass,
   targetFqn: String,
   clazz: IrClass,
   kclassJsGetterSymbol: IrSimpleFunctionSymbol,
-  bridgeRegisterSymbol: IrSimpleFunctionSymbol,
+  bridgeRegister: BridgeRegisterTarget,
   pluginContext: IrPluginContext,
 ) {
   val ctor = companion.declarations.filterIsInstance<IrConstructor>()
@@ -144,11 +217,15 @@ internal fun injectBridgeIntoConstructor(
     insertExtensionReceiver(classRef)
   }
 
-  // __bridgeRegister("targetFqn", Foo::class.js)
-  val bridgeCall = builder.irCall(bridgeRegisterSymbol).apply {
-    arguments[0] = builder.irString(targetFqn)
-    arguments[1] = jsCtorCall
-  }
+  // registerBridge("targetFqn", Foo::class.js); swallowed when the raw external has no host.
+  val bridgeCall = builder.tolerantBridgeCall(
+    call = builder.irCall(bridgeRegister.symbol).apply {
+      arguments[0] = builder.irString(targetFqn)
+      arguments[1] = jsCtorCall
+    },
+    raw = bridgeRegister.isRaw,
+    parent = ctor,
+  )
 
   val body = ctor.body
   if (body is IrBlockBody) {
@@ -264,8 +341,8 @@ internal fun injectModuleLoadBridgeRegistration(
   ).firstOrNull()
 
   val kclassJsGetterSymbol = findKClassJsGetter(finder)
-  val bridgeRegisterSymbol = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
-  val bridgeRegisterRuntimeSymbol =
+  val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  val bridgeRegisterRuntime =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
   val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
   val factoriesCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
@@ -318,16 +395,24 @@ internal fun injectModuleLoadBridgeRegistration(
         clazz.symbol,
         clazz.defaultType,
       )
-      +irCall(bridgeRegisterSymbol).apply {
-        arguments[0] = irString(targetFqn)
-        arguments[1] = irCall(kclassJsGetterSymbol).apply {
-          insertExtensionReceiver(classRef)
-        }
-      }
+      +tolerantBridgeCall(
+        call = irCall(bridgeRegister.symbol).apply {
+          arguments[0] = irString(targetFqn)
+          arguments[1] = irCall(kclassJsGetterSymbol).apply {
+            insertExtensionReceiver(classRef)
+          }
+        },
+        raw = bridgeRegister.isRaw,
+        parent = warmUpFn,
+      )
     }
-    +irCall(bridgeRegisterRuntimeSymbol).apply {
-      arguments[0] = irCall(factoriesCtor)
-    }
+    +tolerantBridgeCall(
+      call = irCall(bridgeRegisterRuntime.symbol).apply {
+        arguments[0] = irCall(factoriesCtor)
+      },
+      raw = bridgeRegisterRuntime.isRaw,
+      parent = warmUpFn,
+    )
     +irReturn(irBoolean(true))
   }
 
@@ -573,24 +658,28 @@ private fun findKClassJsGetter(finder: DeclarationFinder): IrSimpleFunctionSymbo
     }?.symbol ?: error("KClass.js property getter not found")
 }
 
-/** Find the synthetic `__bridgeRegister` external fun, creating it (with @JsName) if absent. */
+/**
+ * Resolve the module's `__bridgeRegister` entry point: zipline's tolerant `registerBridge` when
+ * it is on the classpath, otherwise the synthetic raw external (created here with @JsName if
+ * absent). The returned target says which one it is so call sites can guard the raw one.
+ */
 private fun findOrCreateBridgeRegister(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
-): IrSimpleFunctionSymbol {
+): BridgeRegisterTarget {
   // Prefer zipline's helper: it no-ops when no host installed `__bridgeRegister` (a bare Kotlin/JS
   // runtime, e.g. a unit test), where the raw call below would throw at class-initialization time
   // for every bridged class the runtime touches. Modules that do not have the annotations artifact
   // on their classpath keep the raw external.
   finder.findFunctions(CallableId(FqName("app.cash.zipline"), Name.identifier("registerBridge")))
     .firstOrNull()
-    ?.let { return it }
+    ?.let { return BridgeRegisterTarget(it, isRaw = false) }
 
   val existing = fileForModule.declarations
     .filterIsInstance<IrSimpleFunction>()
     .firstOrNull { it.name.asString() == "__bridgeRegister" }
-  if (existing != null) return existing.symbol
+  if (existing != null) return BridgeRegisterTarget(existing.symbol, isRaw = true)
 
   val bridgeRegisterFn = pluginContext.irFactory.buildFun {
     name = Name.identifier("__bridgeRegister")
@@ -628,19 +717,23 @@ private fun findOrCreateBridgeRegister(
     )
   }
   fileForModule.declarations += bridgeRegisterFn
-  return bridgeRegisterFn.symbol
+  return BridgeRegisterTarget(bridgeRegisterFn.symbol, isRaw = true)
 }
 
-/** The synthetic `__bridgeRegisterRuntime` external fun (with @JsName), taking the factories object. */
+/**
+ * The synthetic `__bridgeRegisterRuntime` external fun (with @JsName), taking the factories
+ * object. There is no tolerant counterpart in the annotations artifact, so this target is
+ * always raw: its call sites must guard it.
+ */
 private fun findOrCreateBridgeRegisterRuntime(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
-): IrSimpleFunctionSymbol {
+): BridgeRegisterTarget {
   val existing = fileForModule.declarations
     .filterIsInstance<IrSimpleFunction>()
     .firstOrNull { it.name.asString() == "__bridgeRegisterRuntime" }
-  if (existing != null) return existing.symbol
+  if (existing != null) return BridgeRegisterTarget(existing.symbol, isRaw = true)
 
   val bridgeRegisterRuntimeFn = pluginContext.irFactory.buildFun {
     name = Name.identifier("__bridgeRegisterRuntime")
@@ -674,7 +767,7 @@ private fun findOrCreateBridgeRegisterRuntime(
     )
   }
   fileForModule.declarations += bridgeRegisterRuntimeFn
-  return bridgeRegisterRuntimeFn.symbol
+  return BridgeRegisterTarget(bridgeRegisterRuntimeFn.symbol, isRaw = true)
 }
 
 /** Attach a dispatch receiver to an injected member (the parameters list is the single source of truth in 2.3). */

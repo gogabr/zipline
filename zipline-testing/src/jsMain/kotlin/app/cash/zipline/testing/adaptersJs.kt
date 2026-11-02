@@ -18,6 +18,10 @@ package app.cash.zipline.testing
 import app.cash.zipline.Zipline
 
 class JsAdaptersService : AdaptersService {
+  override fun ping() {
+    // No-op.
+  }
+
   override fun echo(request: AdaptersRequest): AdaptersResponse {
     return AdaptersResponse("thank you for using your serializers, ${request.message}")
   }

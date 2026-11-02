@@ -162,6 +162,12 @@ const char* Hermes_getVersion(void);
 // Error handling
 const char* HermesContext_getLastError(void* context);
 
+// Record a host-side error message on the context without throwing. Used by
+// Kotlin/Native callbacks that catch a Kotlin exception: the C++ host-function
+// lambda reads it back and re-raises as a jsi::JSError, so the message
+// survives the C boundary instead of collapsing to "<unknown>".
+void HermesContext_setHostError(void* context, const char* message);
+
 // -- Bridge Handle Management (for Kotlin/Native generated bridge code) --
 // Tag constants for HermesBridge_getValueTag. Must stay in sync with
 // the NativeGenerator Kotlin code.

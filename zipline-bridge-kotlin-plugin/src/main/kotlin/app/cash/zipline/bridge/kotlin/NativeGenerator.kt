@@ -201,10 +201,40 @@ internal fun generateNativeBridgeFile(
     appendLine("private const val TAG_ARRAY = 6")
     appendLine("private const val TAG_UNDEFINED = 7")
     appendLine()
+    // Emitted helpers: the same message template the C decoder uses, so a mistyped field reads
+    // identically on both hosts. File-private top-level: each generated file owns a copy.
+    append(
+      """
+      |private fun bridgeKindName(tag: Int): String = when (tag) {
+      |    1, 2 -> "a number"
+      |    4 -> "a boolean"
+      |    3 -> "a string"
+      |    5 -> "an object"
+      |    0 -> "null"
+      |    7 -> "undefined"
+      |    else -> "an unknown JS type"
+      |}
+      |
+      |private fun bridgeThrowFieldMismatch(className: String, fieldName: String, expected: String, tag: Int): Nothing {
+      |    throw app.cash.zipline.ZiplineApiMismatchException(
+      |        "host bridge: " + className + "." + fieldName + " expects " + expected +
+      |            " but the guest sent " + bridgeKindName(tag))
+      |}
+      |
+      """.trimMargin(),
+    )
+    // Generator-side: emit the tag guard for a non-nullable scalar read. The check runs on
+    // HermesBridge_getValueTag BEFORE the isX()-guarded accessor, which returns a zero value
+    // rather than throwing on a wrong tag.
+    fun StringBuilder.requireTagKt(name: String, accepted: Set<Int>, expected: String) {
+      appendLine("    val ${name}Tag = HermesBridge_getValueTag(ctx, ${name}Ref)")
+      appendLine("    if (${accepted.joinToString(" && ") { "${name}Tag != $it" }}) bridgeThrowFieldMismatch(\"$fqn\", \"$name\", \"$expected\", ${name}Tag)")
+    }
     appendLine("public fun $functionName(")
     appendLine("  ctx: COpaquePointer?,")
     appendLine("  jsValHandle: Int,")
     appendLine("): COpaquePointer? {")
+    appendLine("  try {")
     // Generate field reads
     val helpers = StringBuilder()
     for (field in fields) {
@@ -221,7 +251,8 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")}")
           } else {
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")}")
+          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")}")
           }
           appendLine("    ${freeRef()}")
         }
@@ -232,7 +263,8 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toFloat() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")}")
           } else {
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toFloat() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")}")
+          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toFloat() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")}")
           }
           appendLine("    ${freeRef()}")
         }
@@ -243,7 +275,8 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref) ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref)")}")
           } else {
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref) ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref)")}")
+          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref) ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref)")}")
           }
           appendLine("    ${freeRef()}")
         }
@@ -254,7 +287,8 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToLong(ctx, ${field.name}Ref) ?: JsNumberToLong(ctx, ${field.name}Ref)")}")
           } else {
-            appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToLong(ctx, ${field.name}Ref) ?: JsNumberToLong(ctx, ${field.name}Ref)")}")
+          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToLong(ctx, ${field.name}Ref) ?: JsNumberToLong(ctx, ${field.name}Ref)")}")
           }
           appendLine("    ${freeRef()}")
         }
@@ -264,6 +298,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")
           } else {
+            requireTagKt(field.name, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")
           }
           appendLine("    ${freeRef()}")
@@ -274,6 +309,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueBool(ctx, ${field.name}Ref) != 0")
           } else {
+            requireTagKt(field.name, setOf(4), "a boolean")
             appendLine("    val ${field.name} = HermesBridge_getValueBool(ctx, ${field.name}Ref) != 0")
           }
           appendLine("    ${freeRef()}")
@@ -284,6 +320,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref)")
           } else {
+            requireTagKt(field.name, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref)")
           }
           appendLine("    ${freeRef()}")
@@ -294,6 +331,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")
           } else {
+            requireTagKt(field.name, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")
           }
           appendLine("    ${freeRef()}")
@@ -304,6 +342,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else JsNumberToLong(ctx, ${field.name}Ref)")
           } else {
+            requireTagKt(field.name, setOf(1, 2, 5), "a number")
             appendLine("    val ${field.name} = JsNumberToLong(ctx, ${field.name}Ref)")
           }
           appendLine("    ${freeRef()}")
@@ -315,7 +354,8 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else ${field.name}Str?.toKStringFromUtf8()?.also { platform.posix.free(${field.name}Str) }")
           } else {
-            appendLine("    val ${field.name} = ${field.name}Str?.toKStringFromUtf8()?.also { platform.posix.free(${field.name}Str) } ?: \"\"")
+            requireTagKt(field.name, setOf(3), "a string")
+            appendLine("    val ${field.name} = ${field.name}Str!!.toKStringFromUtf8().also { platform.posix.free(${field.name}Str) }")
           }
           appendLine("    ${freeRef()}")
         }
@@ -439,7 +479,7 @@ internal fun generateNativeBridgeFile(
       // production builds drop it), and the index is range-checked: an unchecked index aborts.
       appendLine("    val ordinal = jsEnumOrdinal(ctx, jsValHandle)")
       appendLine("    val _obj = $qualifier$className.entries.getOrNull(ordinal)")
-      appendLine("        ?: error(\"host bridge: ordinal \$ordinal is out of range for $qualifier$className\")")
+      appendLine("        ?: throw app.cash.zipline.ZiplineApiMismatchException(\"host bridge: ordinal \$ordinal is out of range for $fqn\")")
     } else if (ctorFields.isNotEmpty()) {
       appendLine("    @Suppress(\"UNCHECKED_CAST\")")
       append("    val _obj = $qualifier$className(")
@@ -456,6 +496,11 @@ internal fun generateNativeBridgeFile(
       appendLine("    _obj.${field.name} = ${field.name}")
     }
     appendLine("    return StableRef.create(_obj).asCPointer()")
+    appendLine("  } catch (e: app.cash.zipline.ZiplineApiMismatchException) {")
+    appendLine("    throw e")
+    appendLine("  } catch (e: Throwable) {")
+    appendLine("    throw app.cash.zipline.ZiplineApiMismatchException(\"host bridge: $fqn: \${e.message}\")")
+    appendLine("  }")
     appendLine("}")
     appendLine()
     // Nested collection/array/map converters (may be empty).

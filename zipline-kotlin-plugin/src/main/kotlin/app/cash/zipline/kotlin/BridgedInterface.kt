@@ -15,26 +15,42 @@
  */
 
 package app.cash.zipline.kotlin
-
 import org.jetbrains.kotlin.backend.common.ScopeWithIr
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.IrElement
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.IrStatementsBuilder
+import org.jetbrains.kotlin.ir.builders.declarations.buildFun
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irConcat
+import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.builders.irVararg
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationParent
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrTypeParameter
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.declarations.IrVariable
+import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrStatementOrigin
+import org.jetbrains.kotlin.ir.expressions.impl.IrCatchImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrFunctionExpressionImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrThrowImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrPropertySymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classFqName
@@ -51,6 +67,10 @@ import org.jetbrains.kotlin.ir.util.isInterface
 import org.jetbrains.kotlin.ir.util.isSuspend
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.substitute
+import org.jetbrains.kotlin.name.CallableId
+import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.name.Name
 
 /**
  * A user-defined interface (like `EchoService` or `Callback<String>`) and support for generating
@@ -102,21 +122,32 @@ internal class BridgedInterface(
   val bridgedFunctions: List<IrSimpleFunctionSymbol>
     get() = bridgedFunctionsWithOverrides.map { it[0] }
 
-  /** Declares local vars for all the serializers needed to bridge this interface. */
+  /**
+   * Declares local `Lazy<KSerializer<*>>` vars for all the serializers needed to bridge this
+   * interface. Each serializer resolves lazily so a missing serializer throws at call time (a
+   * catchable [app.cash.zipline.ZiplineApiMismatchException]) rather than at `take()`/`bind()`
+   * time, and so one function's unresolvable type never poisons another function's call.
+   */
   fun declareSerializerTemporaries(
     statementsBuilder: IrStatementsBuilder<*>,
     serializersModuleParameter: IrValueParameter,
     serializersExpression: IrVariable,
+    serviceSerialNameExpression: IrExpression,
+    enclosingDeclaration: IrDeclarationParent,
   ): Map<IrType, IrVariable> {
     return statementsBuilder.irDeclareSerializerTemporaries(
       serializersModuleParameter = serializersModuleParameter,
       serializersExpression = serializersExpression,
+      serviceSerialNameExpression = serviceSerialNameExpression,
+      enclosingDeclaration = enclosingDeclaration,
     )
   }
 
   private fun IrStatementsBuilder<*>.irDeclareSerializerTemporaries(
     serializersModuleParameter: IrValueParameter,
     serializersExpression: IrVariable,
+    serviceSerialNameExpression: IrExpression,
+    enclosingDeclaration: IrDeclarationParent,
   ): Map<IrType, IrVariable> {
     val requiredTypes = mutableSetOf<IrType>()
     for (bridgedFunction in bridgedFunctions) {
@@ -131,17 +162,72 @@ internal class BridgedInterface(
       }
     }
 
+    val builtIns = pluginContext.irBuiltIns
+    val kSerializerStar = ziplineApis.kSerializer.starProjectedType
+    val apiMismatchCtor = pluginContext.referenceConstructors(
+      ClassId(FqName("app.cash.zipline"), Name.identifier("ZiplineApiMismatchException")),
+    ).single()
+
     val result = mutableMapOf<IrType, IrVariable>()
     for (requiredType in requiredTypes) {
-      val serializerExpression = serializerExpression(
+      val serializerExpr = serializerExpression(
         type = requiredType,
         serializersModuleParameter = serializersModuleParameter,
         serializersExpression = serializersExpression,
         contextual = requiredType.isContextual,
-      )
+      ).expression
+
+      // lazy { try { <serializer> } catch (e: Throwable) { throw ZiplineApiMismatchException(...) } }
+      val lazyCall = pluginContext.irLazy(
+        valueType = kSerializerStar,
+        enclosingDeclaration = enclosingDeclaration,
+      ) { bodyBuilder, initializerFn ->
+        val typeName = requiredType.getClass()?.classId?.asFqNameString() ?: requiredType.toString()
+        val messageExpr = bodyBuilder.irConcat().apply {
+          arguments += bodyBuilder.irString("json bridge: no serializer registered for $typeName in ")
+          arguments += serviceSerialNameExpression
+        }
+        val ctorCall = bodyBuilder.irCallConstructor(apiMismatchCtor, listOf()).apply {
+          arguments[0] = messageExpr
+        }
+        val throwExpr = IrThrowImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          builtIns.nothingType,
+          ctorCall,
+        )
+        val catchParameter = IrVariableImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          IrDeclarationOrigin.CATCH_PARAMETER,
+          IrVariableSymbolImpl(),
+          Name.identifier("e"),
+          builtIns.throwableType,
+          isVar = false,
+          isConst = false,
+          isLateinit = false,
+        ).apply {
+          this.parent = initializerFn
+        }
+        val catchClause = IrCatchImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          catchParameter,
+          throwExpr,
+          null,
+        )
+        IrTryImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          kSerializerStar,
+          serializerExpr,
+          listOf(catchClause),
+          null,
+        )
+      }
       result[requiredType] = irTemporary(
-        value = serializerExpression.expression,
-        nameHint = "serializer",
+        value = lazyCall,
+        nameHint = "serializerLazy",
         isMutable = false,
       )
     }

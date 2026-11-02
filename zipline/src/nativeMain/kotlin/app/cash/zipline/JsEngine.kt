@@ -54,7 +54,17 @@ private fun <V> AtomicReference<Map<Long, V>>.removeValue(key: Long) {
 private fun outboundChannelCallCallback(context: COpaquePointer?, callJson: CPointer<ByteVar>?): CPointer<ByteVar>? {
     val channel = outboundChannels.load()[context?.rawValue?.toLong() ?: return null] ?: return null
     val callJsonStr = callJson?.toKString() ?: return null
-    val result: String = channel.call(callJsonStr)
+    // A Kotlin exception (e.g. a missing serializer) must not unwind across the
+    // C boundary: Hermes would surface it as "Exception in HostFunction:
+    // <unknown>". Record the message on the context and return NULL; the C++
+    // host-function lambda re-raises it as a jsi::JSError with the message
+    // intact, mirroring the JNI path's throwJavaExceptionFromJs.
+    val result: String = try {
+        channel.call(callJsonStr)
+    } catch (t: Throwable) {
+        HermesContext_setHostError(context, t.message ?: "host call failed")
+        return null
+    }
     val bytes: ByteArray = result.encodeToByteArray()
     val byteCount: Int = bytes.size
     // The C++ caller releases the returned buffer with free(), so it must be
@@ -75,7 +85,15 @@ private fun outboundChannelCallCallback(context: COpaquePointer?, callJson: CPoi
 private fun outboundChannelDisconnectCallback(context: COpaquePointer?, instanceName: CPointer<ByteVar>?): Int {
     val channel = outboundChannels.load()[context?.rawValue?.toLong() ?: return 0] ?: return 0
     val instanceNameStr = instanceName?.toKString() ?: return 0
-    return if (channel.disconnect(instanceNameStr)) 1 else 0
+    // Same contract as outboundChannelCallCallback: a Kotlin exception is
+    // recorded on the context and reported as a JS error by the C++ lambda
+    // instead of unwinding across the C boundary as "<unknown>".
+    return try {
+        if (channel.disconnect(instanceNameStr)) 1 else 0
+    } catch (t: Throwable) {
+        HermesContext_setHostError(context, t.message ?: "host disconnect failed")
+        0
+    }
 }
 
 // Called from C++ when JS invokes finishChanges() on the Direct Bridge channel.

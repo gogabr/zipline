@@ -49,6 +49,10 @@ class ContextJni : public ContextBase {
   jsi::String toJsString(JNIEnv* env, jstring javaString) const;
   jobject toJavaObject(JNIEnv* env, const jsi::Value& value,
                        bool throwOnUnsupportedType = true);
+  // The converter without the C++ landing pad. Internal recursion uses this so a nested
+  // decode failure is reported once, at the outermost boundary, by toJavaObject.
+  jobject toJavaObjectUnchecked(JNIEnv* env, const jsi::Value& value,
+                               bool throwOnUnsupportedType);
   void throwJsException(JNIEnv* env, jsi::JSError& error);
   jsi::Value throwJavaExceptionFromJs(JNIEnv* env);
 

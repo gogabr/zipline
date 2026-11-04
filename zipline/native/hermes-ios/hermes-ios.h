@@ -246,6 +246,11 @@ int HermesBridge_newObjectWithPrototype(void* context, const char* fq);
  *  getter-only accessor the class prototype carries. */
 void HermesBridge_defineProperty(void* context, int objHandle, const char* name, int valueHandle);
 
+/** Create a plain `{}` object handle (no prototype beyond Object.prototype). Used as the
+ *  carrier of host-owned fields passed to the guest's create-factory; the guest reads it
+ *  with `key in target` / `target[key]`, so it must NOT carry a class prototype. */
+int HermesBridge_newPlainObject(void* context);
+
 int HermesBridge_createInt(void* context, int value);
 int HermesBridge_createDouble(void* context, double value);
 int HermesBridge_createBool(void* context, int value);

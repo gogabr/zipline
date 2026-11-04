@@ -14,6 +14,7 @@ import app.cash.zipline.hermes.HermesBridge_freeHandle
 import app.cash.zipline.hermes.HermesBridge_getProperty
 import app.cash.zipline.hermes.HermesBridge_newArray
 import app.cash.zipline.hermes.HermesBridge_newObjectWithPrototype
+import app.cash.zipline.hermes.HermesBridge_newPlainObject
 import app.cash.zipline.hermes.HermesBridge_setArrayElement
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -108,6 +109,35 @@ private fun callFactory(ctx: COpaquePointer?, name: String, args: IntArray): Int
   if (result < 0) error("HOST2JS: the guest $name runtime factory failed")
   return result
 }
+
+/**
+ * True when the guest registered a `create_<fqn>` host->guest create-factory under [name].
+ * No factory means the class has no defaulted fields on the guest, so the caller's
+ * prototype-based path is the correct encode mechanism. Mirrors the C host's
+ * `jsiHost2JsFindCreateFactory`: the factory's existence is a guest-side property, so
+ * the probe - not the host's own shape - is the cross-version truth.
+ */
+public fun hasJsCreateFactory(ctx: COpaquePointer?, name: String): Boolean =
+  factoryFunction(ctx, name) >= 0
+
+/**
+ * A plain `{}` carrier object for the create-factory (no class prototype: the guest reads
+ * it with `key in target` / `target[key]`). The caller owns the returned handle.
+ */
+public fun newJsPlainObject(ctx: COpaquePointer?): Int {
+  val handle = HermesBridge_newPlainObject(ctx)
+  if (handle < 0) error("HOST2JS: failed to allocate a plain JS carrier object")
+  return handle
+}
+
+/**
+ * Call the guest's `create_<fqn>` factory with the carrier object of host-owned fields.
+ * The factory runs the guest's REAL constructor: present fields pass through, absent
+ * defaulted parameters get the guest's real default expression (including non-constant
+ * ones). Loud on failure, like every other factory call. The caller owns the result handle.
+ */
+public fun callJsCreateFactory(ctx: COpaquePointer?, name: String, fieldsHandle: Int): Int =
+  callFactory(ctx, name, intArrayOf(fieldsHandle))
 
 /**
  * Convert a Kotlin [Long] to a real Kotlin/JS `kotlin.Long` instance (correct prototype and

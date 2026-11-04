@@ -1202,6 +1202,19 @@ void HermesBridge_defineProperty(void* context, int objHandle, const char* name,
     }
 }
 
+int HermesBridge_newPlainObject(void* context) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "host2js: invalid context");
+    jsi::Runtime& rt = *ctx->runtime;
+    try {
+        return allocBridgeHandle(ctx, std::make_shared<jsi::Value>(rt, jsi::Object(rt)));
+    } catch (const jsi::JSError& e) {
+        return bridgeFailure(ctx, e.getMessage());
+    } catch (const std::exception& e) {
+        return bridgeFailure(ctx, e.what());
+    }
+}
+
 int HermesBridge_createInt(void* context, int value) {
     ContextNative* ctx = asNativeContext(context);
     if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");

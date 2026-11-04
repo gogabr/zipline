@@ -10,10 +10,12 @@ import org.jetbrains.kotlin.ir.builders.declarations.IrValueParameterBuilder
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildFun
 import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
+import org.jetbrains.kotlin.ir.builders.irBlock
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irIfThenElse
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irTemporary
@@ -117,6 +119,9 @@ internal fun injectNativeConvertToJsMembers(
   val anyToJsSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "anyToJs")
   val setJsPropertySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "setJsProperty")
   val newJsObjectSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "newJsObject")
+  val hasCreateFactorySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "hasJsCreateFactory")
+  val newJsPlainObjectSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "newJsPlainObject")
+  val callJsCreateFactorySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "callJsCreateFactory")
   val refuseEnumSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsRefuseEnum")
   val host2JsConvertible = finder.findClass(
     ClassId(FqName("app.cash.zipline"), Name.identifier("Host2JsConvertible")),
@@ -161,15 +166,6 @@ internal fun injectNativeConvertToJsMembers(
 
     val builder = pluginContext.irBuiltIns.createIrBuilder(member.symbol)
     member.body = builder.irBlockBody {
-      val obj = {
-        // newJsObject throws when the guest never registered the prototype; no sentinel to check.
-        irTemporary(
-          irCall(newJsObjectSymbol).apply {
-            arguments[0] = irGet(member.parameters[1])
-            arguments[1] = irString(protoFqn)
-          },
-        )
-      }
       if (clazz.kind == ClassKind.ENUM_CLASS) {
         // An enum has no host->JS representation: the guest's instances are the singletons from its
         // own values(), so an object built here would only *look* like one - its ordinal would be a
@@ -191,21 +187,90 @@ internal fun injectNativeConvertToJsMembers(
           },
         )
       } else {
-        val obj = obj()
-        for (field in extractFields(clazz, includeValBodyFields = true)) {
-          val backingField = findBackingField(clazz, field.name)
-            ?: error("HOST2JS: no backing field for ${clazz.name.asString()}.${field.name}")
-          +irCall(setJsPropertySymbol).apply {
-            arguments[0] = irGet(member.parameters[1])
-            arguments[1] = irGet(obj)
-            arguments[2] = irString(field.jsPropertyName)
-            arguments[3] = irCall(anyToJsSymbol).apply {
+        // The encode mechanism is chosen at RUNTIME by probing the guest's registration, not by
+        // the host's own field shape: in a version-skew pairing the host's converter was
+        // compiled from the host tree's class, which may lack a default the GUEST's class has.
+        // The guest registers `create_<fqn>` iff its class has a defaulted field, so the probe
+        // is the cross-version truth. Factory present -> run the guest's REAL constructor (the
+        // only mechanism for a defaulted class). Factory absent -> the class has no defaults on
+        // the guest, so the original `Object.create(proto)` path is correct. Mirrors
+        // CGenerator.emitHost2JsConvertToJs.
+        val factoryJsName = createFactoryJsName(protoFqn)
+        val factoryPresent = irCall(hasCreateFactorySymbol).apply {
+          arguments[0] = irGet(member.parameters[1])
+          arguments[1] = irString(factoryJsName)
+        }
+        val thenBlock = irBlock(resultType = jsValueType) {
+          // Carrier object of the host-owned fields; the guest factory reads it with
+          // `key in target` / `target[key]`, so it is a plain object, not a proto instance.
+          val carrier = irTemporary(
+            irCall(newJsPlainObjectSymbol).apply {
               arguments[0] = irGet(member.parameters[1])
-              arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
+            },
+          )
+          for (field in extractFields(clazz, includeValBodyFields = true)) {
+            val backingField = findBackingField(clazz, field.name)
+              ?: error("HOST2JS: no backing field for ${clazz.name.asString()}.${field.name}")
+            +irCall(setJsPropertySymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irGet(carrier)
+              arguments[2] = irString(field.jsPropertyName)
+              arguments[3] = irCall(anyToJsSymbol).apply {
+                arguments[0] = irGet(member.parameters[1])
+                arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
+              }
             }
           }
+          // The guest ctor set the ctor-param fields from the carrier (applying the guest's real
+          // defaults for the ones this host didn't send); body fields the host owns are overlaid.
+          val result = irTemporary(
+            irCall(callJsCreateFactorySymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irString(factoryJsName)
+              arguments[2] = irGet(carrier)
+            },
+          )
+          for (field in extractFields(clazz, includeValBodyFields = true)) {
+            if (field.isConstructorParam) continue
+            val backingField = findBackingField(clazz, field.name)
+              ?: error("HOST2JS: no backing field for ${clazz.name.asString()}.${field.name}")
+            +irCall(setJsPropertySymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irGet(result)
+              arguments[2] = irString(field.jsPropertyName)
+              arguments[3] = irCall(anyToJsSymbol).apply {
+                arguments[0] = irGet(member.parameters[1])
+                arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
+              }
+            }
+          }
+          +irGet(result)
         }
-        +irReturn(irGet(obj))
+        val elseBlock = irBlock(resultType = jsValueType) {
+          // New instance whose prototype is the EXISTING retained guest prototype for
+          // "$protoFqn" (newJsObject throws when the guest never registered it).
+          val obj = irTemporary(
+            irCall(newJsObjectSymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irString(protoFqn)
+            },
+          )
+          for (field in extractFields(clazz, includeValBodyFields = true)) {
+            val backingField = findBackingField(clazz, field.name)
+              ?: error("HOST2JS: no backing field for ${clazz.name.asString()}.${field.name}")
+            +irCall(setJsPropertySymbol).apply {
+              arguments[0] = irGet(member.parameters[1])
+              arguments[1] = irGet(obj)
+              arguments[2] = irString(field.jsPropertyName)
+              arguments[3] = irCall(anyToJsSymbol).apply {
+                arguments[0] = irGet(member.parameters[1])
+                arguments[1] = irGetField(irGet(member.dispatchReceiverParameter!!), backingField)
+              }
+            }
+          }
+          +irGet(obj)
+        }
+        +irReturn(irIfThenElse(jsValueType, factoryPresent, thenBlock, elseBlock))
       }
     }
     clazz.declarations += member

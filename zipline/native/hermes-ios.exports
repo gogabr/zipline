@@ -83,6 +83,7 @@ _HermesBridge_hasGlobalFunction
 _HermesBridge_isFunction
 _HermesBridge_newArray
 _HermesBridge_newObjectWithPrototype
+_HermesBridge_newPlainObject
 _HermesBridge_setArrayElement
 _HermesBridge_warmUpModule
 _HermesContext_setDirectCreateCallback

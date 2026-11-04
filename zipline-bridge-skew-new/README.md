@@ -96,9 +96,9 @@ sees. The guest's prototype registry is the gate on the receiving side.
 | `null` into guest non-null | new host → old guest | ✅ | `null` | same | — |
 | Enum payload | both | ❌ refused by design | `IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; the guest would only see a lookalike, not an enum instance` | same (wrapped, folded) | — |
 | Hierarchy / interface change | both | ✅ | values cross unchanged | same | — |
-| Defaulted ctor param missing on host (`DefaultedCtorPayload.b`) | old host → new guest | ✅ | `11\|dflt` — the C host probes the guest's `create_<fqn>` factory and runs the guest's real ctor | `11\|undefined` — native has no factory path; `Object.create(proto)` leaves `b` absent | divergence #3 |
-| Defaulted body `var` missing on host (`DefaultedBodyVar.extra`) | old host → new guest | ✅ | `11\|bx` — the factory's ctor initializes `extra`, then the host overlays its own `a` | `11\|undefined` — native leaves `extra` absent | divergence #3 |
-| Non-constant default missing on host (`DefaultedNonConstPayload.b = "nc-$a"`) | old host → new guest | ✅ | `11\|nc-11` — the guest's real ctor computes the default; no host could supply it | `11\|undefined` — native leaves `b` absent | divergence #3 |
+| Defaulted ctor param missing on host (`DefaultedCtorPayload.b`) | old host → new guest | ✅ | `11\|dflt` — the host probes the guest's `create_<fqn>` factory and runs the guest's real ctor | same | — |
+| Defaulted body `var` missing on host (`DefaultedBodyVar.extra`) | old host → new guest | ✅ | `11\|bx` — the factory's ctor initializes `extra`, then the host overlays its own `a` | same | — |
+| Non-constant default missing on host (`DefaultedNonConstPayload.b = "nc-$a"`) | old host → new guest | ✅ | `11\|nc-11` — the guest's real ctor computes the default; no host could supply it | same | — |
 | Guest's own `new` of the non-constant-default class | guest-side | ✅ | `nc-11` — the real ctor computes `b` from `a` | same | — |
 
 The host→guest refusals (`no registered prototype`, `is an enum`) stay `IllegalStateException`, not
@@ -108,7 +108,7 @@ reads above are the skew path and use the mismatch type.
 
 ## JVM vs Kotlin/Native divergence
 
-Three behavior splits the matrix pins with `assertObserved(..., nativeExpected = ...)`. These are real
+Two behavior splits the matrix pins with `assertObserved(..., nativeExpected = ...)`. These are real
 host-implementation differences, not test artifacts:
 
 1. **Non-constructor `val` body fields.** The gate is `extractFields`'s `includeValBodyFields`
@@ -123,11 +123,6 @@ host-implementation differences, not test artifacts:
    silent default only bites when the host's default differs from what the guest meant to send.
 2. **Retyped Int→String host→guest.** The guest stringifies the JS number: `99` on JVM, `99.0` on
    Kotlin/Native.
-3. **Defaulted-field host→guest encode.** The C host probes the guest's `create_<fqn>` factory at
-   runtime and runs the guest's real constructor, so a defaulted field the host never sends gets
-   the guest's real default (including non-constant ones like `"nc-$a"`). The Kotlin/Native host
-   has no factory path (branch 3 does not extend the native encoder), so it still uses
-   `Object.create(proto)` and the guest reads the absent field as `undefined`.
 
 Message dialect is also folded: JVM C-generated messages are lowercase `host2js:` with a bare class
 name; Kotlin/Native's are uppercase `HOST2JS:` and quote it. `normalizeBridgeMessage` folds the

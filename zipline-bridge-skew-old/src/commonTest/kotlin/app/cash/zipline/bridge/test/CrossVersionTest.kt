@@ -301,16 +301,13 @@ class CrossVersionTest {
   /**
    * Defaulted ctor field missing on the host: the old host sends only `a`; the new guest's
    * `create_<fqn>` factory runs the REAL constructor with `b` absent, so the guest's own default
-   * expression supplies it. The C host probes the guest's registration and finds the factory.
-   * The Kotlin/Native host has no factory path (branch 3 does not extend the native encoder), so it
-   * still uses `Object.create(proto)` and the guest reads `b` as undefined — a host-implementation
-   * divergence, not a skew one.
+   * expression supplies it. Both the C host and the Kotlin/Native host probe the guest's
+   * registration and find the factory, so both get the guest's real default.
    */
   @Test fun hostToGuest_defaultedCtorFieldMissingOnHost() = withNewGuest { host, _ ->
     assertObserved(
       "host2js-defaulted-ctor/DefaultedCtorPayload.b",
       "11|dflt",
-      nativeExpected = "11|undefined",
     ) {
       host.read("readBackDefaultedCtor", DefaultedCtorPayload(a = 11))
     }
@@ -318,14 +315,13 @@ class CrossVersionTest {
 
   /**
    * Defaulted body var missing on the host: the old host sends only `a`; the new guest's factory
-   * runs the real ctor (which initializes `extra` to "bx"), then the C host overlays its own
-   * `a`. The native host again leaves `extra` undefined.
+   * runs the real ctor (which initializes `extra` to "bx"), then the host overlays its own
+   * `a`. Both hosts take this path, so both see the guest's real default.
    */
   @Test fun hostToGuest_defaultedBodyVarMissingOnHost() = withNewGuest { host, _ ->
     assertObserved(
       "host2js-defaulted-bodyvar/DefaultedBodyVar.extra",
       "11|bx",
-      nativeExpected = "11|undefined",
     ) {
       host.read("readBackDefaultedBodyVar", DefaultedBodyVar().apply { a = 11 })
     }
@@ -333,14 +329,12 @@ class CrossVersionTest {
 
   /**
    * Non-constant default missing on the host: the host cannot compute `"nc-$a"`, but the guest's
-   * factory runs the real constructor, so the C host gets the computed value. The native host
-   * leaves `b` undefined.
+   * factory runs the real constructor, so both hosts get the computed value.
    */
   @Test fun hostToGuest_defaultedNonConstMissingOnHost() = withNewGuest { host, _ ->
     assertObserved(
       "host2js-defaulted-nonconst/DefaultedNonConstPayload.b",
       "11|nc-11",
-      nativeExpected = "11|undefined",
     ) {
       host.read("readBackDefaultedNonConst", DefaultedNonConstPayload(a = 11))
     }

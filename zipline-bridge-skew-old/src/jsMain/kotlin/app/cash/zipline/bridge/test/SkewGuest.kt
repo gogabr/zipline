@@ -97,3 +97,17 @@ fun readBackSealed(p: SealedHolder): String = "${p.s}"
 
 @JsExport
 fun readBackOnlyInOld(p: OnlyInOld): String = "${p.x}"
+
+/**
+ * Defaulted-field fixtures, old shapes: the guest omits the fields the new host declares with
+ * defaults, so the wire object never carries `b`/`extra`. The new host must fall back to its own
+ * default rather than throw.
+ */
+@JsExport
+fun provideDefaultedCtor(): DefaultedCtorPayload = DefaultedCtorPayload(a = 11)
+
+@JsExport
+fun provideDefaultedBodyVar(): DefaultedBodyVar = DefaultedBodyVar().apply { a = 11 }
+
+@JsExport
+fun provideDefaultedNonConst(): DefaultedNonConstPayload = DefaultedNonConstPayload(a = 11)

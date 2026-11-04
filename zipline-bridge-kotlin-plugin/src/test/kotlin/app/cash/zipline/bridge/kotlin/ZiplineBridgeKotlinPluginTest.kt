@@ -949,6 +949,61 @@ class ZiplineBridgeKotlinPluginTest {
   }
 
   /**
+   * A host2js class with a defaulted field encodes through the guest's create-factory: the
+   * generated C probes the guest's registration at runtime (the host's own shape may lack the
+   * default the guest has, so the probe is the cross-version truth), builds a plain carrier
+   * object of the host-owned fields, and calls `create_<fqn>`. The `Object.create(proto)` path
+   * stays as the factory-absent branch (a class with no defaults on the guest).
+   */
+  @Test
+  fun `host2js defaulted class generates create-factory probe`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "DfltH2J.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          class DfltH2J(val a: Int, val b: String = "dflt")
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_DfltH2J.cpp").toFile().readText()
+
+      // Runtime probe of the guest's registration, keyed by the create-factory JS name.
+      assertTrue(
+        content.contains(
+          "jsi::Value factory = jsiHost2JsFindCreateFactory(rt, \"create_com_example_DfltH2J\");",
+        ),
+        content,
+      )
+      assertTrue(content.contains("if (!factory.isUndefined()) {"), content)
+      // The carrier object the factory reads, and the call that runs the guest's real ctor.
+      assertTrue(content.contains("jsi::Value fieldsObj(rt, jsi::Object(rt));"), content)
+      assertTrue(content.contains("jsiHost2JsDefineProperty(rt, fieldsObj, \"a\", "), content)
+      assertTrue(content.contains("jsiHost2JsDefineProperty(rt, fieldsObj, \"b\", "), content)
+      assertTrue(
+        content.contains(
+          "jsiHost2JsCallCreateFactory(env, rt, \"create_com_example_DfltH2J\", std::move(fieldsObj));",
+        ),
+        content,
+      )
+      // The factory-absent branch keeps the original prototype-based creation for a guest with
+      // no defaults on this class.
+      assertTrue(content.contains("jsiHost2JsNewObject(env, rt, \"com.example.DfltH2J\")"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  /**
    * A defaulted constructor parameter gets the masked-ctor treatment: the synthetic
    * `<init>(...,int,DefaultConstructorMarker)` is looked up alongside the full ctor, the field's
    * undefined-ness is captured in a `use_default_*` bool, and the `NewObject` call selects the

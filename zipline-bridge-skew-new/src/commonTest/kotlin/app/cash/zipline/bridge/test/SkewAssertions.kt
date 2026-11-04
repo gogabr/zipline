@@ -24,6 +24,10 @@ internal val NEW_GUEST_READERS = listOf(
   "readBackWrapped",
   "readBackSealed",
   "readBackOnlyInNew",
+  "readBackDefaultedCtor",
+  "readBackDefaultedBodyVar",
+  "readBackDefaultedNonConst",
+  "selfCheckDefaultedNonConst",
 )
 
 /** The old bundle swaps `readBackOnlyInNew` for `readBackOnlyInOld`. */

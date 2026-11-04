@@ -134,3 +134,20 @@ data class SealedHolder(val s: SealedShape)
 @WithJS2HostBridge
 @WithHost2JSBridge
 data class OnlyInOld(val x: Int)
+
+/** Old-tree shape: no `b`; the new host must fall back to its own default. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class DefaultedCtorPayload(val a: Int)
+
+/** Old-tree shape: no `extra`. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+class DefaultedBodyVar {
+  var a: Int = 0
+}
+
+/** Old-tree shape: no `b`. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class DefaultedNonConstPayload(val a: Int)

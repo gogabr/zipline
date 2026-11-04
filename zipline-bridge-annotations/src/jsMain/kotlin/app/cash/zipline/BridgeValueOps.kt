@@ -106,3 +106,21 @@ public fun publishValueOps() {
     """,
   )
 }
+
+/**
+ * Presence test for the host->guest create-factory: is [key] an own-or-inherited property of
+ * [target]? The host builds a plain `{}` and `defineProperty`s only the fields it owns, so a
+ * guest-only field is simply absent here. The factory reads this to decide whether to pass the
+ * argument or omit it (letting the real default run).
+ *
+ * Top-level and public so the bridge plugin resolves it by [CallableId] from the annotations
+ * module's compile classpath, exactly like [publishValueOps].
+ */
+public fun bridgeHas(target: Any?, key: String): Boolean = js("key in target")
+
+/**
+ * Read [key] off [target] for the host->guest create-factory. The host already converted the
+ * value to the guest's JS shape before defining it, so the factory casts the result straight to
+ * the constructor-parameter type with no runtime check.
+ */
+public fun bridgeGet(target: Any?, key: String): Any? = js("target[key]")

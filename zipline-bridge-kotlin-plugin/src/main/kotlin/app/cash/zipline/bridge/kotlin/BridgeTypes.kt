@@ -33,6 +33,13 @@ import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
  */
 internal const val MAX_DEFAULTED_CTOR_PARAMS = 5
 
+/**
+ * The JS name under which a class's host->guest create-factory is registered on
+ * `__zipline_bridgeFactories`. Dots become underscores so the key is a legal JS identifier
+ * (`@JsName` rejects dots); the C host builds the same string when it looks the factory up.
+ */
+internal fun createFactoryJsName(fqn: String): String = "create_" + fqn.replace('.', '_')
+
 // -- field extraction data class --
 
 /**

@@ -103,3 +103,35 @@ fun readBackSealed(p: SealedHolder): String = "${p.s}"
 
 @JsExport
 fun readBackOnlyInNew(p: OnlyInNew): String = "${p.x}"
+
+/**
+ * Defaulted-field fixtures. The guest builds these with the defaulted parameter omitted, so the
+ * wire object never carries `b`/`extra`; a host crossing one back must let the guest's real
+ * constructor supply the default.
+ */
+@JsExport
+fun provideDefaultedCtor(): DefaultedCtorPayload = DefaultedCtorPayload(a = 11)
+
+@JsExport
+fun provideDefaultedBodyVar(): DefaultedBodyVar = DefaultedBodyVar().apply { a = 11 }
+
+@JsExport
+fun provideDefaultedNonConst(): DefaultedNonConstPayload = DefaultedNonConstPayload(a = 11)
+
+/** Guest-side reads of a host-built defaulted payload. */
+@JsExport
+fun readBackDefaultedCtor(p: DefaultedCtorPayload): String = "${p.a}|${p.b}"
+
+@JsExport
+fun readBackDefaultedBodyVar(p: DefaultedBodyVar): String = "${p.a}|${p.extra}"
+
+@JsExport
+fun readBackDefaultedNonConst(p: DefaultedNonConstPayload): String = "${p.a}|${p.b}"
+
+/**
+ * The guest constructs the non-constant-default payload itself: the real ctor computes `b` from
+ * `a`, so the guest-side read is the computed value. Proves the factory's ctor path produces the
+ * same value the guest's own `new` does.
+ */
+@JsExport
+fun selfCheckDefaultedNonConst(): String = DefaultedNonConstPayload(a = 11).b

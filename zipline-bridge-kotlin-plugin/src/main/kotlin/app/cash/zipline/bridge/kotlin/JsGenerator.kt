@@ -32,12 +32,21 @@ import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
+import org.jetbrains.kotlin.ir.builders.irIfThenElse
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.ir.builders.irCallOp
+import org.jetbrains.kotlin.ir.builders.irIfThen
+import org.jetbrains.kotlin.ir.builders.irImplicitCast
+import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.expressions.IrBlockBody
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
 import org.jetbrains.kotlin.ir.expressions.impl.IrCatchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
+import org.jetbrains.kotlin.ir.expressions.IrTypeOperator
+import org.jetbrains.kotlin.ir.expressions.impl.IrTypeOperatorCallImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
@@ -344,7 +353,7 @@ internal fun injectModuleLoadBridgeRegistration(
   val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
   val bridgeRegisterRuntime =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
-  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
+  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses)
   val factoriesCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary }
     ?: error("__BridgeRuntimeFactories primary constructor not found")
@@ -432,6 +441,7 @@ private fun buildRuntimeFactories(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
+  host2JsClasses: List<IrClass>,
 ): IrClass {
   val factoriesClass = pluginContext.irFactory.buildClass {
     name = Name.identifier("__BridgeRuntimeFactories")
@@ -545,8 +555,154 @@ private fun buildRuntimeFactories(
     }
   }
 
+  // Host->guest create-factories. A class with >=1 defaulted field (constructor parameter OR
+  // body var) gets a generated `create_<fqn>` method on this instance: the C host builds a
+  // plain `{}` of the fields it owns and calls the factory, which runs the REAL Kotlin
+  // constructor (passing the present ctor subset, omitting absent defaults so the real default
+  // expression runs — including non-constant ones like `"nc-$a"`; body-var initializers run
+  // inside the ctor too, so guest-only body defaults survive). Classes with no defaulted field
+  // need no factory: the host's `Object.create(proto)` path is already correct for them. Over
+  // the cap on defaulted CTOR params: fail the build loudly — silently passing placeholders for
+  // absent defaults would corrupt runtime values.
+  for (clazz in host2JsClasses) {
+    val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
+    val fields = extractFields(clazz)
+    if (fields.none { it.hasDefault }) continue
+    val defaultedCtorCount = fields.count { it.isConstructorParam && it.hasDefault }
+    if (defaultedCtorCount > MAX_DEFAULTED_CTOR_PARAMS) {
+      pluginContext.messageCollector.report(
+        CompilerMessageSeverity.ERROR,
+        "No host->guest create-factory generated for $ownFqn: it has $defaultedCtorCount " +
+          "defaulted constructor parameters; the zipline host2js bridge supports at most " +
+          "$MAX_DEFAULTED_CTOR_PARAMS. Remove the defaults or the bridge annotation.",
+      )
+      continue
+    }
+    val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
+    buildCreateFactory(finder, pluginContext, factoriesClass, clazz, targetFqn, fields)
+  }
+
   fileForModule.declarations += factoriesClass
   return factoriesClass
+}
+
+/**
+ * Build the host->guest create-factory for [clazz]: a method named
+ * `create_<fqn_underscored>` on `__BridgeRuntimeFactories` that takes the plain JS object of
+ * host-owned fields and returns a REAL instance of [clazz].
+ *
+ * Shape: a nested `bridgeHas(fieldsObj, name)` test per defaulted constructor parameter, with
+ * 2^k constructor-call leaves (k = defaulted count, capped at [MAX_DEFAULTED_CTOR_PARAMS] by
+ * the caller). Each leaf passes exactly the present subset via `putValueArgument`; omitting a
+ * defaulted parameter's argument makes the JS backend's default-argument stub pass the VOID
+ * sentinel, so the guest's real default expression runs — including non-constant ones like
+ * `"nc-$a"`. Required parameters appear in every leaf, guarded by a presence test that calls
+ * `error()` when the host failed to send one (a host-side bug, not skew).
+ *
+ * The factory is a pure constructor call: body-field initializers run inside the real ctor, so
+ * guest-only body defaults survive on the returned object; the host then `defineProperty`s its
+ * own host-owned fields onto the result.
+ */
+@Suppress("DEPRECATION_ERROR")
+private fun buildCreateFactory(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  factoriesClass: IrClass,
+  clazz: IrClass,
+  targetFqn: String,
+  fields: List<FieldInfo>,
+) {
+  val bridgeHasSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeHas")),
+  ).firstOrNull() ?: error("bridgeHas not found on compile classpath")
+  val bridgeGetSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeGet")),
+  ).firstOrNull() ?: error("bridgeGet not found on compile classpath")
+  val errorSymbol = finder.findFunctions(
+    CallableId(FqName("kotlin"), Name.identifier("error")),
+  ).firstOrNull { it.owner.parameters.count { p -> p.kind == IrParameterKind.Regular } == 1 }
+    ?: error("kotlin.error not found on compile classpath")
+
+  val ctor = clazz.declarations.filterIsInstance<IrConstructor>().firstOrNull { it.isPrimary }
+    ?: error("$targetFqn has no primary constructor for the create-factory")
+  // name -> (arguments index, param type). Constructors carry no extension parameters, so a
+  // regular param's position in the filtered list is the index `arguments` expects.
+  val ctorParams = ctor.parameters
+    .filter { it.kind == IrParameterKind.Regular }
+    .mapIndexed { index, p -> p.name.asString() to (index to p.type) }
+    .toMap()
+
+  val defaulted = fields.filter { it.isConstructorParam && it.hasDefault }
+  val required = fields.filter { it.isConstructorParam && !it.hasDefault }
+  val anyNType = pluginContext.irBuiltIns.anyNType
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    createFactoryJsName(targetFqn),
+    anyNType,
+    listOf(anyNType),
+  ) { builder, params ->
+    val fieldsObj = params[0]
+
+    fun bridgeHasCall(jsName: String): IrExpression = builder.irCall(bridgeHasSymbol).apply {
+      arguments[0] = builder.irGet(fieldsObj)
+      arguments[1] = builder.irString(jsName)
+    }
+
+    fun valueExpr(field: FieldInfo): IrExpression {
+      val paramType = ctorParams[field.name]?.second
+        ?: error("create-factory: no constructor parameter for field '${field.name}'")
+      return builder.irImplicitCast(
+        builder.irCall(bridgeGetSymbol).apply {
+          arguments[0] = builder.irGet(fieldsObj)
+          arguments[1] = builder.irString(field.jsPropertyName)
+        },
+        paramType,
+      )
+    }
+
+    // Leaf: one constructor call passing exactly the present subset. Absent defaulted
+    // parameters get no argument at all -> the VOID sentinel -> the real default runs.
+    fun leaf(present: Set<String>): IrExpression {
+      val call = builder.irCall(ctor)
+      for (field in fields) {
+        if (!field.isConstructorParam) continue
+        val entry = ctorParams[field.name] ?: continue
+        if (!field.hasDefault || field.name in present) {
+          call.arguments[entry.first] = valueExpr(field)
+        }
+      }
+      return call
+    }
+
+    fun tree(i: Int, acc: Set<String>): IrExpression {
+      if (i == defaulted.size) return leaf(acc)
+      val d = defaulted[i]
+      return builder.irIfThenElse(
+        anyNType,
+        bridgeHasCall(d.jsPropertyName),
+        tree(i + 1, acc + d.name),
+        tree(i + 1, acc),
+      )
+    }
+
+    var result: IrExpression = tree(0, emptySet())
+    for (r in required.reversed()) {
+      result = builder.irIfThenElse(
+        anyNType,
+        bridgeHasCall(r.jsPropertyName),
+        result,
+        builder.irCall(errorSymbol).apply {
+          arguments[0] = builder.irString(
+            "host bridge: required field '${r.jsPropertyName}' missing for $targetFqn",
+          )
+        },
+      )
+    }
+    result
+  }
 }
 
 /** Build an internal member function on [owner] whose body returns the [body] expression. */

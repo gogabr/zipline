@@ -134,3 +134,29 @@ data class SealedHolder(val s: SealedShape)
 @WithJS2HostBridge
 @WithHost2JSBridge
 data class OnlyInNew(val x: Int)
+
+/**
+ * Defaulted constructor parameter: the old tree declares only `a`. A host that omits `b` must
+ * get the GUEST's own default rather than a mismatch failure: the C host calls the guest's
+ * `create_<fqn>` factory, which runs the real constructor with `b` absent so the real default
+ * expression runs.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class DefaultedCtorPayload(val a: Int, val b: String = "dflt")
+
+/** Defaulted body `var`: the old tree omits `extra`; the guest's ctor initializer supplies it. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+class DefaultedBodyVar {
+  var a: Int = 0
+  var extra: String = "bx"
+}
+
+/**
+ * Non-constant default: `b` is computed from `a`, so no host could supply it from a stamped
+ * constant. The guest factory runs the real constructor, so the value is computed for real.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class DefaultedNonConstPayload(val a: Int, val b: String = "nc-$a")

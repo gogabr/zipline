@@ -297,4 +297,60 @@ class CrossVersionTest {
     assertEquals("keep", host.read("readBackDroppedBase", DroppedBasePayload(keep = "keep")))
     assertEquals("11", host.read("readBackInterface", InterfacePayload(v = 11)))
   }
+
+  /**
+   * Defaulted ctor field missing on the host: the old host sends only `a`; the new guest's
+   * `create_<fqn>` factory runs the REAL constructor with `b` absent, so the guest's own default
+   * expression supplies it. The C host probes the guest's registration and finds the factory.
+   * The Kotlin/Native host has no factory path (branch 3 does not extend the native encoder), so it
+   * still uses `Object.create(proto)` and the guest reads `b` as undefined — a host-implementation
+   * divergence, not a skew one.
+   */
+  @Test fun hostToGuest_defaultedCtorFieldMissingOnHost() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js-defaulted-ctor/DefaultedCtorPayload.b",
+      "11|dflt",
+      nativeExpected = "11|undefined",
+    ) {
+      host.read("readBackDefaultedCtor", DefaultedCtorPayload(a = 11))
+    }
+  }
+
+  /**
+   * Defaulted body var missing on the host: the old host sends only `a`; the new guest's factory
+   * runs the real ctor (which initializes `extra` to "bx"), then the C host overlays its own
+   * `a`. The native host again leaves `extra` undefined.
+   */
+  @Test fun hostToGuest_defaultedBodyVarMissingOnHost() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js-defaulted-bodyvar/DefaultedBodyVar.extra",
+      "11|bx",
+      nativeExpected = "11|undefined",
+    ) {
+      host.read("readBackDefaultedBodyVar", DefaultedBodyVar().apply { a = 11 })
+    }
+  }
+
+  /**
+   * Non-constant default missing on the host: the host cannot compute `"nc-$a"`, but the guest's
+   * factory runs the real constructor, so the C host gets the computed value. The native host
+   * leaves `b` undefined.
+   */
+  @Test fun hostToGuest_defaultedNonConstMissingOnHost() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js-defaulted-nonconst/DefaultedNonConstPayload.b",
+      "11|nc-11",
+      nativeExpected = "11|undefined",
+    ) {
+      host.read("readBackDefaultedNonConst", DefaultedNonConstPayload(a = 11))
+    }
+  }
+
+  /**
+   * The guest's own `new` of the non-constant-default class works on both hosts: the real ctor
+   * computes `b` from `a`, so the guest-side read is the computed value. No host encode involved.
+   */
+  @Test fun hostToGuest_selfCheckDefaultedNonConst() = withNewGuest { host, id ->
+    assertEquals("nc-11", host.evaluateOne(provide("selfCheckDefaultedNonConst", id)).toString())
+  }
 }

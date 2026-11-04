@@ -728,6 +728,40 @@ static inline jsi::Value jsiHost2JsRuntimeFactory(JNIEnv *env, jsi::Runtime &rt,
   return fn;
 }
 
+/**
+ * The guest's create-factory for a class with defaulted constructor parameters, looked up by
+ * its `create_<fqn>` JS name on the registered factories instance. Returns undefined when
+ * absent (the caller decides whether that is an error).
+ */
+static inline jsi::Value jsiHost2JsFindCreateFactory(jsi::Runtime &rt, const char *factoryJsName) {
+  jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);
+  if (!factories.isObject()) return jsi::Value::undefined();
+  return factories.asObject(rt).getProperty(rt, factoryJsName);
+}
+
+/**
+ * Call the guest's `create_<fqn>` factory with the plain object of host-owned fields. The
+ * factory runs the guest's REAL constructor: present fields are passed through, absent
+ * defaulted parameters get the guest's real default expression (including non-constant
+ * ones). Throws when the factory is missing: the C converter only emits this call for classes
+ * the plugin verified have a factory, so absence means the guest module never registered it.
+ */
+static inline jsi::Value jsiHost2JsCallCreateFactory(
+    JNIEnv *env, jsi::Runtime &rt, const char *factoryJsName, jsi::Value fieldsObj) {
+  jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);
+  jsi::Value fn = factories.isObject() ? factories.asObject(rt).getProperty(rt, factoryJsName)
+                                       : jsi::Value::undefined();
+  if (!fn.isObject() || !fn.asObject(rt).isFunction(rt)) {
+    std::string message = std::string("host2js: no registered create-factory ") + factoryJsName +
+                          "; the guest module did not call __bridgeRegisterRuntime";
+    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
+    return jsi::Value::undefined();
+  }
+  jsi::Value args[1] = {std::move(fieldsObj)};
+  return fn.asObject(rt).asFunction(rt).call(
+      rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1));
+}
+
 /** A `kotlin.Long` built by the guest, so the guest sees a real Kotlin/JS Long. */
 static inline jsi::Value jsiHost2JsLongToJs(JNIEnv *env, jsi::Runtime &rt, jlong value) {
   jsi::Value factory = jsiHost2JsRuntimeFactory(env, rt, "newLong");

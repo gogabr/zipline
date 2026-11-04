@@ -219,7 +219,7 @@ private fun resolveTopLevelFun(finder: DeclarationFinder, packageName: String, n
 }
 
 /** The backing field for [propertyName], searching [clazz] and its superclasses. */
-private fun findBackingField(clazz: IrClass, propertyName: String): IrField? {
+internal fun findBackingField(clazz: IrClass, propertyName: String): IrField? {
   clazz.properties.firstOrNull { it.name.asString() == propertyName }?.backingField?.let { return it }
   for (superType in clazz.superTypes) {
     val superClass = superType.getClass() ?: continue

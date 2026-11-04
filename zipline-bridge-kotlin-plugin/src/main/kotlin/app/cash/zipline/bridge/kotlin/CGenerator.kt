@@ -1008,6 +1008,31 @@ private fun emitHost2JsConvertToJs(
     sb.appendLine("        \"host2js: $protoFqn is an enum; the guest would only see a lookalike, not an enum instance\");")
     sb.appendLine("    return 0;")
   } else {
+    // The encode mechanism is chosen at RUNTIME by probing the guest's registration, not by the
+    // host's own field shape: in a version-skew pairing the host's converter was compiled from
+    // the host tree's class, which may lack a default the GUEST's class has. The guest registers
+    // `create_<fqn>` iff its class has a defaulted field, so the probe is the cross-version
+    // truth. Factory present -> run the guest's REAL constructor (the only mechanism for a
+    // defaulted class; the plugin guarantees it exists or crashed the build). Factory absent ->
+    // the class has no defaults on the guest, so the original `Object.create(proto)` path is
+    // correct. This is NOT a fallback to prototype-stamping: a defaulted class always finds its
+    // factory and never reaches Object.create.
+    val factoryJsName = createFactoryJsName(protoFqn)
+    sb.appendLine("    jsi::Value factory = jsiHost2JsFindCreateFactory(rt, \"$factoryJsName\");")
+    sb.appendLine("    if (!factory.isUndefined()) {")
+    sb.appendLine("      // Carrier object of the host-owned fields; the guest factory reads it.")
+    sb.appendLine("      jsi::Value fieldsObj(rt, jsi::Object(rt));")
+    for (field in fields) {
+      emitHost2JsField(sb, field, "fieldsObj")
+    }
+    sb.appendLine("      jsi::Value result = jsiHost2JsCallCreateFactory(env, rt, \"$factoryJsName\", std::move(fieldsObj));")
+    sb.appendLine("      if (env->ExceptionCheck()) return 0;")
+    // The ctor set the ctor-param fields from the carrier; body fields the host owns are overlaid.
+    for (field in fields) {
+      if (!field.isConstructorParam) emitHost2JsField(sb, field, "result")
+    }
+    sb.appendLine("      return static_cast<jlong>(reinterpret_cast<intptr_t>(new jsi::Value(std::move(result))));")
+    sb.appendLine("    }")
     sb.appendLine("    // New instance whose prototype is the EXISTING retained guest prototype for \"$protoFqn\".")
     sb.appendLine("    jsi::Value result = jsiHost2JsNewObject(env, rt, \"$protoFqn\");")
     sb.appendLine("    if (env->ExceptionCheck()) return 0;")
@@ -1027,7 +1052,7 @@ private fun emitHost2JsConvertToJs(
 }
 
 /** Emit the field conversion for one field inside a generated convertToJs body. */
-private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
+private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo, targetVar: String = "result") {
   val jsName = field.jsPropertyName
   val fieldName = field.name
   val effective = field.effectiveKtType
@@ -1045,7 +1070,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
       sb.appendLine("    {")
       sb.appendLine("        jsi::Value _v = jsiHost2JsLongToJs(env, rt, env->GetLongField(self, _h2j_fld_$fieldName));")
       sb.appendLine("        if (env->ExceptionCheck()) return 0;")
-      sb.appendLine("        jsiHost2JsDefineProperty(rt, result, \"$jsName\", std::move(_v));")
+      sb.appendLine("        jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", std::move(_v));")
       sb.appendLine("    }")
     } else {
       val getField = when (effective) {
@@ -1061,7 +1086,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         "kotlin.Boolean" -> "jsi::Value(env->$getField(self, _h2j_fld_$fieldName) == JNI_TRUE)"
         else -> "jsi::Value(static_cast<double>(env->$getField(self, _h2j_fld_$fieldName)))"
       }
-      sb.appendLine("    jsiHost2JsDefineProperty(rt, result, \"$jsName\", $build);")
+      sb.appendLine("    jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", $build);")
     }
     return
   }
@@ -1071,7 +1096,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
     sb.appendLine("    {")
     sb.appendLine("        jobject b = env->GetObjectField(self, _h2j_fld_$fieldName);")
     sb.appendLine("        if (b == NULL) {")
-    sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", jsi::Value::null());")
+            sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", jsi::Value::null());")
     sb.appendLine("        } else {")
     val underlying = field.underlyingKtType
     when {
@@ -1080,7 +1105,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
         sb.appendLine("            jsi::Value _v = jsiHost2JsLongToJs(env, rt, u);")
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
-        sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", std::move(_v));")
+            sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", std::move(_v));")
       }
 
       underlying != null && isKnownType(underlying) && isJniPrimitive(underlying) -> {
@@ -1108,7 +1133,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         }
         sb.appendLine("            $cType u = env->$call(b, _h2j_unbox_$fieldName);")
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
-        sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", $build);")
+        sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", $build);")
       }
 
       else -> {
@@ -1118,7 +1143,7 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
         sb.appendLine("            jsi::Value _v = jsiHost2JsAnyToJs(env, rt, u);")
         sb.appendLine("            if (u) env->DeleteLocalRef(u);")
         sb.appendLine("            if (env->ExceptionCheck()) { env->DeleteLocalRef(b); return 0; }")
-        sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", std::move(_v));")
+            sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", std::move(_v));")
       }
     }
     sb.appendLine("            env->DeleteLocalRef(b);")
@@ -1131,12 +1156,12 @@ private fun emitHost2JsField(sb: StringBuilder, field: FieldInfo) {
   sb.appendLine("    {")
   sb.appendLine("        jobject f = env->GetObjectField(self, _h2j_fld_$fieldName);")
   sb.appendLine("        if (f == NULL) {")
-  sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", jsi::Value::null());")
+  sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", jsi::Value::null());")
   sb.appendLine("        } else {")
   sb.appendLine("            jsi::Value _v = jsiHost2JsAnyToJs(env, rt, f);")
   sb.appendLine("            env->DeleteLocalRef(f);")
   sb.appendLine("            if (env->ExceptionCheck()) return 0;")
-  sb.appendLine("            jsiHost2JsDefineProperty(rt, result, \"$jsName\", std::move(_v));")
+  sb.appendLine("            jsiHost2JsDefineProperty(rt, $targetVar, \"$jsName\", std::move(_v));")
   sb.appendLine("        }")
   sb.appendLine("    }")
 }

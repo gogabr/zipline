@@ -107,6 +107,17 @@ internal fun generateBridgeFile(
   val isObject = annotatedClass.kind == ClassKind.OBJECT
   val isCompanion = isObject && annotatedClass.isCompanion
   val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
+  // A defaulted ctor param makes the JVM emit a synthetic `(params…, Int mask, DefaultConstructorMarker)`
+  // constructor: bit i of the mask set means param i takes its declared default. The host decodes a
+  // guest object that lacks a defaulted field by passing that field's placeholder with its mask bit
+  // set, so the host's own default survives instead of the read throwing.
+  val defaultedCtorFields = constructorFields.filter { it.hasDefault }
+  val defaultCtorSig = if (defaultedCtorFields.isNotEmpty()) {
+    "(" + constructorFields.joinToString("") { it.jniTypeChar } +
+      "ILkotlin/jvm/internal/DefaultConstructorMarker;)V"
+  } else {
+    null
+  }
   val constructorSig = if (isObject || constructorFields.isEmpty()) {
     "()V"
   } else {
@@ -139,6 +150,7 @@ internal fun generateBridgeFile(
     // -- cached JNI references (initialized once by _init, used by _toJavaObject) --
     appendLine("static jclass _cls = NULL;")
     if (!isObject && !isEnum) appendLine("static jmethodID _ctor = NULL;")
+    if (!isObject && !isEnum && defaultCtorSig != null) appendLine("static jmethodID _ctor_default = NULL;")
     if (isEnum) appendLine("static jmethodID _valuesMethod = NULL;")
     if (isCompanion) {
       appendLine("static jclass _outerCls = NULL;")
@@ -203,6 +215,9 @@ internal fun generateBridgeFile(
     appendLine("    env->DeleteLocalRef(local);")
     if (!isObject && !isEnum) {
       appendLine("    _ctor = jsiGetMethodIdQuiet(env, _cls, \"<init>\", \"$constructorSig\");")
+      if (defaultCtorSig != null) {
+        appendLine("    _ctor_default = jsiGetMethodIdQuiet(env, _cls, \"<init>\", \"$defaultCtorSig\");")
+      }
     }
     if (isEnum) {
       appendLine("    _valuesMethod = jsiGetStaticMethodIdQuiet(env, _cls, \"values\", \"()[L$jniClassName;\");")
@@ -366,6 +381,17 @@ internal fun generateBridgeFile(
           appendLine("            return NULL;")
           appendLine("        }")
         }
+        // Type-correct placeholder for a defaulted field the guest omitted: never actually used as
+        // the value (the mask bit makes the JVM run the host's default), it only has to compile
+        // and not crash the ctor when the mask path is taken.
+        fun placeholderFor(field: FieldInfo): String = when {
+          field.isPrimitive -> when (field.effectiveKtType) {
+            "kotlin.Boolean" -> "JNI_FALSE"
+            "kotlin.Char" -> "'\\0'"
+            else -> "0"
+          }
+          else -> "NULL"
+        }
         for (field in fields) {
           val nullablePrimitive = field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType)
           // Non-nullable inline value classes are erased to their underlying JNI primitive on JVM,
@@ -412,7 +438,20 @@ internal fun generateBridgeFile(
             appendLine("        js_${field.name} = js_${field.name}.asObject(rt).getProperty(rt, \"value\");")
             appendLine("    }")
           }
-          appendLine("    $cType $javaVar;")
+          if (field.hasDefault) {
+            // Skew tolerance: a guest that lacks this field leaves the local at its placeholder.
+            // For a ctor param the mask bit makes the JVM run the host's own default; for a body
+            // field the SetField below is skipped so the host's initializer value survives.
+            appendLine("    $cType $javaVar = ${placeholderFor(field)};")
+            if (field.isConstructorParam) {
+              appendLine("    bool use_default_${field.name} = js_${field.name}.isUndefined();")
+              appendLine("    if (!use_default_${field.name}) {")
+            } else {
+              appendLine("    if (!js_${field.name}.isUndefined()) {")
+            }
+          } else {
+            appendLine("    $cType $javaVar;")
+          }
           appendLine("    {")
 
           // Open null check for nullable fields
@@ -529,6 +568,9 @@ internal fun generateBridgeFile(
           }
 
           appendLine("    }")
+          if (field.hasDefault) {
+            appendLine("    }")
+          }
           appendLine()
         }
 
@@ -541,6 +583,25 @@ internal fun generateBridgeFile(
         } else {
           if (constructorFields.isEmpty()) {
             appendLine("    jobject result = env->NewObject(_cls, _ctor);")
+          } else if (defaultedCtorFields.isNotEmpty()) {
+            // Masked ctor: bit i set => param i uses its declared default. A defaulted param the
+            // guest sent passes its decoded value with the bit clear; one it omitted passes the
+            // placeholder with the bit set, so the host's own default runs. The masked ctor is only
+            // required when a default is actually taken: the host compiled with a default but the
+            // runtime class lacks the synthetic ctor is a real mismatch, reported here (passing a
+            // NULL methodID to NewObject would abort the VM).
+            val maskExpr = constructorFields.mapIndexed { index, f ->
+              if (f.hasDefault) "(use_default_${f.name} ? ${1 shl index} : 0)" else "0"
+            }.joinToString(" | ")
+            val args = constructorFields.joinToString(", ") { "java_${it.name}" }
+            appendLine("    int _default_mask = $maskExpr;")
+            appendLine("    if (_default_mask != 0 && _ctor_default == NULL) {")
+            appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
+            appendLine("        return NULL;")
+            appendLine("    }")
+            appendLine("    jobject result = _default_mask == 0")
+            appendLine("        ? env->NewObject(_cls, _ctor, $args)")
+            appendLine("        : env->NewObject(_cls, _ctor_default, $args, _default_mask, (jobject)NULL);")
           } else {
             val args = constructorFields.joinToString(", ") { "java_${it.name}" }
             appendLine("    jobject result = env->NewObject(_cls, _ctor, $args);")
@@ -559,7 +620,16 @@ internal fun generateBridgeFile(
               field.isNullable && isKnownType(field.ktType) && isJniPrimitive(field.ktType) -> "SetObjectField"
               else -> kotlinToSetFieldFunction[field.effectiveKtType] ?: "SetObjectField"
             }
-            appendLine("    env->$setFn(result, _fld_${field.name}, $javaVar);")
+            if (field.hasDefault) {
+              // A defaulted body field the guest omitted keeps the host's own initializer value:
+              // only write when the guest actually sent the property. Explicit null still writes
+              // NULL (guest intent); only undefined skips.
+              appendLine("    if (!js_${field.name}.isUndefined()) {")
+              appendLine("        env->$setFn(result, _fld_${field.name}, $javaVar);")
+              appendLine("    }")
+            } else {
+              appendLine("    env->$setFn(result, _fld_${field.name}, $javaVar);")
+            }
           }
           appendLine()
         }

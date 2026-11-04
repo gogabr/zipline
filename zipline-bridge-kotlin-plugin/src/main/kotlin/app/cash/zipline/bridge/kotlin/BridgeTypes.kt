@@ -12,6 +12,27 @@ import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 
+// -- defaulted-constructor-parameter cap --
+
+/**
+ * Maximum number of defaulted constructor parameters a bridged class may declare.
+ *
+ * Skew tolerance for defaulted fields requires the generated bridge to enumerate the
+ * subsets of defaulted parameters that a peer may omit (the native host emits a
+ * `when(mask)` tree that omits absent defaulted named args so the compiler runs the
+ * real default expressions). That enumeration is 2^k branches, so k is capped.
+ *
+ * Classes exceeding the cap FAIL THE BUILD at compile time with an ERROR naming the
+ * class and the offending count. There is deliberately NO silent always-pass
+ * fallback: silently substituting placeholder values for absent defaulted fields
+ * would produce wrong runtime values with no diagnostics.
+ *
+ * The C/JVM masked-ctor path has no combinatorics (single int bitmask call site) and
+ * is intentionally uncapped; a class over the cap fails the iOS build loudly while
+ * Android keeps working correctly.
+ */
+internal const val MAX_DEFAULTED_CTOR_PARAMS = 5
+
 // -- field extraction data class --
 
 /**
@@ -24,6 +45,30 @@ data class FieldInfo(
   val type: IrType,
   val isConstructorParam: Boolean,
   val jsPropertyName: String,
+  /**
+   * True when the field declares a default value: a constructor parameter with a `defaultValue`,
+   * or a body property whose (override-resolved) backing field has an initializer. A skew read that
+   * finds the field absent on the other side may fall back to this default instead of throwing.
+   */
+  val hasDefault: Boolean = false,
+  /**
+   * True when [hasDefault] holds AND the default expression is a compile-time constant
+   * (`IrConst`: a primitive, String, Boolean, or null literal). Only a constant default can be
+   * stamped onto a guest prototype for the host->guest direction; a non-constant default
+   * (`j = compute()`, `"nc-$a"`) cannot be materialized by the host.
+   */
+  val hasConstantDefault: Boolean = false,
+  /**
+   * The constant value when [hasConstantDefault]; null otherwise (non-constant or no default).
+   * A constant `null` default reports [hasConstantDefault] = true with this null.
+   */
+  val constantDefault: Any? = null,
+  /**
+   * The Kotlin type FQN of the constant when [hasConstantDefault] (e.g. `kotlin.Int`,
+   * `kotlin.String`, `kotlin.Null`). The JS emitter needs it to render a typed `IrConst` stamp
+   * literal; the value alone is ambiguous (a boxed `Int` vs `Long` vs `Double`).
+   */
+  val constantTypeFqn: String? = null,
 ) {
   val ktType: String by lazy {
     // Type parameters (T, U, …) have no classFqName: use the upper bound (or Any when unbounded)

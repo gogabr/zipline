@@ -58,24 +58,6 @@ data class FieldInfo(
    * finds the field absent on the other side may fall back to this default instead of throwing.
    */
   val hasDefault: Boolean = false,
-  /**
-   * True when [hasDefault] holds AND the default expression is a compile-time constant
-   * (`IrConst`: a primitive, String, Boolean, or null literal). Only a constant default can be
-   * stamped onto a guest prototype for the host->guest direction; a non-constant default
-   * (`j = compute()`, `"nc-$a"`) cannot be materialized by the host.
-   */
-  val hasConstantDefault: Boolean = false,
-  /**
-   * The constant value when [hasConstantDefault]; null otherwise (non-constant or no default).
-   * A constant `null` default reports [hasConstantDefault] = true with this null.
-   */
-  val constantDefault: Any? = null,
-  /**
-   * The Kotlin type FQN of the constant when [hasConstantDefault] (e.g. `kotlin.Int`,
-   * `kotlin.String`, `kotlin.Null`). The JS emitter needs it to render a typed `IrConst` stamp
-   * literal; the value alone is ambiguous (a boxed `Int` vs `Long` vs `Double`).
-   */
-  val constantTypeFqn: String? = null,
 ) {
   val ktType: String by lazy {
     // Type parameters (T, U, …) have no classFqName: use the upper bound (or Any when unbounded)

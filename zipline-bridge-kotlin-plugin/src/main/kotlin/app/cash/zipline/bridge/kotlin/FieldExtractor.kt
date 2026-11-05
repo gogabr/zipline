@@ -7,13 +7,11 @@ import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
-import org.jetbrains.kotlin.ir.expressions.IrConst
 import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.IrTypeProjection
-import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.classId
@@ -132,7 +130,6 @@ private fun extractField(property: IrProperty, primaryConstructorParams: Map<Str
     if (baseParam != null) baseParam.defaultValue?.expression else init
   }
   val hasDefault = defaultExpr != null
-  val constant = if (hasDefault) constantValueOf(defaultExpr) else null
 
   return FieldInfo(
     name = name,
@@ -140,9 +137,6 @@ private fun extractField(property: IrProperty, primaryConstructorParams: Map<Str
     isConstructorParam = isConstructorParam,
     jsPropertyName = property.jsName(),
     hasDefault = hasDefault,
-    hasConstantDefault = constant != null,
-    constantDefault = constant?.value,
-    constantTypeFqn = constant?.typeFqn,
   )
 }
 
@@ -156,34 +150,6 @@ private fun IrProperty.resolveBackingField(): IrField? {
   val overridden = overriddenSymbols.singleOrNull { !it.owner.parentAsClass.isInterface }?.owner
   return overridden?.resolveBackingField()
 }
-
-/**
- * The constant carried by [expr], or null when the expression is not a compile-time constant.
- * An `IrConst` of a primitive/String/Boolean type (including a `null` constant) is stampable;
- * anything else (string interpolation, a call, a collection literal) is not.
- */
-internal fun constantValueOf(expr: IrExpression?): ConstantValue? {
-  val const = expr as? IrConst ?: return null
-  val typeFqn = const.type.classFqName?.asString()
-  return when (typeFqn) {
-    "kotlin.Boolean" -> ConstantValue(typeFqn, const.value as? Boolean)
-    "kotlin.Byte" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toByte()) }
-    "kotlin.Short" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toShort()) }
-    "kotlin.Int" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toInt()) }
-    "kotlin.Long" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toLong()) }
-    "kotlin.Float" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toFloat()) }
-    "kotlin.Double" -> (const.value as? Number)?.let { ConstantValue(typeFqn, it.toDouble()) }
-    // IrConst stores a Char literal as its Int code; keep the Char so emitters can render it.
-    "kotlin.Char" -> (const.value as? Int)?.let { ConstantValue(typeFqn, it.toChar()) }
-    "kotlin.String" -> (const.value as? String)?.let { ConstantValue(typeFqn, it) }
-    // A `null` literal: IrConst with a null value and a nullable type.
-    null -> if (const.value == null) ConstantValue("kotlin.Null", null) else null
-    else -> null
-  }
-}
-
-/** A stampable constant default: its Kotlin type FQN plus the value (null only for the null literal). */
-internal class ConstantValue(val typeFqn: String, val value: Any?)
 
 private fun IrProperty.hasBackingField(): Boolean = backingField != null ||
       //  TODO(gogabr): should I also check for `isFakeOverride`?

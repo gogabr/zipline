@@ -117,8 +117,7 @@ private fun callFactory(ctx: COpaquePointer?, name: String, args: IntArray): Int
  * `jsiHost2JsFindCreateFactory`: the factory's existence is a guest-side property, so
  * the probe - not the host's own shape - is the cross-version truth.
  */
-public fun hasJsCreateFactory(ctx: COpaquePointer?, name: String): Boolean =
-  factoryFunction(ctx, name) >= 0
+public fun hasJsCreateFactory(ctx: COpaquePointer?, name: String): Boolean = factoryFunction(ctx, name) >= 0
 
 /**
  * A plain `{}` carrier object for the create-factory (no class prototype: the guest reads
@@ -136,8 +135,7 @@ public fun newJsPlainObject(ctx: COpaquePointer?): Int {
  * defaulted parameters get the guest's real default expression (including non-constant
  * ones). Loud on failure, like every other factory call. The caller owns the result handle.
  */
-public fun callJsCreateFactory(ctx: COpaquePointer?, name: String, fieldsHandle: Int): Int =
-  callFactory(ctx, name, intArrayOf(fieldsHandle))
+public fun callJsCreateFactory(ctx: COpaquePointer?, name: String, fieldsHandle: Int): Int = callFactory(ctx, name, intArrayOf(fieldsHandle))
 
 /**
  * Convert a Kotlin [Long] to a real Kotlin/JS `kotlin.Long` instance (correct prototype and

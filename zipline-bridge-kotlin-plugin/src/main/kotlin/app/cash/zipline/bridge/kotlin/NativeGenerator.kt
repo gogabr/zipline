@@ -48,13 +48,13 @@ private fun inlineWrapExpression(field: FieldInfo, innerExpr: String): String {
   val chain = field.inlineWrapperChain.map { it.substringAfterLast(".") }
   return chain.foldRight(innerExpr) { name, acc -> "$name($acc)" }
 }
+
 /**
  * The `if (!xPresent) <placeholder> else ` prefix a multi-line decode branch needs so an absent
  * defaulted field short-circuits to the host-side placeholder. Empty for non-defaulted fields,
  * where no `Present` local exists.
  */
-private fun presencePrefix(field: FieldInfo): String =
-  if (field.hasDefault) "if (!${field.name}Present) ${nativePlaceholderFor(field)} else " else ""
+private fun presencePrefix(field: FieldInfo): String = if (field.hasDefault) "if (!${field.name}Present) ${nativePlaceholderFor(field)} else " else ""
 
 /**
  * A compile-only placeholder for a defaulted field whose value the omitting `when(mask)` branch
@@ -64,26 +64,47 @@ private fun presencePrefix(field: FieldInfo): String =
 private fun nativePlaceholderFor(field: FieldInfo): String {
   val base = when (field.effectiveKtType) {
     "kotlin.Boolean" -> "false"
+
     "kotlin.Byte" -> "0.toByte()"
+
     "kotlin.Short" -> "0.toShort()"
+
     "kotlin.Int" -> "0"
+
     "kotlin.Long" -> "0L"
+
     "kotlin.Float" -> "0.0f"
+
     "kotlin.Double" -> "0.0"
+
     "kotlin.Char" -> "'\\u0000'"
+
     "kotlin.String" -> "\"\""
+
     "kotlin.collections.List", "kotlin.collections.MutableList" -> "emptyList()"
+
     "kotlin.collections.Set", "kotlin.collections.MutableSet" -> "emptySet()"
+
     "kotlin.collections.Map", "kotlin.collections.MutableMap" -> "emptyMap()"
+
     "kotlin.BooleanArray" -> "booleanArrayOf()"
+
     "kotlin.ByteArray" -> "byteArrayOf()"
+
     "kotlin.CharArray" -> "charArrayOf()"
+
     "kotlin.ShortArray" -> "shortArrayOf()"
+
     "kotlin.IntArray" -> "intArrayOf()"
+
     "kotlin.LongArray" -> "longArrayOf()"
+
     "kotlin.FloatArray" -> "floatArrayOf()"
+
     "kotlin.DoubleArray" -> "doubleArrayOf()"
+
     "kotlin.Array" -> "emptyArray<Any>()"
+
     // Object/Any/unknown: the placeholder is dead code (the omitting when(mask) branch never
     // reads it), so it must type-check against a NON-NULL declared type. `error()` returns
     // Nothing — assignable to everything — and fails loudly if the dead-code assumption is
@@ -92,7 +113,6 @@ private fun nativePlaceholderFor(field: FieldInfo): String {
   }
   return if (field.isInline) inlineWrapExpression(field, base) else base
 }
-
 
 /** Renders a Kotlin type expression for generated code (short names; classes must be imported). */
 private fun renderedTypeName(type: IrType?): String {
@@ -295,6 +315,7 @@ internal fun generateNativeBridgeFile(
       appendLine("    val ${name}Tag = HermesBridge_getValueTag(ctx, ${name}Ref)")
       appendLine("    if (${tags.joinToString(" && ") { "${name}Tag != $it" }}) bridgeThrowFieldMismatch(\"$fqn\", \"$name\", \"$expected\", ${name}Tag)")
     }
+
     // Emits the final local for a decoded scalar/collection field. A defaulted field reads an
     // absent (undefined) value as the host-side placeholder: the value is dead in the omitting
     // when(mask) branch, where the compiler runs the real default expression instead.
@@ -316,8 +337,7 @@ internal fun generateNativeBridgeFile(
       val propName = field.jsPropertyName
 
       // Helpers to emit the common Hermes read/free preamble/suffix.
-      fun readProperty(): String =
-        "val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")" +
+      fun readProperty(): String = "val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")" +
           if (field.hasDefault) {
             "\n    val ${field.name}Present = HermesBridge_getValueTag(ctx, ${field.name}Ref) != TAG_UNDEFINED"
           } else {

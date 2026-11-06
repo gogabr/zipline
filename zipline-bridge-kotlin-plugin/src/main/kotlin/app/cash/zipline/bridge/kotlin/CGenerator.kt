@@ -381,6 +381,7 @@ internal fun generateBridgeFile(
           appendLine("            return NULL;")
           appendLine("        }")
         }
+
         // Type-correct placeholder for a defaulted field the guest omitted: never actually used as
         // the value (the mask bit makes the JVM run the host's default), it only has to compile
         // and not crash the ctor when the mask path is taken.
@@ -390,6 +391,7 @@ internal fun generateBridgeFile(
             "kotlin.Char" -> "'\\0'"
             else -> "0"
           }
+
           else -> "NULL"
         }
         for (field in fields) {

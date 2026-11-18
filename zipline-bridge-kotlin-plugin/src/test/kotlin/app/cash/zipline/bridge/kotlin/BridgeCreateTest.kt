@@ -4,6 +4,7 @@ import com.tschuchort.compiletesting.KotlinCompilation
 import com.tschuchort.compiletesting.SourceFile
 import java.lang.reflect.Method
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import org.jetbrains.kotlin.compiler.plugin.ExperimentalCompilerApi
 import org.junit.Test
 
@@ -122,6 +123,37 @@ class BridgeCreateTest {
     val clazz = result.classLoader.loadClass("com.example.Dependent")
     val instance = factoryOf(clazz).invoke(companionOf(clazz), 0b10, 41, 0)
     assertEquals(listOf(41, 42), readBack(clazz, instance, "getA", "getB"))
+  }
+
+  /**
+   * The factory's name belongs to the plugin. A bridged class that declares a `bridgeCreate` of its
+   * own gets the build failed with the class and the offending member named: keeping both would let a
+   * generated host bridge call the user's function and construct a wrong value, and preferring ours
+   * would quietly delete a member the source declares.
+   */
+  @Test
+  fun `a bridgeCreate of the user's own fails the build naming the class`() {
+    val result = compile(
+      SourceFile.kotlin(
+        "Conflict.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Conflict(val a: Int, val b: String = "d") {
+          companion object {
+            fun bridgeCreate(what: String): String = what
+          }
+        }
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue("com.example.Conflict" in result.messages, result.messages)
+    assertTrue("bridgeCreate" in result.messages, result.messages)
   }
 
   /** Forty defaulted parameters need two flag words, and the second word's bits must be honoured. */

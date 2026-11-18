@@ -13,10 +13,14 @@ import org.jetbrains.kotlin.ir.builders.irIfThenElse
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irNotEquals
 import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
@@ -28,6 +32,7 @@ import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
+import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
@@ -63,6 +68,11 @@ internal fun fillBridgeCreateBodies(moduleFragment: IrModuleFragment, context: I
           if (declaration.isBridgeCreate()) declaration.body = bridgeCreateBody(declaration, context)
           super.visitSimpleFunction(declaration)
         }
+
+        override fun visitClass(declaration: IrClass) {
+          reportBridgeCreateConflict(declaration, context)
+          super.visitClass(declaration)
+        }
       },
     )
   }
@@ -73,6 +83,45 @@ private fun IrSimpleFunction.isBridgeCreate(): Boolean =
   name == BRIDGE_CREATE_NAME &&
     body == null &&
     (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
+
+private fun IrDeclaration.isBridgeGenerated(): Boolean =
+  (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
+
+/**
+ * Fail the build when a bridged class declares `bridgeCreate` of its own.
+ *
+ * Silently keeping both would let a host bridge call the user's function, which is how a wrong value
+ * gets constructed and shipped; silently preferring ours would delete a member the source declares.
+ * Both are worse than naming the class and both members, so this reports an ERROR and leaves the
+ * author the choice of renaming.
+ *
+ * The check is here rather than in the FIR extension because that is where this plugin has a voice:
+ * the FIR phase in this Kotlin exposes no message collector to a declaration-generation extension, and
+ * building a proper diagnostic needs a registered diagnostic factory, which is more machinery than
+ * the failure is worth. Reporting at IR time still fails the build before any output is written.
+ */
+private fun reportBridgeCreateConflict(companion: IrClass, context: IrPluginContext) {
+  if (companion.functions.none { it.isBridgeGenerated() && it.name == BRIDGE_CREATE_NAME }) return
+  val foreign = companion.declarations.filter {
+    (it as? IrDeclarationWithName)?.name == BRIDGE_CREATE_NAME && !it.isBridgeGenerated()
+  }
+  if (foreign.isEmpty()) return
+  val owner = runCatching { companion.parentAsClass }.getOrNull()
+  val ownerName = owner?.classId?.asSingleFqName()?.asString() ?: owner?.name?.asString() ?: companion.name.asString()
+  val described = foreign.joinToString("; ") { declaration ->
+    when (declaration) {
+      is IrSimpleFunction -> "a function `bridgeCreate` of its own"
+      is IrProperty -> "a property `bridgeCreate`"
+      else -> "a member `bridgeCreate`"
+    }
+  }
+  context.messageCollector.report(
+    CompilerMessageSeverity.ERROR,
+    "The Zipline bridge plugin generates `bridgeCreate` on the companion object of $ownerName, but " +
+      "that companion also declares $described. Rename the declaration in the source: the generated " +
+      "factory is what the generated host bridges call to construct $ownerName.",
+  )
+}
 
 /**
  * The factory's own parameters, counted from the end: `parameters` also lists the receivers, and
@@ -172,6 +221,9 @@ private fun IrBuilderWithScope.copyDefault(
         chosen[expression.symbol]?.let { irGet(it) } ?: super.visitGetValue(expression)
     }
   // transformChildrenVoid skips the node it is given, and a default may be nothing but a read.
-  return (copy as? IrGetValue)?.let(reader::visitGetValue)
-    ?: copy.also { it.transformChildrenVoid(reader) } as IrExpression
+  val rewritten: IrExpression =
+    (copy as? IrGetValue)?.let(reader::visitGetValue)
+      ?: copy.also { it.transformChildrenVoid(reader) } as IrExpression
+
+  return rewritten
 }

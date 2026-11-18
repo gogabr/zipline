@@ -18,6 +18,11 @@ import org.jetbrains.kotlin.ir.builders.irBoolean
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irIfThenElse
+import org.jetbrains.kotlin.ir.builders.irImplicitCast
+import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.builders.irNull
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irUnit
@@ -43,6 +48,7 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.starProjectedType
@@ -51,6 +57,8 @@ import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
+import org.jetbrains.kotlin.ir.types.isMarkedNullable
+import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
@@ -344,7 +352,7 @@ internal fun injectModuleLoadBridgeRegistration(
   val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
   val bridgeRegisterRuntime =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
-  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
+  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses)
   val factoriesCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary }
     ?: error("__BridgeRuntimeFactories primary constructor not found")
@@ -432,6 +440,7 @@ private fun buildRuntimeFactories(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
+  host2JsClasses: List<IrClass>,
 ): IrClass {
   val factoriesClass = pluginContext.irFactory.buildClass {
     name = Name.identifier("__BridgeRuntimeFactories")
@@ -545,9 +554,202 @@ private fun buildRuntimeFactories(
     }
   }
 
+  // Host->guest create-factories: `create_<fqn>` for every bridged class, on the same instance the
+  // host already reaches for. The host builds a plain `{}` of the fields it owns and calls the
+  // factory; the factory runs the guest's REAL constructor through `bridgeCreate`, so the class's own
+  // initializers, computed properties and validation run in the guest instead of being skipped by a
+  // field-stamped lookalike. Not only the classes with defaults get one: a class whose constructor
+  // does work is just as broken when it happens to declare no defaults.
+  for (clazz in host2JsClasses) {
+    val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
+    if (!host2JsNeedsCreateFactory(clazz)) continue
+    buildCreateFactory(finder, pluginContext, factoriesClass, clazz, resolveTargetFqn(clazz) ?: ownFqn)
+  }
+
   fileForModule.declarations += factoriesClass
   return factoriesClass
 }
+
+/** The JS name of [fq]'s host->guest create-factory; `@JsName` pins it so the host can look it up. */
+internal fun createFactoryJsName(fq: String): String = "create_" + fq.replace('.', '_')
+
+/**
+ * Whether the guest will have a `create_<fqn>` for [clazz]. Both sides ask this — the guest when it
+ * emits the factory, the host when it chooses between calling the factory and stamping a prototype —
+ * so it is a function of the class's shape alone, never of what a given compilation happens to
+ * contain. Enums cross as ordinals and singletons have no construction to run, so neither needs one.
+ */
+internal fun host2JsNeedsCreateFactory(clazz: IrClass): Boolean =
+  clazz.kind != ClassKind.ENUM_CLASS &&
+    !clazz.isCompanion &&
+    clazz.kind != ClassKind.OBJECT &&
+    clazz.primaryConstructor != null
+
+/**
+ * Build [clazz]'s host->guest create-factory: a `create_<fqn>` on `__BridgeRuntimeFactories` taking
+ * the host's plain fields object and returning a real instance.
+ *
+ * Shape, per constructor parameter: ask whether the host sent it (`bridgeHas`), read it
+ * (`bridgeGet`, cast to the factory's parameter type), and for a parameter the host omitted pass an
+ * unreadable-in-place placeholder plus set its flag bit — [BridgeCreateBodyGenerator] then evaluates
+ * the class's own default expression. One `bridgeCreate` call, with one mask word per 32 parameters:
+ * the superseded attempt branched into 2^k constructor calls instead, which is both the cap and the
+ * blow-up this change removes.
+ *
+ * Body fields are still defined onto the result by the host afterwards. That is deliberate and is
+ * worth knowing: what the factory fixes is that the constructor runs; a host-owned body `var` still
+ * arrives by assignment, so a guest-only body default survives only because the constructor ran.
+ */
+private fun buildCreateFactory(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  factoriesClass: IrClass,
+  clazz: IrClass,
+  targetFqn: String,
+) {
+  val bridgeHasSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeHas")),
+  ).firstOrNull() ?: error("bridgeHas not found on the compile classpath ($targetFqn)")
+  val bridgeGetSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeGet")),
+  ).firstOrNull() ?: error("bridgeGet not found on the compile classpath ($targetFqn)")
+  val errorSymbol = finder.findFunctions(
+    CallableId(FqName("kotlin"), Name.identifier("error")),
+  ).firstOrNull { fn -> fn.owner.parameters.count { it.kind == IrParameterKind.Regular } == 1 }
+    ?: error("kotlin.error not found on the compile classpath ($targetFqn)")
+
+  // The holder is found by what it declares, not by a companion flag: the companion the plugin
+  // generates for a class that had none carries no `isCompanion` marker in IR, and getting this wrong
+  // reads as "has no companion" for exactly the classes that need the factory.
+  val companion = clazz.declarations.filterIsInstance<IrClass>().firstOrNull { nested ->
+    nested.declarations.filterIsInstance<IrSimpleFunction>().any { it.name == BRIDGE_CREATE_NAME }
+  } ?: return
+  // No factory to call means the FIR gate declined this class — an interface, an object, a class with
+  // only secondary constructors. The host looks the create-factory up at run time and falls back to
+  // the prototype path when it is absent, so declining here is a decision the guest makes alone.
+  val factory = companion.declarations.filterIsInstance<IrSimpleFunction>().first { it.name == BRIDGE_CREATE_NAME }
+
+  val intOr = contextOf(pluginContext).intClass.owner.declarations
+    .filterIsInstance<IrSimpleFunction>().firstOrNull { it.name.asString() == "or" }
+    ?: error("Int.or not found ($targetFqn)")
+
+  val constructor = clazz.primaryConstructor ?: return
+  val ctorParams = constructor.parameters.filter { it.kind == IrParameterKind.Regular }
+  val maskWords = maskWordCount(ctorParams.size)
+  // The factory's regular parameters, in the contract order: mask words first, then every
+  // constructor parameter. Positional, because that order is the whole contract between the halves.
+  val factoryParams = factory.parameters.filter { it.kind == IrParameterKind.Regular }
+  check(factoryParams.size == maskWords + ctorParams.size) {
+    "bridgeCreate of $targetFqn declares ${factoryParams.size} parameters, expected $maskWords mask " +
+      "words + ${ctorParams.size} constructor parameters"
+  }
+  val ctorFields = extractFields(clazz).filter { it.isConstructorParam }
+  check(ctorFields.size == ctorParams.size) {
+    "create-factory for $targetFqn: ${ctorFields.size} bridged fields but ${ctorParams.size} " +
+      "constructor parameters"
+  }
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    createFactoryJsName(targetFqn),
+    pluginContext.irBuiltIns.anyNType,
+    listOf(pluginContext.irBuiltIns.anyNType),
+  ) { builder, params ->
+    val fieldsObj = params[0]
+    val orOperand = intOr.parameters.last()
+
+    fun present(jsName: String): IrExpression = builder.irCall(bridgeHasSymbol).apply {
+      arguments[0] = builder.irGet(fieldsObj)
+      arguments[1] = builder.irString(jsName)
+    }
+
+    fun readAs(type: IrType, jsName: String): IrExpression = builder.irImplicitCast(
+      builder.irCall(bridgeGetSymbol).apply {
+        arguments[0] = builder.irGet(fieldsObj)
+        arguments[1] = builder.irString(jsName)
+      },
+      type,
+    )
+
+    /**
+     * What to hand the factory for a parameter the guest did not send. It is never read — the set
+     * flag sends the call to the default expression — but it must satisfy the parameter's type, so a
+     * reference takes null and a primitive its zero.
+     */
+    fun absentValue(type: IrType, name: String): IrExpression = when (type.classFqName?.asString()) {
+      "kotlin.Int" -> builder.irInt(0)
+      "kotlin.Long" -> IrConstImpl.long(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0L)
+      "kotlin.Double" -> IrConstImpl.double(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0)
+      "kotlin.Float" -> IrConstImpl.float(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0f)
+      "kotlin.Boolean" -> builder.irBoolean(false)
+      else -> if (type.isMarkedNullable()) {
+        builder.irNull(type)
+      } else {
+        error(
+          "cannot build a host->guest factory for $targetFqn: parameter '$name' has type " +
+            "${type.classFqName}; the factory has no absent value for it. Report this: the alternatives " +
+            "are a placeholder that the guest might read as a real value, or a silent skip.",
+        )
+      }
+    }
+
+    val maskTerms = Array(maskWords) { mutableListOf<IrExpression>() }
+    val call = builder.irCall(factory.symbol).apply {
+      dispatchReceiver = builder.irGetObject(companion.symbol)
+    }
+
+    for ((index, field) in ctorFields.withIndex()) {
+      val argument = factoryParams[maskWords + index]
+      val supplied = readAs(argument.type, field.jsPropertyName)
+      val value = if (field.hasDefault) {
+        maskTerms[maskWordIndex(index)] += builder.irIfThenElse(
+          type = pluginContext.irBuiltIns.intType,
+          condition = present(field.jsPropertyName),
+          thenPart = builder.irInt(0),
+          elsePart = builder.irInt(maskBit(index)),
+        )
+        builder.irIfThenElse(
+          type = argument.type,
+          condition = present(field.jsPropertyName),
+          thenPart = supplied,
+          elsePart = absentValue(argument.type, field.name),
+        )
+      } else {
+        // A required parameter that did not arrive is a host-side bug, not skew: say so with the
+        // field's name rather than letting the guest see undefined.
+        builder.irIfThenElse(
+          type = argument.type,
+          condition = present(field.jsPropertyName),
+          thenPart = supplied,
+          elsePart = builder.irCall(errorSymbol).apply {
+            arguments[errorSymbol.owner.parameters.last()] = builder.irString(
+              "host2js: " + targetFqn + "." + field.jsPropertyName + " was not sent by the host",
+            )
+          },
+        )
+      }
+      call.arguments[argument] = value
+    }
+
+    for (word in 0 until maskWords) {
+      val terms = maskTerms[word]
+      call.arguments[factoryParams[word]] = when {
+        terms.isEmpty() -> builder.irInt(0)
+        else -> terms.reduce { left, right ->
+          builder.irCall(intOr.symbol).apply {
+            dispatchReceiver = left
+            arguments[orOperand] = right
+          }
+        }
+      }
+    }
+    call
+  }
+}
+
+private fun contextOf(pluginContext: IrPluginContext) = pluginContext.irBuiltIns
 
 /** Build an internal member function on [owner] whose body returns the [body] expression. */
 private fun buildObjectMethod(

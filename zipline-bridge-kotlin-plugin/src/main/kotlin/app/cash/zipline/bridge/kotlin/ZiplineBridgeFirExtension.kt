@@ -187,15 +187,23 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
   private fun FirClassSymbol<*>.bridgeTargetClass(): FirClassSymbol<*>? =
     if (isCompanion) getContainingClassSymbol() as? FirClassSymbol<*> else null
 
-  /** Only a class with something to default needs a factory: with none, every argument arrives. */
+  /**
+   * Every bridged class with a primary constructor of its own gets the factory.
+   *
+   * This used to require at least one default, on the reasoning that with none every argument
+   * arrives. That held for the constructor call and missed the bridge: the host->guest path stamps an
+   * object from the guest's prototype, so a class whose constructor computes a property, runs an
+   * initializer or validates an argument was handed an instance that skipped its own setup — defaults
+   * or not. With the guest constructing through this factory, the constructor runs either way.
+   */
   @OptIn(SymbolInternals::class)
   private fun FirClassSymbol<*>.needsBridgeCreate(): Boolean {
     if (this !is FirRegularClassSymbol) return false
-    if (fir.classKind == ClassKind.ENUM_CLASS) return false
+    if (fir.classKind == ClassKind.ENUM_CLASS || fir.classKind == ClassKind.OBJECT) return false
     val annotated = session.predicateBasedProvider.matches(withJs2Host, this) ||
       session.predicateBasedProvider.matches(withHost2Js, this)
     if (!annotated) return false
-    return primaryConstructorOfItsOwn()?.valueParameterSymbols.orEmpty().any { it.fir.defaultValue != null }
+    return primaryConstructorOfItsOwn() != null
   }
 
   /**

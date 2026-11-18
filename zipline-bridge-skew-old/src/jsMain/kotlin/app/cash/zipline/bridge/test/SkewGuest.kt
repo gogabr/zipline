@@ -97,3 +97,6 @@ fun readBackSealed(p: SealedHolder): String = "${p.s}"
 
 @JsExport
 fun readBackOnlyInOld(p: OnlyInOld): String = "${p.x}"
+
+@JsExport
+fun provideWideDefaults(): WideDefaults = WideDefaults()

@@ -103,3 +103,6 @@ fun readBackSealed(p: SealedHolder): String = "${p.s}"
 
 @JsExport
 fun readBackOnlyInNew(p: OnlyInNew): String = "${p.x}"
+
+@JsExport
+fun provideWideDefaults(): WideDefaults = WideDefaults()

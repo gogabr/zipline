@@ -148,6 +148,27 @@ class CrossVersionTest {
     assertEquals("DroppedBasePayload(keep=keep)", host.evaluateOne(provide("provideDroppedBase", id)).toString())
   }
 
+  /**
+   * Eight defaulted parameters added past the 32nd: the flags for them do not fit in the first
+   * mask word, so this row fails if the bridge assumes one word or shifts by the raw parameter
+   * index. The JVM host takes all eight defaults and keeps the 32 values the guest sent.
+   *
+   * The Kotlin/Native host has no defaulted-parameter tolerance yet, so it still reports the first
+   * absent field as a mistyped read; that divergence is pinned here and goes away with the native
+   * construction path.
+   */
+  @Test fun guestToHost_wideArityDefaults() = withOldGuest { host, id ->
+    assertObserved(
+      "wide-arity-defaults/WideDefaults.p32..p39",
+      "WideDefaults(" + (0 until 40).joinToString(", ") { "p$it=$it" } + ")",
+      nativeExpected =
+        "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.WideDefaults.p32 " +
+        "expects a number but the guest sent undefined",
+    ) {
+      host.evaluateOne(provide("provideWideDefaults", id))
+    }
+  }
+
   /** Interface gained on the host: wire-invisible. */
   @Test fun guestToHost_interfaceGained() = withOldGuest { host, id ->
     assertEquals("InterfacePayload(v=11)", host.evaluateOne(provide("provideInterface", id)).toString())

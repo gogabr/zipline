@@ -67,6 +67,7 @@ the host tree. JVM observed values are from `jvmTest`; the Native column is `mac
 | Superclass inserted on host | old guest → new host | ❌ / ✅ | `ZiplineApiMismatchException: ...HierarchyPayload.baseValue expects a number but the guest sent undefined` | `HierarchyPayload(a=11, b=hp)` — native never extracts inherited body fields | divergence #1 |
 | Superclass removed on guest | new guest → old host | ❌ / ✅ | `ZiplineApiMismatchException: ...DroppedBasePayload.inherited expects a number but the guest sent undefined` | `DroppedBasePayload(keep=keep)` — native never asks | divergence #1 |
 | Superclass removed on host | old guest → new host | ✅ | `DroppedBasePayload(keep=keep)` | same | — |
+| 8 defaulted params added past the 32nd (`WideDefaults.p32..p39`) | old guest → new host | ✅ / ❌ | `WideDefaults(p0=0, …, p39=39)` — the flags for those params live in the second mask word, so this row is what pins the packing against the JVM descriptor | `ZiplineApiMismatchException: ...WideDefaults.p32 expects a number but the guest sent undefined` — native has no defaulted-parameter tolerance yet | T2 |
 | Interface added on guest | new guest → old host | ✅ | `InterfacePayload(v=11)` — wire-invisible | same | — |
 | Interface gained on host | old guest → new host | ✅ | `InterfacePayload(v=11)` | same | — |
 | Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for ...GrowthEnum` | same | — |

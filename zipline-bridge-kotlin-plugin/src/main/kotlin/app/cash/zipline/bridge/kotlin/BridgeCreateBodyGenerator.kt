@@ -16,6 +16,7 @@ import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
@@ -159,7 +160,7 @@ private fun bridgeCreateBody(function: IrSimpleFunction, context: IrPluginContex
       // the parameters whose flags are clear get their arguments.
       ctorParams.forEachIndexed { index, ctorParam ->
         val local = irTemporary(
-          bridgeArgument(ctorParam, argParams[index], maskParams, index, function, chosen),
+          bridgeArgument(ctorParam, argParams[index], maskParams, index, function, constructor, chosen),
           "p$index",
         )
         chosen[ctorParam.symbol] = local
@@ -180,11 +181,12 @@ private fun IrBuilderWithScope.bridgeArgument(
   maskParams: List<IrValueParameter>,
   index: Int,
   factory: IrSimpleFunction,
+  constructor: IrConstructor,
   chosen: Map<IrSymbol, IrValueDeclaration>,
 ): IrExpression {
   val supplied = irGet(argument)
   val default = ctorParam.defaultValue ?: return supplied
-  if (maskParams.isEmpty()) return copyDefault(default, factory, chosen)
+  if (maskParams.isEmpty()) return copyDefault(default, factory, constructor, chosen)
 
   val and = context.irBuiltIns.intAndSymbol
   // `Int.and(other)` lists its receiver and then the operand; the operand is what gets the flag bit.
@@ -199,7 +201,7 @@ private fun IrBuilderWithScope.bridgeArgument(
   return irIfThenElse(
     type = argument.type,
     condition = flagIsSet,
-    thenPart = copyDefault(default, factory, chosen),
+    thenPart = copyDefault(default, factory, constructor, chosen),
     elsePart = supplied,
   )
 }
@@ -212,6 +214,7 @@ private fun IrBuilderWithScope.bridgeArgument(
 private fun IrBuilderWithScope.copyDefault(
   body: IrExpressionBody,
   factory: IrSimpleFunction,
+  constructor: IrConstructor,
   chosen: Map<IrSymbol, IrValueDeclaration>,
 ): IrExpression {
   val copy = body.expression.deepCopyWithSymbols(factory)
@@ -225,5 +228,37 @@ private fun IrBuilderWithScope.copyDefault(
     (copy as? IrGetValue)?.let(reader::visitGetValue)
       ?: copy.also { it.transformChildrenVoid(reader) } as IrExpression
 
+  // Invariant: after the rewrite no read of a constructor parameter survives, because every one that
+  // was mapped now reads a local of the factory instead. A survivor means the copy kept a symbol that
+  // belongs to the constructor — IR that would fail in the backend, far from the cause — so stop here
+  // and name the class and parameter. It cannot be provoked from Kotlin source (a default may not read
+  // a later parameter, and every earlier one is mapped), which makes this a check on this file, not a
+  // diagnostic for a user: the message is written for whoever edits this transformer next.
+  val parameters = constructor.parameters.filterIsInstance<IrValueParameter>().map { it.symbol }.toSet()
+  val surviving = mutableListOf<IrGetValue>()
+  if ((rewritten as? IrGetValue)?.symbol in parameters) surviving += rewritten as IrGetValue
+  rewritten.acceptChildrenVoid(
+    object : IrVisitorVoid() {
+      override fun visitElement(element: IrElement) {
+        element.acceptChildrenVoid(this)
+      }
+
+      override fun visitGetValue(expression: IrGetValue) {
+        if (expression.symbol in parameters) surviving += expression
+      }
+    },
+  )
+  if (surviving.isNotEmpty()) {
+    val owner = factory.parentAsClass.let { it.classId?.asSingleFqName()?.asString() ?: it.name.asString() }
+    error(
+      "unmapped parameter in default for $owner.${ctorNameOf(body, constructor)}: " +
+        surviving.joinToString(", ") { it.symbol.owner.name.asString() },
+    )
+  }
   return rewritten
 }
+
+/** The parameter whose default this is, for the invariant message above. */
+private fun ctorNameOf(body: IrExpressionBody, constructor: IrConstructor): String =
+  constructor.parameters.filterIsInstance<IrValueParameter>().firstOrNull { it.defaultValue === body }?.name?.asString()
+    ?: "<unknown parameter>"

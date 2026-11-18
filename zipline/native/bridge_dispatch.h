@@ -653,10 +653,22 @@ static inline jobject jsi_value_to_boxed(
   return nullptr;
 }
 
-// A host value with a @WithHost2JSBridge counterpart crosses to the guest as an instance whose
-// prototype is the guest class's own prototype, with every field defined as an own data
-// property. The guest registers its prototypes and the runtime factories it needs (Long,
-// ArrayList, LinkedHashMap) through __bridgeRegister / __bridgeRegisterRuntime at module load;
+// A host value with a @WithHost2JSBridge counterpart crosses to the guest as an instance the GUEST
+// built. The host defines every field as an own data property on an object carrying the guest class's
+// own prototype and hands that object to the guest's generated `create_<fq>` factory, which runs the
+// class's real constructor on the values: initializer blocks, computed body properties, validation and
+// default expressions all happen, and a parameter the host does not have takes its guest-side default.
+// The factory reads own properties only, so the prototype the carrier carries cannot masquerade as a
+// sent value.
+//
+// There is no second path: a guest that publishes no create-factory fails, naming the factory, rather
+// than being handed the stamped lookalike this header used to build. Skipping the guest's constructor
+// quietly is what this code exists to stop doing; refusing loudly is a build-and-ship question, and a
+// silent fallback would decide it in the dark.
+//
+// The guest registers its prototypes and the runtime factories it needs (Long, ArrayList, LinkedHashMap,
+// the payload holder, and one create-factory per bridged class) through __bridgeRegister /
+// __bridgeRegisterRuntime at module load;
 // the host keeps both in JS globals, so a converter compiled into a separate consumer library
 // needs nothing but the runtime and this header.
 //
@@ -726,6 +738,44 @@ static inline jsi::Value jsiHost2JsRuntimeFactory(JNIEnv *env, jsi::Runtime &rt,
     return jsi::Value::undefined();
   }
   return fn;
+}
+
+/**
+ * The guest's create-factory named [name], or undefined when the guest publishes none.
+ *
+ * The only caller reports the absence rather than working around it — see
+ * [jsiHost2JsCallCreateFactory].
+ */
+static inline jsi::Value jsiHost2JsFindCreateFactory(jsi::Runtime &rt, const char *name) {
+  jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);
+  if (!factories.isObject()) return jsi::Value::undefined();
+  jsi::Value fn = factories.asObject(rt).getProperty(rt, name);
+  if (!fn.isObject() || !fn.asObject(rt).isFunction(rt)) return jsi::Value::undefined();
+  return fn;
+}
+
+/**
+ * Hand the host's fields object to the guest's `create_<name>` and return the instance the guest built
+ * from it. The guest's constructor runs, defaults and all; the object's prototype is not consulted
+ * beyond own-property reads.
+ *
+ * A guest with no such factory is reported, not worked around: the message names the factory and says
+ * what to do about it. A constructor that throws surfaces as jsi::JSError, which the generated
+ * converter turns into a Java exception.
+ */
+static inline jsi::Value jsiHost2JsCallCreateFactory(
+    JNIEnv *env, jsi::Runtime &rt, const char *fq, const char *name, const jsi::Value &fields) {
+  jsi::Value factory = jsiHost2JsFindCreateFactory(rt, name);
+  if (factory.isUndefined()) {
+    std::string message = std::string("host2js: the guest provides no ") + name + " for " + fq +
+                          "; this class shape gets no create-factory (a guest built without "
+                          "create-factories, or a value-class constructor parameter)";
+    env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
+    return jsi::Value::undefined();
+  }
+  jsi::Value args[1] = {jsi::Value(rt, fields)};
+  return factory.asObject(rt).asFunction(rt).call(
+      rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1));
 }
 
 /** A `kotlin.Long` built by the guest, so the guest sees a real Kotlin/JS Long. */

@@ -16,7 +16,9 @@ import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irBoolean
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
+import org.jetbrains.kotlin.ir.builders.irEquals
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irIfThenElse
@@ -51,13 +53,14 @@ import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.ir.types.isMarkedNullable
+import org.jetbrains.kotlin.ir.types.makeNullable
 import org.jetbrains.kotlin.ir.types.starProjectedType
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
-import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
@@ -563,7 +566,12 @@ private fun buildRuntimeFactories(
   for (clazz in host2JsClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
     if (!host2JsNeedsCreateFactory(clazz)) continue
-    buildCreateFactory(finder, pluginContext, factoriesClass, clazz, resolveTargetFqn(clazz) ?: ownFqn)
+    val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
+    if (clazz.kind == ClassKind.OBJECT) {
+      buildSingletonFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
+    } else {
+      buildCreateFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
+    }
   }
 
   fileForModule.declarations += factoriesClass
@@ -579,11 +587,50 @@ internal fun createFactoryJsName(fq: String): String = "create_" + fq.replace('.
  * so it is a function of the class's shape alone, never of what a given compilation happens to
  * contain. Enums cross as ordinals and singletons have no construction to run, so neither needs one.
  */
-internal fun host2JsNeedsCreateFactory(clazz: IrClass): Boolean =
-  clazz.kind != ClassKind.ENUM_CLASS &&
-    !clazz.isCompanion &&
-    clazz.kind != ClassKind.OBJECT &&
-    clazz.primaryConstructor != null
+internal fun host2JsNeedsCreateFactory(clazz: IrClass): Boolean {
+  if (clazz.kind == ClassKind.ENUM_CLASS || clazz.isCompanion) return false
+  // An `object` has no constructor at all, which is why the check below comes after it: its factory
+  // hands over the singleton rather than calling anything. See [buildSingletonFactory].
+  if (clazz.kind == ClassKind.OBJECT) return true
+  val constructor = clazz.primaryConstructor ?: return false
+  // A `@JvmInline value class` gets a factory like any other class, on both sides of the field: as a
+  // payload, and as a field of one. It used to be declined here on the theory that the host sends a box
+  // while `bridgeCreate` wants the underlying value — but the host's box is itself converted through
+  // this same path, so by the time the outer factory reads the field the guest has already built that
+  // value class from the host's field values. Declining it instead left the shape with no way across:
+  // the value crossed before only because stamping skipped the constructor, which is what this path
+  // exists not to do. `Dp` (Redwood) and `FontWeight`, `TextUnit` (compose-live) are bridged value
+  // classes used as fields, so declining was not a narrowing, it was a break.
+  return true
+}
+
+/**
+ * The factory for an `object` payload: it hands over the guest's own singleton.
+ *
+ * An `object` has no constructor to run, so "the guest builds it" can only mean "the guest gives up its
+ * one instance" — and that is what the host should send anyway. A stamped lookalike of a singleton is a
+ * second instance of a class that has exactly one, and identity (`===`, a `when` against `Empty`, a
+ * serialization keyed on the singleton) is precisely where the difference shows. Field values the host
+ * defined are dropped: there is no state of its own to receive them.
+ */
+private fun buildSingletonFactory(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  factoriesClass: IrClass,
+  clazz: IrClass,
+  targetFqn: String,
+) {
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    createFactoryJsName(targetFqn),
+    pluginContext.irBuiltIns.anyNType,
+    listOf(pluginContext.irBuiltIns.anyNType),
+  ) { builder, _ ->
+    builder.irGetObject(clazz.symbol)
+  }
+}
 
 /**
  * Build [clazz]'s host->guest create-factory: a `create_<fqn>` on `__BridgeRuntimeFactories` taking
@@ -665,33 +712,114 @@ private fun buildCreateFactory(
       arguments[1] = builder.irString(jsName)
     }
 
-    fun readAs(type: IrType, jsName: String): IrExpression = builder.irImplicitCast(
-      builder.irCall(bridgeGetSymbol).apply {
-        arguments[0] = builder.irGet(fieldsObj)
-        arguments[1] = builder.irString(jsName)
-      },
-      type,
-    )
+    fun readRaw(jsName: String): IrExpression = builder.irCall(bridgeGetSymbol).apply {
+      arguments[0] = builder.irGet(fieldsObj)
+      arguments[1] = builder.irString(jsName)
+    }
+
+    /**
+     * The wrapper chain of a (possibly nested) `@JvmInline value class` type, outermost first; empty
+     * for every other type.
+     */
+    fun wrapperChain(type: IrType): List<IrClass> {
+      val chain = mutableListOf<IrClass>()
+      var current = type.classOrNull?.owner
+      while (current != null && isInlineClass(current)) {
+        chain += current
+        current = current.primaryConstructor
+          ?.parameters?.firstOrNull { it.kind == IrParameterKind.Regular }
+          ?.type?.classOrNull?.owner
+      }
+      return chain
+    }
+
+    /** The type the host actually sends for a wrapper field: its innermost underlying type. */
+    fun crossingType(type: IrType): IrType {
+      var current = type
+      while (true) {
+        val owner = current.classOrNull?.owner ?: return current
+        if (!isInlineClass(owner)) return current
+        val parameter = owner.primaryConstructor?.parameters
+          ?.firstOrNull { it.kind == IrParameterKind.Regular } ?: return current
+        current = parameter.type
+      }
+    }
+
+    /** Rebuild the wrappers around the value the host sent: `Outer(Inner(raw))`. */
+    fun wrapChain(type: IrType, raw: IrExpression): IrExpression {
+      var value = raw
+      for (wrapper in wrapperChain(type).asReversed()) {
+        val constructor = wrapper.primaryConstructor ?: return value
+        val call = builder.irCallConstructor(constructor.symbol, emptyList())
+        call.arguments[constructor.parameters.first { it.kind == IrParameterKind.Regular }] = value
+        value = call
+      }
+      return value
+    }
+
+    /**
+     * The value to hand `bridgeCreate` for the field [jsName], of the parameter's declared type.
+     *
+     * A `@JvmInline value class` crosses host->guest as its underlying value: the Kotlin/Native host
+     * reads the wrapper's single backing field and converts that, and the C host reaches the same
+     * conclusion through [FieldInfo.effectiveKtType]. But `bridgeCreate` takes the WRAPPER, and the JS
+     * backend unboxes at the call by reading the wrapper's backing property — so the obvious
+     * `bridgeGet(...) as Wrapped` compiles to `bridgeGet(...).raw_1`, which on a number is
+     * `undefined`. That is not a compile error and not a crash: the field silently holds `undefined`,
+     * and the payload comes back wrong on the return leg, which is where it surfaces. So the factory
+     * builds the wrapper chain itself.
+     */
+    fun readAs(type: IrType, jsName: String): IrExpression {
+      if (wrapperChain(type).isEmpty()) return builder.irImplicitCast(readRaw(jsName), type)
+      val crossing = crossingType(type).let {
+        if (type.isMarkedNullable() && !it.isMarkedNullable()) it.makeNullable() else it
+      }
+      if (!type.isMarkedNullable()) return wrapChain(type, builder.irImplicitCast(readRaw(jsName), crossing))
+      // Read twice rather than binding a temporary: this body builds expressions, and a variable
+      // declaration is a statement. Two property reads of one field have no observable order.
+      return builder.irIfThenElse(
+        type = type,
+        condition = builder.irEquals(readRaw(jsName), builder.irNull(pluginContext.irBuiltIns.anyNType)),
+        thenPart = builder.irNull(type),
+        elsePart = wrapChain(type, builder.irImplicitCast(readRaw(jsName), crossing)),
+      )
+    }
 
     /**
      * What to hand the factory for a parameter the guest did not send. It is never read — the set
      * flag sends the call to the default expression — but it must satisfy the parameter's type, so a
      * reference takes null and a primitive its zero.
      */
-    fun absentValue(type: IrType, name: String): IrExpression = when (type.classFqName?.asString()) {
-      "kotlin.Int" -> builder.irInt(0)
-      "kotlin.Long" -> IrConstImpl.long(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0L)
-      "kotlin.Double" -> IrConstImpl.double(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0)
-      "kotlin.Float" -> IrConstImpl.float(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0f)
-      "kotlin.Boolean" -> builder.irBoolean(false)
-      else -> if (type.isMarkedNullable()) {
-        builder.irNull(type)
-      } else {
-        error(
-          "cannot build a host->guest factory for $targetFqn: parameter '$name' has type " +
-            "${type.classFqName}; the factory has no absent value for it. Report this: the alternatives " +
-            "are a placeholder that the guest might read as a real value, or a silent skip.",
-        )
+    fun absentValue(type: IrType, name: String): IrExpression {
+      if (wrapperChain(type).isNotEmpty()) {
+        // A nullable wrapper's absent value is null like any other reference's; a non-null one gets a
+        // real wrapper built from its innermost zero, which the set flag guarantees nobody reads.
+        if (type.isMarkedNullable()) return builder.irNull(type)
+        return wrapChain(type, absentValue(crossingType(type), name))
+      }
+      return when (type.classFqName?.asString()) {
+        "kotlin.Int" -> builder.irInt(0)
+
+        "kotlin.Long" -> IrConstImpl.long(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0L)
+
+        "kotlin.Double" -> IrConstImpl.double(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0)
+
+        "kotlin.Float" -> IrConstImpl.float(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0f)
+
+        "kotlin.Boolean" -> builder.irBoolean(false)
+
+        "kotlin.String" -> builder.irString("")
+
+        else -> if (type.isMarkedNullable()) {
+          builder.irNull(type)
+        } else {
+          error(
+            "cannot build a host->guest factory for $targetFqn: parameter '$name' has type " +
+              "${type.classFqName}; the factory has no absent value for it. Report this: the " +
+              "alternatives are a placeholder that the guest might read as a real value, or a " +
+              "silent skip.",
+          )
+        }
       }
     }
 
@@ -737,6 +865,7 @@ private fun buildCreateFactory(
       val terms = maskTerms[word]
       call.arguments[factoryParams[word]] = when {
         terms.isEmpty() -> builder.irInt(0)
+
         else -> terms.reduce { left, right ->
           builder.irCall(intOr.symbol).apply {
             dispatchReceiver = left

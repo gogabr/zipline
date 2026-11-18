@@ -46,8 +46,14 @@ internal val BRIDGE_CREATE_NAME: Name = Name.identifier("bridgeCreate")
 
 /** Primitives cannot carry `null`, so a bridge parameter for one keeps its type. */
 private val PRIMITIVE_CLASS_IDS = setOf(
-  "kotlin.Boolean", "kotlin.Byte", "kotlin.Short", "kotlin.Int", "kotlin.Long",
-  "kotlin.Float", "kotlin.Double", "kotlin.Char",
+  "kotlin.Boolean",
+  "kotlin.Byte",
+  "kotlin.Short",
+  "kotlin.Int",
+  "kotlin.Long",
+  "kotlin.Float",
+  "kotlin.Double",
+  "kotlin.Char",
 )
 
 private val WITH_JS_2_HOST = FqName("app.cash.zipline.bridge.support.WithJS2HostBridge")
@@ -109,13 +115,15 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     // A companion this extension generated also claims `<init>` (SpecialNames.INIT): `generateConstructors`
     // is only asked about names the extension claims, and an object without a constructor fails JVM
     // lowering with "Object should have a primary constructor".
-    return if (classSymbol.isBridgeCompanion()) setOf(BRIDGE_CREATE_NAME, SpecialNames.INIT)
-    else setOf(BRIDGE_CREATE_NAME)
+    return if (classSymbol.isBridgeCompanion()) {
+      setOf(BRIDGE_CREATE_NAME, SpecialNames.INIT)
+    } else {
+      setOf(BRIDGE_CREATE_NAME)
+    }
   }
 
   /** The companion object this extension generated, as opposed to one the source declared. */
-  private fun FirClassSymbol<*>.isBridgeCompanion(): Boolean =
-    (origin as? FirDeclarationOrigin.Plugin)?.key === BridgeGeneratedKey
+  private fun FirClassSymbol<*>.isBridgeCompanion(): Boolean = (origin as? FirDeclarationOrigin.Plugin)?.key === BridgeGeneratedKey
 
   /**
    * The generated companion is an object, and the JVM backend insists that every object has a
@@ -184,8 +192,7 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
   }
 
   /** The annotated class whose companion this is, or null when this is not a bridge companion. */
-  private fun FirClassSymbol<*>.bridgeTargetClass(): FirClassSymbol<*>? =
-    if (isCompanion) getContainingClassSymbol() as? FirClassSymbol<*> else null
+  private fun FirClassSymbol<*>.bridgeTargetClass(): FirClassSymbol<*>? = if (isCompanion) getContainingClassSymbol() as? FirClassSymbol<*> else null
 
   /**
    * Every bridged class with a primary constructor of its own gets the factory.
@@ -216,8 +223,7 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
    * not a question to the scope, and `DirectDeclarationsAccess` is the sanctioned way to read it.
    */
   @OptIn(SymbolInternals::class, DirectDeclarationsAccess::class)
-  private fun FirClassSymbol<*>.primaryConstructorOfItsOwn(): FirConstructorSymbol? =
-    (fir as? FirRegularClass)
+  private fun FirClassSymbol<*>.primaryConstructorOfItsOwn(): FirConstructorSymbol? = (fir as? FirRegularClass)
       ?.declarations
       ?.filterIsInstance<FirConstructor>()
       ?.singleOrNull { it.isPrimary }
@@ -225,14 +231,15 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
 
   /** Whether the class already has a companion to put the factory in — again, not through a scope. */
   @OptIn(SymbolInternals::class, DirectDeclarationsAccess::class)
-  private fun FirClassSymbol<*>.hasOwnCompanion(): Boolean =
-    (fir as? FirRegularClass)?.declarations?.any { (it.symbol as? FirClassLikeSymbol<*>)?.isCompanion == true } == true
+  private fun FirClassSymbol<*>.hasOwnCompanion(): Boolean = (fir as? FirRegularClass)?.declarations?.any { (it.symbol as? FirClassLikeSymbol<*>)?.isCompanion == true } == true
 
   /**
    * A bridge parameter must be able to say "absent": a reference type becomes nullable and `null`
    * carries the absence; a primitive cannot, so its flag bit carries it instead.
    */
-  private fun ConeKotlinType.forBridgeParameter(): ConeKotlinType =
-    if (classId?.asFqNameString() in PRIMITIVE_CLASS_IDS) this
-    else withNullability(nullable = true, typeContext = session.typeContext)
+  private fun ConeKotlinType.forBridgeParameter(): ConeKotlinType = if (classId?.asFqNameString() in PRIMITIVE_CLASS_IDS) {
+      this
+    } else {
+      withNullability(nullable = true, typeContext = session.typeContext)
+    }
 }

@@ -117,6 +117,7 @@ internal fun injectNativeConvertToJsMembers(
   val anyToJsSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "anyToJs")
   val setJsPropertySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "setJsProperty")
   val newJsObjectSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "newJsObject")
+  val callCreateFactorySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsCallCreateFactory")
   val refuseEnumSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsRefuseEnum")
   val host2JsConvertible = finder.findClass(
     ClassId(FqName("app.cash.zipline"), Name.identifier("Host2JsConvertible")),
@@ -128,6 +129,7 @@ internal fun injectNativeConvertToJsMembers(
   for (clazz in host2JsClasses) {
     val fqName = clazz.fqNameWhenAvailable?.asString() ?: continue
     val protoFqn = resolveTargetFqn(clazz) ?: fqName
+    val factoryName = createFactoryJsName(protoFqn)
 
     // Skip classes with kotlin.Function*-typed fields (same rule as generateNativeBridgeFile).
     val hasUnsupported = extractFields(clazz, includeValBodyFields = true).any {
@@ -162,7 +164,8 @@ internal fun injectNativeConvertToJsMembers(
     val builder = pluginContext.irBuiltIns.createIrBuilder(member.symbol)
     member.body = builder.irBlockBody {
       val obj = {
-        // newJsObject throws when the guest never registered the prototype; no sentinel to check.
+        // The fields object. newJsObject throws when the guest never registered the class; the guest's
+        // create-factory reads the host's own properties off this and builds the real instance.
         irTemporary(
           irCall(newJsObjectSymbol).apply {
             arguments[0] = irGet(member.parameters[1])
@@ -205,7 +208,16 @@ internal fun injectNativeConvertToJsMembers(
             }
           }
         }
-        +irReturn(irGet(obj))
+        // The guest builds the payload: its constructor runs over the fields the host defined. There
+        // is no second path — a guest that publishes no factory fails, naming it.
+        +irReturn(
+          irCall(callCreateFactorySymbol).apply {
+            arguments[0] = irGet(member.parameters[1])
+            arguments[1] = irString(protoFqn)
+            arguments[2] = irString(factoryName)
+            arguments[3] = irGet(obj)
+          },
+        )
       }
     }
     clazz.declarations += member

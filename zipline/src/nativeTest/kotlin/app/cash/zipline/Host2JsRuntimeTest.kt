@@ -3,6 +3,7 @@ package app.cash.zipline
 import app.cash.zipline.hermes.HERMES_TAG_ERROR
 import app.cash.zipline.hermes.HermesBridge_freeHandle
 import app.cash.zipline.hermes.HermesBridge_getProperty
+import app.cash.zipline.hermes.HermesBridge_getValueBool
 import app.cash.zipline.hermes.HermesBridge_getValueDouble
 import app.cash.zipline.hermes.HermesBridge_getValueString
 import app.cash.zipline.hermes.HermesBridge_getValueTag
@@ -245,6 +246,100 @@ class Host2JsRuntimeTest {
     }
     assertTrue(e.message!!.contains("no registered prototype"), "message was: " + e.message)
     assertTrue(e.message!!.contains("com.example.NoSuchBridge"), "message was: " + e.message)
+  }
+
+  @Test
+  fun `host2JsCallCreateFactory refuses a guest that publishes no factory`() {
+    publishGuestRuntime()
+    // Such a guest - prototypes and collection factories, no create-factory - is exactly what this
+    // path used to accept, by sending a field-stamped lookalike. It refuses instead: the lookalike
+    // skips the constructor, and quietly falling back to it would decide the version question in the
+    // dark. The message names the factory and says what to rebuild.
+    val fields = newJsObject(context, "com.example.Host2JsEcho")
+    try {
+      val e = assertFailsWith<IllegalStateException> {
+        host2JsCallCreateFactory(context, "com.example.Host2JsEcho", "create_com_example_Host2JsEcho", fields)
+      }
+      assertTrue(e.message!!.contains("create_com_example_Host2JsEcho"), "was: " + e.message)
+      assertTrue(e.message!!.contains("gets no create-factory"), "was: " + e.message)
+    } finally {
+      HermesBridge_freeHandle(context, fields)
+    }
+  }
+
+  @Test
+  fun `host2JsCallCreateFactory hands the host fields to the guest and returns what the guest built`() {
+    publishGuestRuntime()
+    eval(
+      """
+      globalThis.__zipline_bridgeFactories.create_com_example_Host2JsEcho = function (fields) {
+        var proto = globalThis.__zipline_bridgePrototypes['com.example.Host2JsEcho'];
+        var out = Object.create(proto);
+        // 'origin' comes from the guest and can only be there if the guest ran code of its own: the
+        // host's stamped object carries 'prototype' from the prototype, and nothing else.
+        out.origin = 'constructed';
+        // 'doubled' proves the factory saw the field the host defined; 'sawValue' proves it could
+        // ask whether the field was there at all, which is what the flag word is built from.
+        out.doubled = fields.value * 2;
+        out.sawValue = Object.prototype.hasOwnProperty.call(fields, 'value');
+        return out;
+      };
+      """.trimIndent(),
+    )
+
+    val factoryName = "create_com_example_Host2JsEcho"
+
+    val fields = newJsObject(context, "com.example.Host2JsEcho")
+    val value = newJsInt(context, 21)
+    try {
+      setJsProperty(context, fields, "value", value)
+      val instance = host2JsCallCreateFactory(context, "com.example.Host2JsEcho", factoryName, fields)
+      try {
+        assertEquals("constructed", stringPropertyOf(instance, "origin"))
+
+        val doubled = propertyOf(instance, "doubled")
+        try {
+          assertEquals(42.0, HermesBridge_getValueDouble(context, doubled))
+        } finally {
+          HermesBridge_freeHandle(context, doubled)
+        }
+
+        val saw = propertyOf(instance, "sawValue")
+        try {
+          assertTrue(HermesBridge_getValueBool(context, saw) != 0, "the guest did not see the host's field")
+        } finally {
+          HermesBridge_freeHandle(context, saw)
+        }
+      } finally {
+        HermesBridge_freeHandle(context, instance)
+      }
+    } finally {
+      HermesBridge_freeHandle(context, value)
+      HermesBridge_freeHandle(context, fields)
+    }
+  }
+
+  @Test
+  fun `host2JsCallCreateFactory reports the guest's own failure message`() {
+    publishGuestRuntime()
+    eval(
+      """
+      globalThis.__zipline_bridgeFactories.create_com_example_Host2JsEcho = function (fields) {
+        throw new Error('host2js: the guest refused this payload deliberately');
+      };
+      """.trimIndent(),
+    )
+    val fields = newJsObject(context, "com.example.Host2JsEcho")
+    try {
+      val e = assertFailsWith<IllegalStateException> {
+        host2JsCallCreateFactory(context, "com.example.Host2JsEcho", "create_com_example_Host2JsEcho", fields)
+      }
+      // The value the host wanted to report - "a factory call did not succeed" - is worth less than
+      // what the guest said, and the guest's message names the class and the field.
+      assertTrue(e.message!!.contains("the guest refused this payload deliberately"), "was: " + e.message)
+    } finally {
+      HermesBridge_freeHandle(context, fields)
+    }
   }
 
   @Test

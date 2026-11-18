@@ -226,14 +226,11 @@ class BridgeCreateTest {
 }
 
 /** The factory the plugin generated. It is a companion member, which is the whole point of it. */
-private fun factoryOf(clazz: Class<*>): Method =
-  companionClassOf(clazz).methods.single { it.name == "bridgeCreate" }
+private fun factoryOf(clazz: Class<*>): Method = companionClassOf(clazz).methods.single { it.name == "bridgeCreate" }
 
-private fun companionClassOf(clazz: Class<*>): Class<*> =
-  clazz.classes.single { it.simpleName == "Companion" }
+private fun companionClassOf(clazz: Class<*>): Class<*> = clazz.classes.single { it.simpleName == "Companion" }
 
 private fun companionOf(clazz: Class<*>): Any = clazz.getField("Companion").get(null)
     ?: error("no Companion instance on $clazz")
 
-private fun readBack(clazz: Class<*>, instance: Any, vararg getters: String): List<Any?> =
-  getters.map { clazz.getMethod(it).invoke(instance) }
+private fun readBack(clazz: Class<*>, instance: Any, vararg getters: String): List<Any?> = getters.map { clazz.getMethod(it).invoke(instance) }

@@ -15,8 +15,10 @@ import app.cash.zipline.hermes.HermesBridge_getProperty
 import app.cash.zipline.hermes.HermesBridge_newArray
 import app.cash.zipline.hermes.HermesBridge_newObjectWithPrototype
 import app.cash.zipline.hermes.HermesBridge_setArrayElement
+import app.cash.zipline.hermes.HermesContext_getLastError
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.toKString
 
 /**
  * Implemented by classes annotated with `@WithHost2JSBridge` on Kotlin/Native. The bridge compiler
@@ -60,6 +62,44 @@ public fun setJsProperty(ctx: COpaquePointer?, objHandle: Int, name: String, val
   HermesBridge_defineProperty(ctx, objHandle, name, valueHandle)
 }
 
+/**
+ * Hand the host's fields object to the guest's generated `create_[factoryName]` and return the instance
+ * the guest builds from it. The guest runs the class's own constructor on the values, so its initializer
+ * blocks, computed properties, validation and default expressions all happen — which a prototype-stamped
+ * lookalike skips. The fields object is the stamped instance the host was already going to send: it
+ * carries the class's prototype, and the factory reads only the host's own properties off it.
+ *
+ * A guest that publishes no such factory is reported, not worked around: the alternative was the
+ * field-stamped lookalike this path replaced, which skips the constructor.
+ */
+public fun host2JsCallCreateFactory(
+  ctx: COpaquePointer?,
+  fqName: String,
+  factoryName: String,
+  fieldsHandle: Int,
+): Int {
+  val factory = factoryFunction(ctx, factoryName)
+  if (factory < 0) {
+    error(
+      "HOST2JS: the guest provides no $factoryName for $fqName; this class shape gets no " +
+        "create-factory (a guest built without create-factories, or a value-class constructor " +
+        "parameter)",
+    )
+  }
+  val instance = callOnFactory(ctx, factory, intArrayOf(fieldsHandle))
+  if (instance < 0) {
+    // Say what the guest said. The guest's factory failed inside JS, and its message names the class
+    // and the field — which is worth more here than a second report that a call did not succeed. The
+    // host's own wording survives only for the case where JS had nothing to say.
+    val guestMessage = HermesContext_getLastError(ctx)?.toKString()
+    error(
+      guestMessage
+        ?: "HOST2JS: the guest's $factoryName for $fqName produced no value and reported nothing",
+    )
+  }
+  return instance
+}
+
 /** Build a JS number from [value] as a handle; the caller owns it. */
 public fun newJsInt(ctx: COpaquePointer?, value: Int): Int {
   val handle = HermesBridge_createInt(ctx, value)
@@ -99,13 +139,23 @@ private fun callFactory(ctx: COpaquePointer?, name: String, args: IntArray): Int
         "the guest module did not call __bridgeRegisterRuntime",
     )
   }
+  val result = callOnFactory(ctx, factory, args)
+  if (result < 0) error("HOST2JS: the guest $name runtime factory failed")
+  return result
+}
+
+/**
+ * Call the already-looked-up [factory]; the caller owns the result and reports the failure in its own
+ * words. It must: a create-factory that threw has already said why in JS, and a caller that reports
+ * first buries that message under a second-hand "a call did not succeed".
+ */
+private fun callOnFactory(ctx: COpaquePointer?, factory: Int, args: IntArray): Int {
   val result = when (args.size) {
     1 -> HermesBridge_callFunctionWithArg(ctx, factory, args[0])
     2 -> HermesBridge_callFunctionWithArgs2(ctx, factory, args[0], args[1])
     else -> -1
   }
   HermesBridge_freeHandle(ctx, factory)
-  if (result < 0) error("HOST2JS: the guest $name runtime factory failed")
   return result
 }
 

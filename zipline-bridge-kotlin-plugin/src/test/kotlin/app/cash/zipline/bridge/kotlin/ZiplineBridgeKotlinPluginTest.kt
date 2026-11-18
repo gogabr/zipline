@@ -893,6 +893,17 @@ class ZiplineBridgeKotlinPluginTest {
       assertTrue(content.contains("addBridgeEntry(\"com.example.protocol.TargetImpl\""), content)
       assertFalse(content.contains("addBridgeEntry(\"com.example.RemappedHolder\""))
       assertTrue(content.contains("jsiHost2JsNewObject(env, rt, \"com.example.protocol.TargetImpl\")"), content)
+
+      // ... and to the guest's own create-factory for that same resolved name, so the guest's
+      // constructor is what builds the payload. The factory name is derived from the resolved FQN, the
+      // same name the guest registered the prototype under.
+      assertTrue(
+        content.contains(
+          "jsiHost2JsCallCreateFactory(env, rt, \"com.example.protocol.TargetImpl\", " +
+            "\"create_com_example_protocol_TargetImpl\", result)",
+        ),
+        content,
+      )
     } finally {
       outputDir.toFile().deleteRecursively()
     }
@@ -940,6 +951,16 @@ class ZiplineBridgeKotlinPluginTest {
       // Every field is defined as an own data property on the new instance.
       assertTrue(content.contains("jsiHost2JsDefineProperty(rt, result, \"name\", "), content)
       assertTrue(content.contains("jsiHost2JsDefineProperty(rt, result, \"age\", "), content)
+
+      // Then the object is handed to the guest's own factory, unconditionally: there is no stamped
+      // fallback, so a guest that publishes no factory is reported rather than served a lookalike.
+      assertFalse(content.contains("jsiHost2JsHasCreateFactory"), content)
+      assertTrue(
+        content.contains(
+          "jsiHost2JsCallCreateFactory(env, rt, \"com.example.Bridged\", \"create_com_example_Bridged\", result)",
+        ),
+        content,
+      )
 
       // A host2js-only class has no JS-to-host converter, so it is not in the dispatch table.
       assertFalse(content.contains("addBridgeEntry("), content)

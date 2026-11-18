@@ -982,10 +982,14 @@ internal fun generateCBridges(
 }
 
 /**
- * Emit the JNI implementation of the IR-injected `convertToJs(J)J` member: build a new JS
- * instance carrying the guest class's own prototype (via jsiHost2JsNewObject) and define every
- * field as an own data property, converting values recursively through the shared host->JS
- * helpers.
+ * Emit the JNI implementation of the IR-injected `convertToJs(J)J` member: define every field as an own
+ * data property on a fields object, converting values recursively through the shared host->JS helpers,
+ * then hand that object to the guest's `create_<fq>` factory so the guest builds the payload through
+ * its own constructor.
+ *
+ * There is no other path. A guest that publishes no factory fails, naming the factory: the alternative
+ * was to send the field-stamped lookalike this code used to send, which skips the constructor — and a
+ * fallback that quietly produces the thing the bridge exists not to produce is worse than a failure.
  *
  * The returned long is a pointer to a heap `jsi::Value`; `jsiHost2JsAnyToJs` takes ownership and
  * deletes it. Errors are loud: a pending Java exception is left pending and 0 is returned, which
@@ -1002,8 +1006,9 @@ private fun emitHost2JsConvertToJs(
   jniClassName: String,
 ) {
   val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
+  val factoryName = createFactoryJsName(protoFqn)
   sb.appendLine()
-  sb.appendLine("// Host2JS: builds a JS counterpart of this object with the guest class prototype.")
+  sb.appendLine("// Host2JS: hands the field values to the guest's own $factoryName, which builds the instance.")
   // extern "C": JNI resolves a native method by its unmangled symbol, and this file is C++.
   sb.appendLine("extern \"C\" JNIEXPORT jlong JNICALL $jniFunctionName(JNIEnv *env, jobject self, jlong rtPtr) {")
   sb.appendLine("    ${functionPrefix}_init(env);")
@@ -1025,11 +1030,15 @@ private fun emitHost2JsConvertToJs(
     sb.appendLine("    return 0;")
   } else {
     sb.appendLine("    // New instance whose prototype is the EXISTING retained guest prototype for \"$protoFqn\".")
+    sb.appendLine("    // It doubles as the fields object when the guest publishes a create-factory below.")
     sb.appendLine("    jsi::Value result = jsiHost2JsNewObject(env, rt, \"$protoFqn\");")
     sb.appendLine("    if (env->ExceptionCheck()) return 0;")
     for (field in fields) {
       emitHost2JsField(sb, field)
     }
+    sb.appendLine("    // The guest runs its constructor on the fields; what comes back is a real instance.")
+    sb.appendLine("    result = jsiHost2JsCallCreateFactory(env, rt, \"$protoFqn\", \"$factoryName\", result);")
+    sb.appendLine("    if (env->ExceptionCheck()) return 0;")
     sb.appendLine("    return static_cast<jlong>(reinterpret_cast<intptr_t>(new jsi::Value(std::move(result))));")
   }
   sb.appendLine("    } catch (const jsi::JSError &e) {")

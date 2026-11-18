@@ -55,7 +55,6 @@ class CrossVersionTest {
     assertEquals("11|hp", host.read("readBackHierarchy", HierarchyPayload(a = 11, b = "hp")))
     assertEquals("keep", host.read("readBackDroppedBase", DroppedBasePayload(keep = "keep")))
     assertEquals("11", host.read("readBackInterface", InterfacePayload(v = 11)))
-    assertEquals("WrappedValue(v=42)", host.read("readBackWrapped", WrappedHolder(w = WrappedValue(v = 42))))
     assertEquals("LeafA(v=11)", host.read("readBackSealed", SealedHolder(s = SealedShape.LeafA(v = 11))))
     assertEquals("LeafB(w=lb)", host.read("readBackSealed", SealedHolder(s = SealedShape.LeafB(w = "lb"))))
     assertEquals("11", host.read("readBackOnlyInNew", OnlyInNew(x = 11)))
@@ -165,6 +164,25 @@ class CrossVersionTest {
     )
   }
 
+  /**
+   * A `@JvmInline value class` field: it crosses, and the guest's own constructor builds it.
+   *
+   * The wrapper crosses as its underlying value (both hosts read the single backing field) and the
+   * guest's create-factory rebuilds the wrapper around it, so the holder arrives holding a real
+   * `WrappedValue`. The observed value is the same one this row read while the shape crossed by
+   * stamping — which is exactly the trap: a `toString` cannot tell a real instance from a lookalike.
+   * What tells them apart is that the constructor ran, pinned in
+   * `Host2JsBridgeEndToEndTest.valueClassField*`.
+   */
+  @Test fun hostToGuest_valueClassField() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js-value-class-field/WrappedHolder.w",
+      "WrappedValue(v=42)",
+    ) {
+      host.read("readBackWrapped", WrappedHolder(w = WrappedValue(v = 42)))
+    }
+  }
+
   /** Interface gained on the host: wire-invisible. */
   @Test fun guestToHost_interfaceGained() = withOldGuest { host, id ->
     assertEquals("InterfacePayload(v=11)", host.evaluateOne(provide("provideInterface", id)).toString())
@@ -221,11 +239,20 @@ class CrossVersionTest {
   }
 
   /**
-   * Host omits a field the old guest still declares: the guest reads an absent JS property, which
-   * Kotlin/JS interpolation renders as `undefined` rather than folding into null.
+   * Host omits a field the guest's constructor requires. It used to arrive as an absent JS property
+   * that Kotlin/JS interpolation rendered as `undefined`, so the payload crossed and the wrong value
+   * was simply used. Now the guest builds the payload through its own factory, which is the first place
+   * that knows the parameter is required — so it says so, with the field's name, before anything can
+   * read the hole.
    */
   @Test fun hostToGuest_fieldMissingOnGuest() = withOldGuest { host, _ ->
-    assertEquals("11|rf|undefined", host.read("readBackRemovedField", RemovedFieldPayload(a = 11, b = "rf")))
+    assertObserved(
+      "host2js-field-missing/RemovedFieldPayload.c",
+      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.RemovedFieldPayload.c " +
+        "was not sent by the host",
+    ) {
+      host.read("readBackRemovedField", RemovedFieldPayload(a = 11, b = "rf"))
+    }
   }
 
   /**
@@ -235,7 +262,13 @@ class CrossVersionTest {
    * [hostToGuest_fieldMissingOnGuest], where stringification bakes "undefined" into the string.
    */
   @Test fun hostToGuest_fieldRenamed() = withOldGuest { host, _ ->
-    assertNull(host.read("readBackRenamedField", RenamedFieldPayload(newName = "new")))
+    assertObserved(
+      "host2js-field-renamed/RenamedFieldPayload.oldName",
+      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.RenamedFieldPayload.oldName " +
+        "was not sent by the host",
+    ) {
+      host.read("readBackRenamedField", RenamedFieldPayload(newName = "new"))
+    }
   }
 
   /** Retyped field, host side: the guest's Int-typed property receives a JS string. */

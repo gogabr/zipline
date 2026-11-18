@@ -84,6 +84,23 @@ the host tree. JVM observed values are from `jvmTest`; the Native column is `mac
 The host builds an object, converts it to JS, and the guest's `readBack*` reports what its own shape
 sees. The guest's prototype registry is the gate on the receiving side.
 
+Since the create-factory change the host's object is an *input*, not the payload: the guest reads the
+host's own properties off it and runs its real constructor, so its initializer blocks, computed
+properties and default expressions happen, and a parameter the host does not have is caught by the
+constructor that requires it instead of arriving as `undefined`. There is no fallback to the old stamped
+path: a class the guest builds no factory for is refused, naming the factory.
+
+`object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
+second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.
+
+A `@JvmInline value class` field crosses as the wrapper's **underlying value** — both hosts read its
+single backing field — and the guest's factory rebuilds the wrapper around it before the constructor
+sees it. Casting the read straight to the wrapper type instead would compile to `raw_1` on a number, i.e.
+`undefined` in the field, noticed only on the way back: the row `hostToGuest_valueClassField` reads the
+same `WrappedValue(v=42)` it read while this crossed by stamping, which is what makes the row a trap
+rather than a proof. The distinguishing tests are the two `valueClassField*` cases in
+`Host2JsBridgeEndToEndTest`, which show the guest's default running when the field is absent.
+
 | Change kind | Direction | Verdict | JVM observed | Kotlin/Native observed | Follow-up |
 |---|---|---|---|---|---|
 | Class deleted on guest (`OnlyInOld`) | old host → new guest | ❌ caught | `IllegalStateException: host2js: no registered prototype for app.cash.zipline.bridge.test.OnlyInOld; the guest module did not call __bridgeRegister for this class` | same message, wrapped as `JsException: callGuestFunction: cannot convert argument 0 ...` (folded) | T1 |
@@ -91,11 +108,12 @@ sees. The guest's prototype registry is the gate on the receiving side.
 | Field added on host | new host → old guest | ✅ | `11\|af` — guest ignores `c` | same | — |
 | Field added on guest | old host → new guest | ⚠️ | `11\|af\|undefined` — guest reads an absent JS property | same | — |
 | Field removed on guest | old host → new guest | ✅ | `11\|rf` — the host's extra `c` is ignored by the guest's shape | same | — |
-| Field removed on host | new host → old guest | ⚠️ | `11\|rf\|undefined` — the old guest still declares `c` and reads an absent JS property | same | — |
-| Field renamed, no alias | both | ⚠️ | `null` — Kotlin/JS compiles the single-property template to a bare property return, so raw `undefined` crosses back as null | same | T3 |
+| Field removed on host | new host → old guest | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.RemovedFieldPayload.c was not sent by the host` — the guest's create-factory is the first place that knows the parameter is required | same message (wrapped, folded) | was `11\|rf\|undefined` before the guest built its own payloads |
+| Field renamed, no alias | both | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.RenamedFieldPayload.oldName was not sent by the host` | same message (wrapped, folded) | T3; was `null` — raw `undefined` crossing back — before the guest built its own payloads |
 | Property retyped Int→String | old host → new guest | ⚠️ divergent | `99` | `99.0` — native renders the JS double with its fractional part | — |
 | `null` into guest non-null | new host → old guest | ✅ | `null` | same | — |
 | Enum payload | both | ❌ refused by design | `IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; the guest would only see a lookalike, not an enum instance` | same (wrapped, folded) | — |
+| Value-class field (`WrappedHolder.w`) | both | ✅ | `WrappedValue(v=42)` — the same text the stamped path produced; the guest's factory rebuilds the wrapper from the value that crossed | same | — |
 | Hierarchy / interface change | both | ✅ | values cross unchanged | same | — |
 
 The host→guest refusals (`no registered prototype`, `is an enum`) stay `IllegalStateException`, not

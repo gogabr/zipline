@@ -32,4 +32,3 @@ class BridgeCreateTestRegistrar : CompilerPluginRegistrar() {
     )
   }
 }
-

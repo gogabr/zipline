@@ -57,7 +57,6 @@ class CrossVersionTest {
     assertEquals("11|hp", host.read("readBackHierarchy", HierarchyPayload(a = 11, b = "hp")))
     assertEquals("keep", host.read("readBackDroppedBase", DroppedBasePayload(keep = "keep")))
     assertEquals("11", host.read("readBackInterface", InterfacePayload(v = 11)))
-    assertEquals("WrappedValue(v=42)", host.read("readBackWrapped", WrappedHolder(w = WrappedValue(v = 42))))
     assertEquals("LeafA(v=11)", host.read("readBackSealed", SealedHolder(s = SealedShape.LeafA(v = 11))))
     assertEquals("11", host.read("readBackOnlyInOld", OnlyInOld(x = 11)))
   }
@@ -231,11 +230,46 @@ class CrossVersionTest {
   }
 
   /**
-   * Host omits a field the new guest declares: the guest reads an absent JS property, which
-   * Kotlin/JS interpolation renders as `undefined` rather than folding into null.
+   * A `@JvmInline value class` field: it crosses, and the guest's own constructor builds it.
+   *
+   * The wrapper crosses as its underlying value (both hosts read the single backing field) and the
+   * guest's create-factory rebuilds the wrapper around it, so the holder arrives holding a real
+   * `WrappedValue`. The observed value is the same one this row read while the shape crossed by
+   * stamping — which is exactly the trap: a `toString` cannot tell a real instance from a lookalike.
+   * What tells them apart is that the constructor ran, pinned in
+   * `Host2JsBridgeEndToEndTest.valueClassField*`.
+   */
+  @Test fun hostToGuest_valueClassField() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js-value-class-field/WrappedHolder.w",
+      "WrappedValue(v=42)",
+    ) {
+      host.read("readBackWrapped", WrappedHolder(w = WrappedValue(v = 42)))
+    }
+  }
+
+  /**
+   * Host omits a field the new guest declares. This row used to read `11|af|undefined`: the guest
+   * read an absent JS property and Kotlin/JS interpolation rendered it as `undefined`, so a wrong
+   * value crossed quietly.
+   *
+   * It is loud now, and the reason is the guest's own factory: since the guest builds host->guest
+   * payloads by running its constructor, the first thing that knows this parameter is required is the
+   * code that needs it. Both hosts report the guest's words - the Kotlin/Native one through the JS
+   * error text, which is why this row needs no `nativeExpected`.
+   *
+   * Recorded in the frozen tree rather than left stale because the fixture pair is what is frozen
+   * here, not the plugin: this host is compiled by the current plugin, so this is what the pairing
+   * does today.
    */
   @Test fun hostToGuest_fieldMissingOnGuest() = withNewGuest { host, _ ->
-    assertEquals("11|af|undefined", host.read("readBackAddedField", AddedFieldPayload(a = 11, b = "af")))
+    assertObserved(
+      "host2js-field-missing/AddedFieldPayload.c",
+      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.AddedFieldPayload.c " +
+        "was not sent by the host",
+    ) {
+      host.read("readBackAddedField", AddedFieldPayload(a = 11, b = "af"))
+    }
   }
 
   /** Host writes a field the new guest's shape lacks: the guest ignores it. Compatible. */
@@ -244,13 +278,20 @@ class CrossVersionTest {
   }
 
   /**
-   * Renamed field, host side: the guest reads its new name from an object written with the old one.
-   * Kotlin/JS compiles the single-property template `"$" + "{p.newName}"` to a bare property return,
-   * so the raw `undefined` reaches the host and decodes to null - unlike the interpolated case in
-   * [hostToGuest_fieldMissingOnGuest], where stringification bakes "undefined" into the string.
+   * Renamed field, host side: the guest wants `newName`, the host wrote `oldName`. It used to arrive
+   * as a bare property read, so raw `undefined` crossed back and decoded to null - a different shape of
+   * the same silence as [hostToGuest_fieldMissingOnGuest].
+   *
+   * Now the guest's create-factory names the field and the class before any of that can happen.
    */
   @Test fun hostToGuest_fieldRenamed() = withNewGuest { host, _ ->
-    assertNull(host.read("readBackRenamedField", RenamedFieldPayload(oldName = "old")))
+    assertObserved(
+      "host2js-field-renamed/RenamedFieldPayload.newName",
+      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.RenamedFieldPayload.newName " +
+        "was not sent by the host",
+    ) {
+      host.read("readBackRenamedField", RenamedFieldPayload(oldName = "old"))
+    }
   }
 
   /**

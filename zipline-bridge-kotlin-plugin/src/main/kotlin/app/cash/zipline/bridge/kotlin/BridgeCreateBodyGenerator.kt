@@ -2,6 +2,7 @@ package app.cash.zipline.bridge.kotlin
 
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
@@ -13,7 +14,6 @@ import org.jetbrains.kotlin.ir.builders.irIfThenElse
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irNotEquals
 import org.jetbrains.kotlin.ir.builders.irReturn
-import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
@@ -80,13 +80,11 @@ internal fun fillBridgeCreateBodies(moduleFragment: IrModuleFragment, context: I
 }
 
 /** The factory we declared: our name, produced by our plugin, still without a body. */
-private fun IrSimpleFunction.isBridgeCreate(): Boolean =
-  name == BRIDGE_CREATE_NAME &&
+private fun IrSimpleFunction.isBridgeCreate(): Boolean = name == BRIDGE_CREATE_NAME &&
     body == null &&
     (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
 
-private fun IrDeclaration.isBridgeGenerated(): Boolean =
-  (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
+private fun IrDeclaration.isBridgeGenerated(): Boolean = (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
 
 /**
  * Fail the build when a bridged class declares `bridgeCreate` of its own.
@@ -220,8 +218,7 @@ private fun IrBuilderWithScope.copyDefault(
   val copy = body.expression.deepCopyWithSymbols(factory)
   val reader =
     object : IrElementTransformerVoid() {
-      override fun visitGetValue(expression: IrGetValue): IrExpression =
-        chosen[expression.symbol]?.let { irGet(it) } ?: super.visitGetValue(expression)
+      override fun visitGetValue(expression: IrGetValue): IrExpression = chosen[expression.symbol]?.let { irGet(it) } ?: super.visitGetValue(expression)
     }
   // transformChildrenVoid skips the node it is given, and a default may be nothing but a read.
   val rewritten: IrExpression =
@@ -259,6 +256,5 @@ private fun IrBuilderWithScope.copyDefault(
 }
 
 /** The parameter whose default this is, for the invariant message above. */
-private fun ctorNameOf(body: IrExpressionBody, constructor: IrConstructor): String =
-  constructor.parameters.filterIsInstance<IrValueParameter>().firstOrNull { it.defaultValue === body }?.name?.asString()
+private fun ctorNameOf(body: IrExpressionBody, constructor: IrConstructor): String = constructor.parameters.filterIsInstance<IrValueParameter>().firstOrNull { it.defaultValue === body }?.name?.asString()
     ?: "<unknown parameter>"

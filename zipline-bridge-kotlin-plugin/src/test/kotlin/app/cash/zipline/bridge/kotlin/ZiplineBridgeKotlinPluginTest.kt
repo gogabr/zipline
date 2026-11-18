@@ -990,9 +990,14 @@ class ZiplineBridgeKotlinPluginTest {
       )
 
       // FindClass needs the JVM internal name: '$' for the nested class, never the dotted FQN.
-      assertTrue(topContent.contains("FindClass(\"com/example/Alignment\")"), topContent)
       assertTrue(
-        nestedContent.contains("FindClass(\"com/example/LineHeightStyle\$Alignment\")"),
+        topContent.contains("jsiFindClassQuiet(env, \"com/example/Alignment\")"),
+        topContent,
+      )
+      assertTrue(
+        nestedContent.contains(
+          "jsiFindClassQuiet(env, \"com/example/LineHeightStyle\$Alignment\")",
+        ),
         nestedContent,
       )
 

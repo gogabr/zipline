@@ -29,8 +29,14 @@ class ZiplineBridgeIrGenerationExtension(
   internal val cOutputDir: String?,
   internal val nativeOutputDir: String? = null,
   internal val isJsTarget: Boolean = (cOutputDir == null && nativeOutputDir == null),
+  /**
+   * Fill the body of the `bridgeCreate` the FIR extension declares. Off by default: until the
+   * generated callers are rewritten to use the factory, the shipped plugin must not depend on it.
+   */
+  internal val bridgeCreateBodies: Boolean = false,
 ) : IrGenerationExtension {
   override fun generate(moduleFragment: IrModuleFragment, pluginContext: IrPluginContext) {
+    if (bridgeCreateBodies) fillBridgeCreateBodies(moduleFragment, pluginContext)
     // Use IC-compatible DeclarationFinder (deprecated referenceClass crashes with K2/FIR).
     val finder = pluginContext.finderForBuiltins()
     finder.findClass(WITH_JS2HOST_BRIDGE_CLASS_ID) ?: return

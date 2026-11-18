@@ -1,0 +1,207 @@
+package app.cash.zipline.bridge.kotlin
+
+import com.tschuchort.compiletesting.KotlinCompilation
+import com.tschuchort.compiletesting.SourceFile
+import java.lang.reflect.Method
+import kotlin.test.assertEquals
+import org.jetbrains.kotlin.compiler.plugin.ExperimentalCompilerApi
+import org.junit.Test
+
+/**
+ * The construction factory a bridged class is given: flag words, then the constructor's own
+ * parameters, and the body runs the class's real default expressions.
+ */
+@OptIn(ExperimentalCompilerApi::class)
+class BridgeCreateTest {
+
+  /**
+   * The signature is the contract with the generated bridges, so it is read off the compiled class
+   * rather than asserted against the generator's own text: one `int` per flag word, then every
+   * constructor parameter with the type written on it -- a reference type that declares a default
+   * widened so `null` can carry an absent argument, a primitive left alone because for it the flag
+   * bit carries the absence.
+   */
+  @Test
+  fun `bridgeCreate takes a flag word then the constructor parameters`() {
+    val result = compile(
+      SourceFile.kotlin(
+        "Bridged.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Bridged(val a: Int, val name: String = "dflt", val flag: Boolean = true)
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+    val clazz = result.classLoader.loadClass("com.example.Bridged")
+    val factory = factoryOf(clazz)
+    assertEquals(
+      listOf(
+        Int::class.javaPrimitiveType,
+        Int::class.javaPrimitiveType,
+        String::class.java,
+        Boolean::class.javaPrimitiveType,
+      ),
+      factory.parameterTypes.asList(),
+      "bridgeCreate${factory.parameterTypes.toList()}",
+    )
+
+    // Every bit clear: the arguments arrive exactly as the caller passed them.
+    val supplied = factory.invoke(companionOf(clazz), 0, 7, "given", false)
+    assertEquals(listOf(7, "given", false), readBack(clazz, supplied, "getA", "getName", "getFlag"))
+
+    // Bits for `name` and `flag` set: the host's own defaults run instead of those arguments.
+    val defaulted = factory.invoke(companionOf(clazz), 0b110, 7, "ignored", false)
+    assertEquals(listOf(7, "dflt", true), readBack(clazz, defaulted, "getA", "getName", "getFlag"))
+  }
+
+  /**
+   * A default expression may call a `private` top-level function of the class's file or read a
+   * `private` companion member; nothing outside the class sees both, which is why the factory is a
+   * companion member and not a top-level function. This also covers a class that already has a
+   * companion: the factory joins it instead of a second one being generated.
+   */
+  @Test
+  fun `the defaults keep the access rights of the annotated class`() {
+    val result = compile(
+      SourceFile.kotlin(
+        "Seeded.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        private fun seedFromFile(): Int = 7
+
+        @WithJS2HostBridge
+        class Seeded(val seed: Int = seedFromFile(), val label: String = FALLBACK) {
+          companion object {
+            private const val FALLBACK = "fb"
+          }
+        }
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+    val clazz = result.classLoader.loadClass("com.example.Seeded")
+    val instance = factoryOf(clazz).invoke(companionOf(clazz), 0b11, 0, "")
+    assertEquals(listOf(7, "fb"), readBack(clazz, instance, "getSeed", "getLabel"))
+  }
+
+  /**
+   * A default may mention an earlier parameter. The copied expression has to read the *supplied*
+   * argument, so the copy remaps the constructor's parameters onto the factory's: `b` here is 42,
+   * not 1.
+   */
+  @Test
+  fun `a default naming an earlier parameter reads the argument the caller supplied`() {
+    val result = compile(
+      SourceFile.kotlin(
+        "Dependent.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Dependent(val a: Int, val b: Int = a + 1)
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+    val clazz = result.classLoader.loadClass("com.example.Dependent")
+    val instance = factoryOf(clazz).invoke(companionOf(clazz), 0b10, 41, 0)
+    assertEquals(listOf(41, 42), readBack(clazz, instance, "getA", "getB"))
+  }
+
+  /** Forty defaulted parameters need two flag words, and the second word's bits must be honoured. */
+  @Test
+  fun `a signature wider than one flag word carries a second mask parameter`() {
+    val parameters = (0 until 40).joinToString(", ") { "val p$it: Int = $it" }
+    val result = compile(
+      SourceFile.kotlin(
+        "Wide.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Wide($parameters)
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+    val clazz = result.classLoader.loadClass("com.example.Wide")
+    val factory = factoryOf(clazz)
+    assertEquals(42, factory.parameterTypes.size, "two mask words plus 40 parameters")
+    assertEquals(Int::class.javaPrimitiveType, factory.parameterTypes[1])
+
+    // All flags set, every argument a placeholder zero: each parameter must come back as its own
+    // default, including p39, whose bit lives in the second word.
+    val args = Array<Any?>(42) { index -> if (index < 2) -1 else 0 }
+    val instance = factory.invoke(companionOf(clazz), *args)
+    assertEquals(listOf(17, 39), readBack(clazz, instance, "getP17", "getP39"))
+  }
+
+  /**
+   * When an earlier parameter takes its own default, a later default that mentions it must see that
+   * default and not the placeholder the caller passed for it: `b` is 6, not 1. This is why the body
+   * holds each parameter's chosen value in a local instead of inlining the choice into the call.
+   */
+  @Test
+  fun `a default sees the default an earlier parameter took`() {
+    val result = compile(
+      SourceFile.kotlin(
+        "Chained.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Chained(val a: Int = 5, val b: Int = a + 1)
+        """,
+      ),
+      plugin = BridgeCreateTestRegistrar(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+    val clazz = result.classLoader.loadClass("com.example.Chained")
+    val factory = factoryOf(clazz)
+    val companion = companionOf(clazz)
+
+    // Both flags set with placeholder arguments: Kotlin's own rule gives b from the chosen a.
+    val chained = factory.invoke(companion, 0b11, 0, 0)
+    assertEquals(listOf(5, 6), readBack(clazz, chained, "getA", "getB"))
+
+    // Only `b` defaulted: it sees the 41 the caller supplied for `a`.
+    val supplied = factory.invoke(companion, 0b10, 41, 0)
+    assertEquals(listOf(41, 42), readBack(clazz, supplied, "getA", "getB"))
+  }
+}
+
+/** The factory the plugin generated. It is a companion member, which is the whole point of it. */
+private fun factoryOf(clazz: Class<*>): Method =
+  companionClassOf(clazz).methods.single { it.name == "bridgeCreate" }
+
+private fun companionClassOf(clazz: Class<*>): Class<*> =
+  clazz.classes.single { it.simpleName == "Companion" }
+
+private fun companionOf(clazz: Class<*>): Any = clazz.getField("Companion").get(null)
+    ?: error("no Companion instance on $clazz")
+
+private fun readBack(clazz: Class<*>, instance: Any, vararg getters: String): List<Any?> =
+  getters.map { clazz.getMethod(it).invoke(instance) }

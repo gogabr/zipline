@@ -1,0 +1,177 @@
+package app.cash.zipline.bridge.kotlin
+
+import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
+import org.jetbrains.kotlin.ir.IrElement
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
+import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irIfThenElse
+import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.builders.irNotEquals
+import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.builders.irTemporary
+import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.ir.declarations.IrValueDeclaration
+import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.expressions.IrBody
+import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
+import org.jetbrains.kotlin.ir.expressions.IrGetValue
+import org.jetbrains.kotlin.ir.symbols.IrSymbol
+import org.jetbrains.kotlin.ir.types.defaultType
+import org.jetbrains.kotlin.ir.util.classId
+import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
+import org.jetbrains.kotlin.ir.util.parentAsClass
+import org.jetbrains.kotlin.ir.util.primaryConstructor
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
+import org.jetbrains.kotlin.ir.visitors.IrVisitorVoid
+import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
+import org.jetbrains.kotlin.ir.visitors.acceptVoid
+import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
+
+/**
+ * Fills the body of every `bridgeCreate` that [ZiplineBridgeFirExtension] declared.
+ *
+ * The body reads the flag words the caller passed and, for each parameter whose bit is set,
+ * evaluates that parameter's *own* default expression instead of the argument. The expressions are
+ * the primary constructor's `defaultValue`s, deep-copied, which is what keeps them honest: it is the
+ * same IR the frontend produced for the declared defaults, so a default that calls a `private`
+ * top-level function of the file or reads a `private` companion member works here exactly as it does
+ * in a plain `Foo(a)` call — and, because the copy lands in the companion, the access stays inside
+ * the class's own rights. Nothing about the value is re-derived from its type or its name.
+ *
+ * The copy remaps the constructor's value parameters onto the factory's own, so a default that
+ * mentions an earlier parameter (`val b: Int = a + 1`) reads the argument the caller supplied rather
+ * than a symbol belonging to the constructor.
+ */
+internal fun fillBridgeCreateBodies(moduleFragment: IrModuleFragment, context: IrPluginContext) {
+  moduleFragment.files.forEach { file ->
+    file.acceptVoid(
+      object : IrVisitorVoid() {
+        override fun visitElement(element: IrElement) {
+          element.acceptChildrenVoid(this)
+        }
+
+        override fun visitSimpleFunction(declaration: IrSimpleFunction) {
+          if (declaration.isBridgeCreate()) declaration.body = bridgeCreateBody(declaration, context)
+          super.visitSimpleFunction(declaration)
+        }
+      },
+    )
+  }
+}
+
+/** The factory we declared: our name, produced by our plugin, still without a body. */
+private fun IrSimpleFunction.isBridgeCreate(): Boolean =
+  name == BRIDGE_CREATE_NAME &&
+    body == null &&
+    (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
+
+/**
+ * The factory's own parameters, counted from the end: `parameters` also lists the receivers, and
+ * this Kotlin deprecates every accessor for telling them apart. Counting from the end is safe here
+ * because the signature the plugin declared ends with the mask words and the constructor parameters.
+ */
+private fun IrSimpleFunction.bridgeArguments(expected: Int): List<IrValueParameter> {
+  val declared = parameters.filterIsInstance<IrValueParameter>()
+  require(declared.size >= expected) {
+    "bridgeCreate declares ${declared.size} parameters, expected $expected of them plus receivers"
+  }
+  return declared.takeLast(expected)
+}
+
+private fun bridgeCreateBody(function: IrSimpleFunction, context: IrPluginContext): IrBody {
+  val target = (function.parent as IrClass).parentAsClass
+  val constructor = target.primaryConstructor
+    ?: error("bridgeCreate was declared for ${target.classId ?: target.name}, which has no primary constructor")
+
+  val ctorParams = constructor.parameters.filterIsInstance<IrValueParameter>()
+  val wordCount = maskWordCount(ctorParams.size)
+  val arguments = function.bridgeArguments(wordCount + ctorParams.size)
+  val maskParams = arguments.take(wordCount)
+  val argParams = arguments.drop(wordCount)
+
+  // A default expression copied verbatim would still point at the constructor's parameters. Reads of
+  // a constructor parameter are redirected instead — to the *chosen value* of that parameter, held in
+  // the local computed just before this one, so `val b: Int = a + 1` sees the default that `a` took
+  // rather than the placeholder the caller passed for a parameter the guest omitted.
+  val chosen = mutableMapOf<IrSymbol, IrValueDeclaration>()
+
+  return DeclarationIrBuilder(context, function.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
+    .irBlockBody {
+      // One local per parameter, in declaration order: a default is evaluated at most once, and only
+      // the parameters whose flags are clear get their arguments.
+      ctorParams.forEachIndexed { index, ctorParam ->
+        val local = irTemporary(
+          bridgeArgument(ctorParam, argParams[index], maskParams, index, function, chosen),
+          "p$index",
+        )
+        chosen[ctorParam.symbol] = local
+      }
+      val call = irCallConstructor(constructor.symbol, emptyList())
+      ctorParams.forEach { ctorParam -> call.arguments[ctorParam] = irGet(chosen.getValue(ctorParam.symbol)) }
+      +irReturn(call)
+    }
+}
+
+/**
+ * Either the argument the caller supplied, or — when the parameter's flag bit is set — the declared
+ * default: `(mask[word] and bit) != 0 ? <default> : argument`.
+ */
+private fun IrBuilderWithScope.bridgeArgument(
+  ctorParam: IrValueParameter,
+  argument: IrValueParameter,
+  maskParams: List<IrValueParameter>,
+  index: Int,
+  factory: IrSimpleFunction,
+  chosen: Map<IrSymbol, IrValueDeclaration>,
+): IrExpression {
+  val supplied = irGet(argument)
+  val default = ctorParam.defaultValue ?: return supplied
+  if (maskParams.isEmpty()) return copyDefault(default, factory, chosen)
+
+  val and = context.irBuiltIns.intAndSymbol
+  // `Int.and(other)` lists its receiver and then the operand; the operand is what gets the flag bit.
+  val andOperand = and.owner.parameters.last()
+  val flagIsSet = irNotEquals(
+    irCall(and).apply {
+      dispatchReceiver = irGet(maskParams[maskWordIndex(index)])
+      arguments[andOperand] = irInt(maskBit(index))
+    },
+    irInt(0),
+  )
+  return irIfThenElse(
+    type = argument.type,
+    condition = flagIsSet,
+    thenPart = copyDefault(default, factory, chosen),
+    elsePart = supplied,
+  )
+}
+
+/**
+ * The declared default, moved into [factory]: deep-copied so the same expression is not shared
+ * between the constructor and the factory, with every read of a constructor parameter redirected to
+ * the local that holds that parameter's chosen value.
+ */
+private fun IrBuilderWithScope.copyDefault(
+  body: IrExpressionBody,
+  factory: IrSimpleFunction,
+  chosen: Map<IrSymbol, IrValueDeclaration>,
+): IrExpression {
+  val copy = body.expression.deepCopyWithSymbols(factory)
+  val reader =
+    object : IrElementTransformerVoid() {
+      override fun visitGetValue(expression: IrGetValue): IrExpression =
+        chosen[expression.symbol]?.let { irGet(it) } ?: super.visitGetValue(expression)
+    }
+  // transformChildrenVoid skips the node it is given, and a default may be nothing but a read.
+  return (copy as? IrGetValue)?.let(reader::visitGetValue)
+    ?: copy.also { it.transformChildrenVoid(reader) } as IrExpression
+}

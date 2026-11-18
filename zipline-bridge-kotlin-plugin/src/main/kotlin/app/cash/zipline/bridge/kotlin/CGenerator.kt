@@ -107,15 +107,15 @@ internal fun generateBridgeFile(
   val isObject = annotatedClass.kind == ClassKind.OBJECT
   val isCompanion = isObject && annotatedClass.isCompanion
   val isEnum = annotatedClass.kind == ClassKind.ENUM_CLASS
-  // A defaulted ctor param makes the JVM emit a synthetic `(params…, Int mask, DefaultConstructorMarker)`
-  // constructor: bit i set means that param takes its declared default. The host decodes a guest
-  // object that lacks a defaulted field by passing that field's placeholder with its mask bit set,
-  // so the host's own default survives instead of the read throwing. A signature wider than one
-  // word's worth of parameters is not supported yet.
+  // A defaulted ctor param makes the JVM emit a synthetic `(params…, Int… mask, DefaultConstructorMarker)`
+  // constructor: one mask word per 32 params, bit i of a word set means that param takes its
+  // declared default. The host decodes a guest object that lacks a defaulted field by passing that
+  // field's placeholder with its mask bit set, so the host's own default survives instead of the
+  // read throwing.
   val defaultedCtorFields = constructorFields.filter { it.hasDefault }
   val defaultCtorSig = if (defaultedCtorFields.isNotEmpty()) {
     "(" + constructorFields.joinToString("") { it.jniTypeChar } +
-      "I" +
+      "I".repeat(maskWordCount(constructorFields.size)) +
       "Lkotlin/jvm/internal/DefaultConstructorMarker;)V"
   } else {
     null
@@ -590,23 +590,34 @@ internal fun generateBridgeFile(
           } else if (defaultedCtorFields.isNotEmpty()) {
             // Masked ctor: a set flag bit => that param uses its declared default. A defaulted param
             // the guest sent passes its decoded value with its bit clear; one it omitted passes the
-            // placeholder with the bit set, so the host's own default runs. One flag word covers
-            // the whole signature, so the shift by the raw parameter index is safe. The masked ctor is only
+            // placeholder with the bit set, so the host's own default runs. Flags are packed one
+            // word per 32 params, matching the descriptor the JVM generated. The masked ctor is only
             // required when a default is actually taken: the host compiled with a default but the
             // runtime class lacks the synthetic ctor is a real mismatch, reported here (passing a
             // NULL methodID to NewObject would abort the VM).
-            val terms = constructorFields.mapIndexedNotNull { index, f ->
-              if (f.hasDefault) "(use_default_${f.name} ? ${1 shl index} : 0)" else null
+            val maskNames = (0 until maskWordCount(constructorFields.size)).map { "_default_mask$it" }
+            for ((word, maskName) in maskNames.withIndex()) {
+              val terms = constructorFields.mapIndexedNotNull { index, f ->
+                if (f.hasDefault && maskWordIndex(index) == word) {
+                  "(use_default_${f.name} ? ${maskBit(index)} : 0)"
+                } else {
+                  null
+                }
+              }
+              appendLine("    int $maskName = ${if (terms.isEmpty()) "0" else terms.joinToString(" | ")};")
             }
-            appendLine("    int _default_mask0 = ${if (terms.isEmpty()) "0" else terms.joinToString(" | ")};")
             val args = constructorFields.joinToString(", ") { "java_${it.name}" }
-            appendLine("    if (_default_mask0 != 0 && _ctor_default == NULL) {")
+            // Parenthesised: in C, `!=` binds tighter than `|`, so `m0 | m1 != 0` would test
+            // `m0 | (m1 != 0)` and take the masked constructor on the wrong words.
+            val anyDefault = "(" + maskNames.joinToString(" | ") + ")"
+            val maskedArgs = maskNames.joinToString("") { ", $it" }
+            appendLine("    if ($anyDefault != 0 && _ctor_default == NULL) {")
             appendLine("        jsiThrowClassInitFailed(env, \"$msgClassName\");")
             appendLine("        return NULL;")
             appendLine("    }")
-            appendLine("    jobject result = _default_mask0 == 0")
+            appendLine("    jobject result = $anyDefault == 0")
             appendLine("        ? env->NewObject(_cls, _ctor, $args)")
-            appendLine("        : env->NewObject(_cls, _ctor_default, $args, _default_mask0, (jobject)NULL);")
+            appendLine("        : env->NewObject(_cls, _ctor_default, $args$maskedArgs, (jobject)NULL);")
           } else {
             val args = constructorFields.joinToString(", ") { "java_${it.name}" }
             appendLine("    jobject result = env->NewObject(_cls, _ctor, $args);")

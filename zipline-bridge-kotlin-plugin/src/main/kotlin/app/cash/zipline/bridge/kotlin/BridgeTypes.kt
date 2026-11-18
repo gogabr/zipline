@@ -12,6 +12,29 @@ import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 
+// -- default-value mask words --
+
+/**
+ * Kotlin packs the default-value flags of a constructor into 32-bit words: its synthetic masked
+ * form carries one `int` per [MASK_BITS_PER_WORD] parameters, between the parameters and the
+ * `DefaultConstructorMarker`. Bit i of a word is the flag for the parameter at that position
+ * within the word; a set bit means the parameter takes its declared default.
+ *
+ * The bridge computes the same flags (the guest's create-factory, the native host's decoder) and
+ * the generated C passes them to the JVM masked constructor, so all three must agree on the
+ * packing: derive it from the parameter count, never assume a single word.
+ */
+internal const val MASK_BITS_PER_WORD = 32
+
+/** How many mask words a signature with [parameterCount] parameters carries (0 when it has none). */
+internal fun maskWordCount(parameterCount: Int): Int = (parameterCount + MASK_BITS_PER_WORD - 1) / MASK_BITS_PER_WORD
+
+/** Which mask word holds the flag of the parameter at [index]. */
+internal fun maskWordIndex(index: Int): Int = index / MASK_BITS_PER_WORD
+
+/** The flag bit of the parameter at [index], within its word. */
+internal fun maskBit(index: Int): Int = 1 shl (index % MASK_BITS_PER_WORD)
+
 // -- field extraction data class --
 
 /**

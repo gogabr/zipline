@@ -1062,7 +1062,7 @@ class ZiplineBridgeKotlinPluginTest {
       // The mask is built from the use_default bools.
       assertTrue(content.contains("int _default_mask0 = (use_default_b ? 2 : 0);"), content)
       // The masked ctor is selected only when a flag is actually set.
-      assertTrue(content.contains("if (_default_mask0 != 0 && _ctor_default == NULL) {"), content)
+      assertTrue(content.contains("if ((_default_mask0) != 0 && _ctor_default == NULL) {"), content)
       assertTrue(
         content.contains(
           "env->NewObject(_cls, _ctor_default, java_a, java_b, _default_mask0, (jobject)NULL)",
@@ -1162,6 +1162,106 @@ class ZiplineBridgeKotlinPluginTest {
     }
   }
 
+  /**
+   * Six defaulted parameters used to fail the build outright. Nothing in the bridge counts them:
+   * both the C host and the native host generate for any count, and neither emits a diagnostic
+   * about how many defaults a class declares.
+   */
+  @Test
+  fun `six defaulted ctor params build on every host`() {
+    val cDir = createTempDirectory("zipline-bridge-c")
+    val nativeDir = createTempDirectory("zipline-bridge-native")
+    try {
+      val six = SourceFile.kotlin(
+        "Six.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Six(
+          val a: Int = 1,
+          val b: Int = 2,
+          val c: Int = 3,
+          val d: Int = 4,
+          val e: Int = 5,
+          val f: Int = 6,
+        )
+        """,
+      )
+
+      val cResult = compileWithCOutputDir(sourceFile = six, cOutputDir = cDir.toString())
+      assertEquals(KotlinCompilation.ExitCode.OK, cResult.exitCode, cResult.messages)
+      assertFalse(cResult.messages.contains("defaulted constructor"), cResult.messages)
+      val cContent = cDir.resolve("com_example_Six.cpp").toFile().readText()
+      assertTrue(cContent.contains("int _default_mask0 = (use_default_a ? 1 : 0)"), cContent)
+
+      val nativeResult = compileWithNativeOutputDir(
+        sourceFile = six,
+        nativeOutputDir = nativeDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, nativeResult.exitCode, nativeResult.messages)
+      assertFalse(nativeResult.messages.contains("defaulted constructor"), nativeResult.messages)
+    } finally {
+      cDir.toFile().deleteRecursively()
+      nativeDir.toFile().deleteRecursively()
+    }
+  }
+
+  /**
+   * A class with more defaulted parameters than one flag word holds is not a special case: the
+   * JVM's masked constructor takes one `int` per 32 parameters, so the bridge emits (and passes)
+   * one flag word per 32, with the overflown parameter landing in the second word's low bit.
+   */
+  @Test
+  fun `defaults beyond one flag word get their own word`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val params = (0 until 40).joinToString(", ") { "val p$it: Int = $it" }
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Wide.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Wide($params)
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      // 40 defaulted parameters: no diagnostic about counts, and the build simply succeeds.
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Wide.cpp").toFile().readText()
+
+      // 40 parameters + 2 flag words, matching the descriptor the JVM generated.
+      val wideSig = "(" + "I".repeat(40) + "I".repeat(2) +
+        "Lkotlin/jvm/internal/DefaultConstructorMarker;)V"
+      assertTrue(
+        content.contains("_ctor_default = jsiGetMethodIdQuiet(env, _cls, \"<init>\", \"$wideSig\")"),
+        content,
+      )
+      // Parameter 34 sits in the second word at bit 2: a shift by its raw index would overflow.
+      assertTrue(content.contains("bool use_default_p34 = js_p34.isUndefined();"), content)
+      assertTrue(content.contains("(use_default_p34 ? 4 : 0)"), content)
+      assertTrue(content.contains("int _default_mask0 = "), content)
+      assertTrue(content.contains("int _default_mask1 = (use_default_p32 ? 1 : 0)"), content)
+      assertTrue(
+        content.contains("(_default_mask0 | _default_mask1) != 0 && _ctor_default == NULL"),
+        content,
+      )
+      assertTrue(
+        content.contains("_default_mask0, _default_mask1, (jobject)NULL)"),
+        content,
+      )
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
 
 @ExperimentalCompilerApi

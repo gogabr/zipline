@@ -1367,6 +1367,79 @@ fun compileWithNativeOutputDir(
 @OptIn(ExperimentalCompilerApi::class)
 class ZiplineBridgeNativePluginTest {
 
+  /**
+   * The native host constructs through the generated companion factory rather than calling the
+   * constructor itself, because the default expression for a parameter belongs to the code that
+   * declares the class — and on a native host, that is the host. The bridge's job shrinks to saying
+   * which parameters arrived.
+   */
+  @Test
+  fun `a defaulted constructor parameter is constructed through bridgeCreate`() {
+    val content = generatedBridge(
+      "Defaults.kt",
+      "@WithJS2HostBridge class Defaults(val a: Int = 1, val b: String = \"x\", val c: Int)",
+      "Defaults",
+    )
+
+    // One factory call per bridge, and nothing else constructs the class.
+    assertEquals(1, Regex("\\.bridgeCreate\\(").findAll(content).count(), content)
+    assertTrue(content.contains("Defaults.bridgeCreate(_mask0, a = a, b = b, c = c)"), content)
+
+    // The flags come from what the guest sent. A defaulted parameter's bit is its position within
+    // the word, and it is SET WHEN THE PARAMETER DID NOT ARRIVE: a set bit is the factory's
+    // instruction to evaluate the declared default. A required parameter has no bit at all.
+    assertTrue(
+      content.contains("val _mask0 = (if (aSent) 0 else 1) or (if (bSent) 0 else 2)"),
+      content,
+    )
+    assertTrue(
+      content.contains("val bSent = HermesBridge_getValueTag(ctx, bRef) != TAG_UNDEFINED"),
+      content,
+    )
+
+    // Absence is not a type error for a defaulted parameter, so the guard fires only when something
+    // arrived — and a wrong type still names the field, in the same words the C decoder uses.
+    assertTrue(
+      content.contains(
+        "if (aTag != TAG_UNDEFINED && aTag != 1 && aTag != 2) bridgeThrowFieldMismatch",
+      ),
+      content,
+    )
+    // A required parameter keeps the loud read: nothing arrived is still nothing acceptable.
+    assertTrue(
+      content.contains("if (cTag != 1 && cTag != 2) bridgeThrowFieldMismatch"),
+      content,
+    )
+    // A defaulted reference decodes to a null placeholder, which the factory ignores.
+    assertTrue(
+      content.contains("val b = if (HermesBridge_getValueTag(ctx, bRef) == TAG_UNDEFINED"),
+      content,
+    )
+  }
+
+  /** No `when (mask)` tree and no re-expanded defaults: the factory holds them, the bridge does not. */
+  @Test
+  fun `the native bridge branches on presence instead of expanding defaults`() {
+    val content = generatedBridge(
+      "Defaults.kt",
+      "@WithJS2HostBridge class Defaults(val a: Int = 1, val b: String = \"x\")",
+      "Defaults",
+    )
+    assertFalse(content.contains("when (_mask"), content)
+    assertFalse(content.contains("when (mask"), content)
+    // The default expressions are not in the generated file at all: only the factory evaluates them.
+    assertFalse(content.contains("\"x\""), content)
+  }
+
+  /** Past 32 parameters the factory takes a second flag word, and parameter 32 lands in it. */
+  @Test
+  fun `a signature wider than one flag word passes two mask words to the factory`() {
+    val params = (0 until 40).joinToString(", ") { "val p$it: Int = $it" }
+    val content = generatedBridge("Wide.kt", "@WithJS2HostBridge class Wide($params)", "Wide")
+    assertTrue(content.contains("Wide.bridgeCreate(_mask0, _mask1, p0 = p0,"), content)
+    assertTrue(content.contains("val _mask1 = (if (p32Sent) 0 else 1) or (if (p33Sent) 0 else 2)"), content)
+  }
+
   /** Compiles [source] and returns the generated native bridge for [className]. */
   private fun generatedBridge(fileName: String, source: String, className: String): String {
     val outputDir = createTempDirectory("zipline-bridge-native-test")

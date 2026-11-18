@@ -67,7 +67,7 @@ the host tree. JVM observed values are from `jvmTest`; the Native column is `mac
 | Superclass inserted on host | old guest → new host | ❌ / ✅ | `ZiplineApiMismatchException: ...HierarchyPayload.baseValue expects a number but the guest sent undefined` | `HierarchyPayload(a=11, b=hp)` — native never extracts inherited body fields | divergence #1 |
 | Superclass removed on guest | new guest → old host | ❌ / ✅ | `ZiplineApiMismatchException: ...DroppedBasePayload.inherited expects a number but the guest sent undefined` | `DroppedBasePayload(keep=keep)` — native never asks | divergence #1 |
 | Superclass removed on host | old guest → new host | ✅ | `DroppedBasePayload(keep=keep)` | same | — |
-| 8 defaulted params added past the 32nd (`WideDefaults.p32..p39`) | old guest → new host | ✅ / ❌ | `WideDefaults(p0=0, …, p39=39)` — the flags for those params live in the second mask word, so this row is what pins the packing against the JVM descriptor | `ZiplineApiMismatchException: ...WideDefaults.p32 expects a number but the guest sent undefined` — native has no defaulted-parameter tolerance yet | T2 |
+| 8 defaulted params added past the 32nd (`WideDefaults.p32..p39`) | old guest → new host | ✅ | `WideDefaults(p0=0, …, p39=39)` — the flags for those params live in the second mask word, so this row is what pins the packing against the JVM descriptor | same — native reaches the same values through `bridgeCreate`, so the row needs no `nativeExpected` any more | T2 |
 | Interface added on guest | new guest → old host | ✅ | `InterfacePayload(v=11)` — wire-invisible | same | — |
 | Interface gained on host | old guest → new host | ✅ | `InterfacePayload(v=11)` | same | — |
 | Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for ...GrowthEnum` | same | — |
@@ -118,6 +118,9 @@ host-implementation differences, not test artifacts:
    `_obj.name = value` is ordinary Kotlin and won't compile against a `val`. `var` body fields
    pass on both. Left as-is: native's constructor-only model matches Kotlin semantics, and the
    silent default only bites when the host's default differs from what the guest meant to send.
+   The other half of that sentence is unfixed and open (task 5.6): a `var` body field IS asked for on
+   both backends, so one that declares a default and arrives absent still throws on native, while the
+   JVM host takes the default. Constructor parameters are tolerant on both; body `var`s are not.
 2. **Retyped Int→String host→guest.** The guest stringifies the JS number: `99` on JVM, `99.0` on
    Kotlin/Native.
 

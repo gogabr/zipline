@@ -149,24 +149,20 @@ class CrossVersionTest {
   }
 
   /**
-   * Eight defaulted parameters added past the 32nd: the flags for them do not fit in the first
-   * mask word, so this row fails if the bridge assumes one word or shifts by the raw parameter
-   * index. The JVM host takes all eight defaults and keeps the 32 values the guest sent.
+   * Eight defaulted parameters added past the 32nd: the flags for them do not fit in the first mask
+   * word, so this row fails if a bridge assumes one word or shifts by the raw parameter index. Both
+   * hosts take all eight defaults and keep the 32 values the guest sent.
    *
-   * The Kotlin/Native host has no defaulted-parameter tolerance yet, so it still reports the first
-   * absent field as a mistyped read; that divergence is pinned here and goes away with the native
-   * construction path.
+   * The Kotlin/Native host reaches those defaults through `bridgeCreate`, the companion factory the
+   * plugin generates for it: the absent parameters are flagged from what arrived on the wire, and the
+   * factory evaluates the host's own default expressions. On the JVM the same flags go to the JVM's
+   * synthetic masked constructor, which is why this row works there without a factory at all.
    */
   @Test fun guestToHost_wideArityDefaults() = withOldGuest { host, id ->
-    assertObserved(
-      "wide-arity-defaults/WideDefaults.p32..p39",
+    assertEquals(
       "WideDefaults(" + (0 until 40).joinToString(", ") { "p$it=$it" } + ")",
-      nativeExpected =
-        "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.WideDefaults.p32 " +
-        "expects a number but the guest sent undefined",
-    ) {
-      host.evaluateOne(provide("provideWideDefaults", id))
-    }
+      host.evaluateOne(provide("provideWideDefaults", id)).toString().replace(Regex("""\s+"""), " "),
+    )
   }
 
   /** Interface gained on the host: wire-invisible. */

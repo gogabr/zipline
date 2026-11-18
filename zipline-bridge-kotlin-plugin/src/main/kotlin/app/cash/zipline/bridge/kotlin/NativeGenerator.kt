@@ -226,9 +226,14 @@ internal fun generateNativeBridgeFile(
     // Generator-side: emit the tag guard for a non-nullable scalar read. The check runs on
     // HermesBridge_getValueTag BEFORE the isX()-guarded accessor, which returns a zero value
     // rather than throwing on a wrong tag.
-    fun StringBuilder.requireTagKt(name: String, accepted: Set<Int>, expected: String) {
+    fun StringBuilder.requireTagKt(field: FieldInfo, accepted: Set<Int>, expected: String) {
+      val name = field.name
       appendLine("    val ${name}Tag = HermesBridge_getValueTag(ctx, ${name}Ref)")
-      appendLine("    if (${accepted.joinToString(" && ") { "${name}Tag != $it" }}) bridgeThrowFieldMismatch(\"$fqn\", \"$name\", \"$expected\", ${name}Tag)")
+      // A parameter that declares a default may be absent without being wrong-typed, so the guard
+      // fires only when something arrived. The accessors answer a question about an absent property
+      // with a zero value, which is exactly the placeholder the factory ignores.
+      val absent = if (field.hasDefault && field.isConstructorParam) "${name}Tag != TAG_UNDEFINED && " else ""
+      appendLine("    if ($absent${accepted.joinToString(" && ") { "${name}Tag != $it" }}) bridgeThrowFieldMismatch(\"$fqn\", \"$name\", \"$expected\", ${name}Tag)")
     }
     appendLine("public fun $functionName(")
     appendLine("  ctx: COpaquePointer?,")
@@ -240,8 +245,22 @@ internal fun generateNativeBridgeFile(
     for (field in fields) {
       val propName = field.jsPropertyName
 
-      // Helpers to emit the common Hermes read/free preamble/suffix.
-      fun readProperty(): String = "val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")"
+      // A defaulted constructor parameter the guest did not send is not a mistyped read: the flag
+      // word tells bridgeCreate to take the host's own default for it. The placeholder a branch then
+      // leaves in this field's local (0, false, null) is never read, so a branch only has to stop
+      // throwing on absence.
+      val absentIsDefault = field.hasDefault && field.isConstructorParam
+
+      // Helpers to emit the common Hermes read/free preamble/suffix. The read also records whether
+      // the property arrived, which is the flag bridgeCreate wants. The tag is asked for here and
+      // again inside the branches that guard on it: it is a cheap C call, and sharing one variable
+      // across fourteen mutually exclusive branches would have bought nothing.
+      fun readProperty(): String = buildString {
+        append("val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+        if (absentIsDefault) {
+          append("\n    val ${field.name}Sent = HermesBridge_getValueTag(ctx, ${field.name}Ref) != TAG_UNDEFINED")
+        }
+      }
       fun freeRef(): String = "HermesBridge_freeHandle(ctx, ${field.name}Ref)"
 
       when {
@@ -251,7 +270,7 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")}")
           } else {
-          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          requireTagKt(field, setOf(1, 2, 5), "a number")
           appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")}")
           }
           appendLine("    ${freeRef()}")
@@ -263,7 +282,7 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toFloat() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")}")
           } else {
-          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          requireTagKt(field, setOf(1, 2, 5), "a number")
           appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toFloat() ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")}")
           }
           appendLine("    ${freeRef()}")
@@ -275,7 +294,7 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref) ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref)")}")
           } else {
-          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          requireTagKt(field, setOf(1, 2, 5), "a number")
           appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToDouble(ctx, ${field.name}Ref) ?: HermesBridge_getValueDouble(ctx, ${field.name}Ref)")}")
           }
           appendLine("    ${freeRef()}")
@@ -287,7 +306,7 @@ internal fun generateNativeBridgeFile(
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
             appendLine("        else ${inlineWrapExpression(field, "JsBoxedNumberToLong(ctx, ${field.name}Ref) ?: JsNumberToLong(ctx, ${field.name}Ref)")}")
           } else {
-          requireTagKt(field.name, setOf(1, 2, 5), "a number")
+          requireTagKt(field, setOf(1, 2, 5), "a number")
           appendLine("    val ${field.name} = ${inlineWrapExpression(field, "JsBoxedNumberToLong(ctx, ${field.name}Ref) ?: JsNumberToLong(ctx, ${field.name}Ref)")}")
           }
           appendLine("    ${freeRef()}")
@@ -298,7 +317,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")
           } else {
-            requireTagKt(field.name, setOf(1, 2), "a number")
+            requireTagKt(field, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")
           }
           appendLine("    ${freeRef()}")
@@ -309,7 +328,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueBool(ctx, ${field.name}Ref) != 0")
           } else {
-            requireTagKt(field.name, setOf(4), "a boolean")
+            requireTagKt(field, setOf(4), "a boolean")
             appendLine("    val ${field.name} = HermesBridge_getValueBool(ctx, ${field.name}Ref) != 0")
           }
           appendLine("    ${freeRef()}")
@@ -320,7 +339,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref)")
           } else {
-            requireTagKt(field.name, setOf(1, 2), "a number")
+            requireTagKt(field, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref)")
           }
           appendLine("    ${freeRef()}")
@@ -331,7 +350,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")
           } else {
-            requireTagKt(field.name, setOf(1, 2), "a number")
+            requireTagKt(field, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toFloat()")
           }
           appendLine("    ${freeRef()}")
@@ -342,7 +361,7 @@ internal fun generateNativeBridgeFile(
           if (field.isNullable) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else JsNumberToLong(ctx, ${field.name}Ref)")
           } else {
-            requireTagKt(field.name, setOf(1, 2, 5), "a number")
+            requireTagKt(field, setOf(1, 2, 5), "a number")
             appendLine("    val ${field.name} = JsNumberToLong(ctx, ${field.name}Ref)")
           }
           appendLine("    ${freeRef()}")
@@ -351,10 +370,10 @@ internal fun generateNativeBridgeFile(
         field.effectiveKtType == "kotlin.String" -> {
           appendLine("    ${readProperty()}")
           appendLine("    val ${field.name}Str = HermesBridge_getValueString(ctx, ${field.name}Ref)")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else ${field.name}Str?.toKStringFromUtf8()?.also { platform.posix.free(${field.name}Str) }")
           } else {
-            requireTagKt(field.name, setOf(3), "a string")
+            requireTagKt(field, setOf(3), "a string")
             appendLine("    val ${field.name} = ${field.name}Str!!.toKStringFromUtf8().also { platform.posix.free(${field.name}Str) }")
           }
           appendLine("    ${freeRef()}")
@@ -365,10 +384,10 @@ internal fun generateNativeBridgeFile(
           // Map relies on mangled member names, which production builds drop.
           val renderedKey = renderedTypeName(typeArgument(field.type, 0))
           val renderedValue = renderedTypeName(typeArgument(field.type, 1))
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           appendLine("    val ${field.name}Tag = HermesBridge_getValueTag(ctx, ${field.name}Ref)")
           val conv = emitMapHelper(helpers, "conv_${field.name}", field.type, "ctx", "${field.name}Ref")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue>? = if (${field.name}Tag == TAG_UNDEFINED || ${field.name}Tag == TAG_NULL) null else $conv")
           } else {
             appendLine("    val ${field.name}: Map<$renderedKey, $renderedValue> = $conv")
@@ -378,7 +397,7 @@ internal fun generateNativeBridgeFile(
 
         field.effectiveKtType == "kotlin.collections.List" -> {
           val renderedElement = renderedTypeName(field.arrayElementIrType)
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           // Kotlin/JS ArrayList wraps the JS array in a name-mangled 'array_1' property.
           appendLine("    var ${field.name}ArrRef = ${field.name}Ref")
           appendLine("    val _tmpArrRef_${field.name} = HermesBridge_createHandle(ctx, ${field.name}Ref, \"array_1\")")
@@ -387,7 +406,7 @@ internal fun generateNativeBridgeFile(
           appendLine("        ${field.name}ArrRef = _tmpArrRef_${field.name}")
           appendLine("    }")
           val conv = emitListHelper(helpers, "conv_${field.name}", field.arrayElementIrType, "ctx", "${field.name}ArrRef")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name}: List<$renderedElement>? = if (HermesBridge_getValueTag(ctx, ${field.name}ArrRef) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}ArrRef) == TAG_NULL) null else $conv")
           } else {
             appendLine("    val ${field.name}: List<$renderedElement> = $conv")
@@ -397,9 +416,9 @@ internal fun generateNativeBridgeFile(
 
         field.effectiveKtType in PRIMITIVE_ARRAY_ELEMENT_TYPE -> {
           val arrayType = field.effectiveKtType.substringAfterLast(".")
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           val conv = emitPrimitiveArrayHelper(helpers, "conv_${field.name}", field.effectiveKtType, "ctx", "${field.name}Ref")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name}: $arrayType? = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else $conv")
           } else {
             appendLine("    val ${field.name}: $arrayType = $conv")
@@ -409,9 +428,9 @@ internal fun generateNativeBridgeFile(
 
         field.effectiveKtType == "kotlin.Array" -> {
           val renderedElement = renderedTypeName(field.arrayElementIrType)
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           val conv = emitArrayHelper(helpers, "conv_${field.name}", field.arrayElementIrType, "ctx", "${field.name}Ref")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name}: Array<$renderedElement>? = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else $conv")
           } else {
             appendLine("    val ${field.name}: Array<$renderedElement> = $conv")
@@ -423,14 +442,17 @@ internal fun generateNativeBridgeFile(
         // decodes to null; a non-nullable one is refused before generation (see above). The local
         // is intentionally untyped so it takes the constructor parameter's type.
         field.isObjectType && field.ktType.startsWith("kotlin.Function") -> {
+          // zipline has no function bridge, so nothing can arrive for this field: a defaulted one
+          // is simply not sent, and the factory takes the host's own default for it.
+          if (absentIsDefault) appendLine("    val ${field.name}Sent = false")
           appendLine("    val ${field.name} = null")
         }
 
         field.isObjectType && field.ktType != "kotlin.Any" -> {
           val typeName = field.ktType.substringAfterLast(".")
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
+          appendLine("    ${readProperty()}")
           appendLine("    val ${field.name}DispPtr = HermesBridge_getBridgeDispatch(ctx, ${field.name}Ref)")
-          if (field.isNullable) {
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name} = if (${field.name}DispPtr == 0L) null else {")
             appendLine("        val ${field.name}DispatchFn = ${field.name}DispPtr.toCPointer<CFunction<(COpaquePointer?, Int) -> COpaquePointer?>>()!!")
             appendLine("        ${field.name}DispatchFn(ctx, ${field.name}Ref)?.asStableRef<Any>()?.get() as? $typeName")
@@ -450,8 +472,8 @@ internal fun generateNativeBridgeFile(
         }
 
         field.ktType == "kotlin.Any" -> {
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
-          if (field.isNullable) {
+          appendLine("    ${readProperty()}")
+          if (field.isNullable || absentIsDefault) {
             appendLine("    val ${field.name}: Any? = bridgeForAny(ctx, ${field.name}Ref)")
           } else {
             appendLine("    val ${field.name}: Any = bridgeForAny(ctx, ${field.name}Ref) as Any")
@@ -462,8 +484,12 @@ internal fun generateNativeBridgeFile(
         else -> {
           // Anything left is decoded generically: the shared decoder handles scalars, strings,
           // collections and bridged objects, and names the class when it can decode nothing.
-          appendLine("    val ${field.name}Ref = HermesBridge_createHandle(ctx, jsValHandle, \"$propName\")")
-          appendLine("    val ${field.name} = bridgeForAny(ctx, ${field.name}Ref)")
+          appendLine("    ${readProperty()}")
+          if (absentIsDefault) {
+            appendLine("    val ${field.name} = if (${field.name}Sent) bridgeForAny(ctx, ${field.name}Ref) else null")
+          } else {
+            appendLine("    val ${field.name} = bridgeForAny(ctx, ${field.name}Ref)")
+          }
           appendLine("    ${freeRef()}")
         }
       }
@@ -480,7 +506,32 @@ internal fun generateNativeBridgeFile(
       appendLine("    val ordinal = jsEnumOrdinal(ctx, jsValHandle)")
       appendLine("    val _obj = $qualifier$className.entries.getOrNull(ordinal)")
       appendLine("        ?: throw app.cash.zipline.ZiplineApiMismatchException(\"host bridge: ordinal \$ordinal is out of range for $fqn\")")
+    } else if (ctorFields.isNotEmpty() && ctorFields.any { it.hasDefault }) {
+      // Construct through the companion factory the plugin generates. It holds this class's default
+      // expressions with this class's access rights, so a parameter the guest did not send takes the
+      // default this host's own source declares — which is the whole point: the default belongs to
+      // whoever is constructing, and that is the host here.
+      //
+      // The flags are computed from what arrived on the wire, never from anything the guest claims.
+      // A set bit means "take the declared default", so a bit is set when the parameter did NOT
+      // arrive — the same convention the generated C uses for the JVM's masked constructor.
+      // A parameter that declares no default gets no bit at all: its read above throws as usual.
+      val words = maskWordCount(ctorFields.size)
+      appendLine("    @Suppress(\"UNCHECKED_CAST\")")
+      for (word in 0 until words) {
+        val flags = ctorFields.withIndex()
+          .filter { (index, field) -> field.hasDefault && maskWordIndex(index) == word }
+          .joinToString(" or ") { (index, field) -> "(if (${field.name}Sent) 0 else ${maskBit(index)})" }
+        appendLine("    val _mask$word = ${if (flags.isEmpty()) "0" else flags}")
+      }
+      append("    val _obj = $qualifier$className.bridgeCreate(")
+      append((0 until words).joinToString(", ") { "_mask$it" })
+      append(", ")
+      append(ctorFields.joinToString(", ") { "${it.name} = ${it.name}" })
+      appendLine(")")
     } else if (ctorFields.isNotEmpty()) {
+      // Nothing declares a default, so there is nothing to fall back to and no reason to route the
+      // construction through the factory: the plain call says what the bridge means.
       appendLine("    @Suppress(\"UNCHECKED_CAST\")")
       append("    val _obj = $qualifier$className(")
       append(ctorFields.joinToString(", ") { "${it.name} = ${it.name}" })

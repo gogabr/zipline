@@ -134,22 +134,13 @@ class CrossVersionTest {
   }
 
   /**
-   * Supertype inserted on the host is NOT wire-invisible on the JVM host: its converter extracts
-   * inherited properties too, so it asks the old guest's object for `baseValue`, which it never
-   * sent, and the read throws naming the inherited field. The Kotlin/Native host never extracts
-   * inherited body fields at all (its `extractFields` default excludes them), so it never asks and
-   * decodes the object silently — a pre-existing host asymmetry in *which* fields are read, not in
-   * the loud/quiet invariant. The JVM row is the loud one; the native row records the divergence.
+   * Supertype inserted on the host: the base's `baseValue` carries a default, so the absent
+   * inherited field is now tolerated on BOTH hosts — the JVM host reads it as defaulted and the
+   * Kotlin/Native host never extracted it anyway. The old loud-JVM/quiet-native divergence
+   * collapses: both decode the object with the host's own default.
    */
   @Test fun guestToHost_superclassInserted() = withOldGuest { host, id ->
-    assertObserved(
-      "superclass-inserted/HierarchyPayload.baseValue",
-      "throws ZiplineApiMismatchException: host bridge: app.cash.zipline.bridge.test.HierarchyPayload.baseValue " +
-        "expects a number but the guest sent undefined",
-      nativeExpected = "HierarchyPayload(a=11, b=hp)",
-    ) {
-      host.evaluateOne(provide("provideHierarchy", id))
-    }
+    assertEquals("HierarchyPayload(a=11, b=hp)", host.evaluateOne(provide("provideHierarchy", id)).toString())
   }
 
   /** Supertype removed on the host: the base's field was never on the wire either way. */

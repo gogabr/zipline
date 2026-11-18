@@ -24,6 +24,12 @@ data class FieldInfo(
   val type: IrType,
   val isConstructorParam: Boolean,
   val jsPropertyName: String,
+  /**
+   * True when the field declares a default value: a constructor parameter with a `defaultValue`,
+   * or a body property whose (override-resolved) backing field has an initializer. A skew read that
+   * finds the field absent on the other side may fall back to this default instead of throwing.
+   */
+  val hasDefault: Boolean = false,
 ) {
   val ktType: String by lazy {
     // Type parameters (T, U, …) have no classFqName: use the upper bound (or Any when unbounded)

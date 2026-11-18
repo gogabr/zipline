@@ -165,6 +165,11 @@ tasks {
   val generateGuestSource = register("generateGuestSource") {
     dependsOn(compileGuestJs)
     outputs.dir(generatedGuestDir)
+    // Declared, not implied: this task has no inputs at all otherwise, so Gradle calls it
+    // UP-TO-DATE forever once the file exists and a rebuilt guest is simply invisible -- the tests
+    // keep running against the embedded base64 of an older compile. That is a false green with the
+    // plugin's own output as the variable under test.
+    inputs.dir(layout.buildDirectory.dir("zipline-guest"))
     doLast {
       val ziplineDir = layout.buildDirectory.dir("zipline-guest").get().asFile
       val modules = ziplineDir.listFiles { f -> f.extension == "zipline" }!!

@@ -141,6 +141,7 @@ data class OnlyInOld(val x: Int)
  * fall past the first flag word.
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class WideDefaults(
   val p0: Int = 0,
   val p1: Int = 1,
@@ -175,3 +176,42 @@ data class WideDefaults(
   val p30: Int = 30,
   val p31: Int = 31,
 )
+// ------------------------------------------------------------------------------------------
+// Defaulted constructor parameters: the pre-change half of each pair.
+//
+// Each class below exists in both trees with the same FQN and a different declaration, the way
+// `AddedFieldPayload` and `RemovedFieldPayload` already do: this tree is the host that does not know
+// about a parameter, the new tree is the guest that declares it with a default. They carry only
+// `@WithHost2JSBridge` because the rows through them go host -> guest, except `SubsetPayload`, which
+// also runs guest -> host so that the HOST is the side evaluating the chained default.
+// (`BaseStatePayload` could not go both ways even if the row wanted it: an inherited property crossing
+// the wire is open item T4.)
+// ------------------------------------------------------------------------------------------
+
+/** The new tree adds `added`, defaulted. This shape has no such parameter to send. */
+@WithHost2JSBridge
+data class DefaultedFieldPayload(val a: Int, val b: String)
+
+/**
+ * The new tree defaults `b` and `c`, requires `d`, and declares `twin` defaulted from BOTH of them.
+ * This shape sends `a` and `d` and nothing else, so the guest has to produce the other three — one
+ * of them by evaluating an expression over a value that is itself a default.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class SubsetPayload(val a: Int, val d: Int)
+
+/** The new tree adds a defaulted `@JvmInline value class` field. */
+@WithHost2JSBridge
+data class WrappedDefaultPayload(val n: Int)
+
+/**
+ * The new tree computes a body property and refuses non-positive `w`. This shape neither: it accepts
+ * any value, so a bad one can leave this host and has to be judged by the guest that receives it.
+ */
+@WithHost2JSBridge
+data class ValidatedPayload(val w: Int)
+
+/** The new tree inherits a defaulted `base` from its superclass and computes `doubled` there. */
+@WithHost2JSBridge
+data class BaseStatePayload(val own: Int)

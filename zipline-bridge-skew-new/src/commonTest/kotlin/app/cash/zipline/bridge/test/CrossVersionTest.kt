@@ -318,4 +318,89 @@ class CrossVersionTest {
     assertEquals("keep", host.read("readBackDroppedBase", DroppedBasePayload(keep = "keep")))
     assertEquals("11", host.read("readBackInterface", InterfacePayload(v = 11)))
   }
+
+  // ------------------------------------------------------------------------------------------
+  // Defaulted constructor parameters, seen from the other side: this host declares the extra
+  // parameters and the old guest does not know them. The interesting property is not that the old
+  // guest ignores them — it is that the fields it does declare still arrive intact, so an extra
+  // parameter on the host is additive rather than corrupting.
+  // ------------------------------------------------------------------------------------------
+
+  @Test fun hostToGuest_addedDefaultedFieldIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/defaulted-field/ignored", "11|df") {
+      host.read("readBackDefaultedField", DefaultedFieldPayload(a = 11, b = "df", added = 99))
+    }
+  }
+
+  @Test fun hostToGuest_subsetFieldsIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/subset/ignored", "7|9") {
+      host.read("readBackSubset", SubsetPayload(a = 7, c = 3.5, d = 9, twin = 55))
+    }
+  }
+
+  @Test fun hostToGuest_defaultedValueClassIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/wrapped-default/ignored", "3") {
+      host.read("readBackWrappedDefault", WrappedDefaultPayload(n = 3, w = WrappedValue(v = 42)))
+    }
+  }
+
+  /**
+   * The old guest declares no initializer, so nothing judges the value on arrival. The complementary
+   * half — a host shipping a value that its own shape tolerates but the guest refuses — cannot be
+   * written from this tree: here `ValidatedPayload` validates on the host, so the bad value never gets
+   * built. That row lives in `zipline-bridge-skew-old`.
+   */
+  @Test fun hostToGuest_validationIsAbsentOnOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/validated/not-checked-by-old-guest", "4") {
+      host.read("readBackValidated", ValidatedPayload(w = 4))
+    }
+  }
+
+  @Test fun hostToGuest_baseClassIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/base-state/ignored", "8") {
+      host.read("readBackBaseState", BaseStatePayload(own = 8))
+    }
+  }
+
+  /** The reverse of the wide row: 40 fields sent to a 32-field guest, whose 32 must still be right. */
+  @Test fun hostToGuest_wideArityExtraFieldsIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved(
+      "host2js/wide-arity/old-guest-32",
+      "WideDefaults(" + (0 until 32).joinToString(", ") { "p$it=$it" } + ")",
+    ) {
+      host.read("readBackWideDefaults", WideDefaults()).toString().replace(Regex("""\s+"""), " ")
+    }
+  }
+
+  /** No skew: every defaulted parameter is sent by this host and read by this guest. */
+  @Test fun control_hostToGuest_defaultedParams() = withNewGuest { host, _ ->
+    assertEquals("11|df|99", host.read("readBackDefaultedField", DefaultedFieldPayload(a = 11, b = "df", added = 99)))
+    assertEquals("7|b|2.5|9|9", host.read("readBackSubset", SubsetPayload(a = 7, d = 9)))
+    assertEquals("3|42", host.read("readBackWrappedDefault", WrappedDefaultPayload(n = 3, w = WrappedValue(v = 42))))
+    assertEquals("4|12", host.read("readBackValidated", ValidatedPayload(w = 4)))
+    assertEquals("8|5|10", host.read("readBackBaseState", BaseStatePayload(own = 8)))
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // And the same defaulting, in the other direction: the host is the one that builds the object,
+  // so it is the host's decoder that has to evaluate a chained default over a field that arrived.
+  // The old guest's `SubsetPayload` has only `a` and `d`, which is what makes `b`, `c` and `twin`
+  // absent on this side.
+  // ------------------------------------------------------------------------------------------
+
+  /** `a` and `d` arrive; `b`, `c` and `twin = c.toInt() + a` are this host's to work out. */
+  @Test fun guestToHost_subsetDefaultsIncludingChained() = withOldGuest { host, id ->
+    assertObserved(
+      "js2host/subset/defaults-and-chained",
+      "SubsetPayload(a=11, b=b, c=2.5, d=9, twin=13)",
+    ) { host.evaluateOne(provide("provideSubset", id)) }
+  }
+
+  /** No skew: the new guest sends all five, so no default is consulted on either side. */
+  @Test fun control_guestToHost_subset() = withNewGuest { host, id ->
+    assertEquals(
+      "SubsetPayload(a=11, b=bb, c=3.5, d=9, twin=55)",
+      host.evaluateOne(provide("provideSubset", id)).toString(),
+    )
+  }
 }

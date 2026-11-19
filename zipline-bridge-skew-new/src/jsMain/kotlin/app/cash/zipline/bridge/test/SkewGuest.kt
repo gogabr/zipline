@@ -106,3 +106,30 @@ fun readBackOnlyInNew(p: OnlyInNew): String = "${p.x}"
 
 @JsExport
 fun provideWideDefaults(): WideDefaults = WideDefaults()
+
+/**
+ * Readers for the defaulted-parameter pairs, printing everything THIS tree's shape declares — including
+ * the parameters the old host never sends, the value class the guest has to construct, the body
+ * property no host declares, and the superclass state a stamped object would not have.
+ */
+@JsExport
+fun readBackDefaultedField(p: DefaultedFieldPayload): String = "${p.a}|${p.b}|${p.added}"
+
+@JsExport
+fun readBackSubset(p: SubsetPayload): String = "${p.a}|${p.b}|${p.c}|${p.d}|${p.twin}"
+
+@JsExport
+fun readBackWrappedDefault(p: WrappedDefaultPayload): String = "${p.n}|${p.w.v}"
+
+@JsExport
+fun readBackValidated(p: ValidatedPayload): String = "${p.w}|${p.area}"
+
+@JsExport
+fun readBackBaseState(p: BaseStatePayload): String = "${p.own}|${p.base}|${p.doubled}"
+
+@JsExport
+fun readBackWideDefaults(p: WideDefaults): String = p.toString()
+
+/** Sends everything this tree's shape has, so a receiver can only be missing fields it lacks itself. */
+@JsExport
+fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, b = "bb", c = 3.5, d = 9, twin = 55)

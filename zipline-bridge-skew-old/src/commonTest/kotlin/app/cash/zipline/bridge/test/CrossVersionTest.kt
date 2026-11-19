@@ -338,4 +338,95 @@ class CrossVersionTest {
     assertEquals("keep", host.read("readBackDroppedBase", DroppedBasePayload(keep = "keep")))
     assertEquals("11", host.read("readBackInterface", InterfacePayload(v = 11)))
   }
+
+  // ------------------------------------------------------------------------------------------
+  // Defaulted constructor parameters. This host's converters emit exactly the fields its own class
+  // declares, so an absent parameter can only arise from a pair like these: the new guest declares a
+  // parameter this tree's shape does not have. Every expectation is a value that cannot come from the
+  // host — a default, a computation, superclass state, or a refusal.
+  // ------------------------------------------------------------------------------------------
+
+  /** A parameter this host has never heard of, defaulted by the guest. */
+  @Test fun hostToGuest_addedDefaultedField() = withNewGuest { host, _ ->
+    assertObserved("host2js/defaulted-field/added", "11|df|99") {
+      host.read("readBackDefaultedField", DefaultedFieldPayload(a = 11, b = "df"))
+    }
+  }
+
+  /** `b` and `c` absent, `d` required and sent, `twin` defaulted from one of each. */
+  @Test fun hostToGuest_subsetDefaultsIncludingChained() = withNewGuest { host, _ ->
+    assertObserved("host2js/subset/defaults-and-chained", "7|b|2.5|9|9") {
+      host.read("readBackSubset", SubsetPayload(a = 7, d = 9))
+    }
+  }
+
+  /** A defaulted `@JvmInline value class` parameter: the guest builds the wrapper itself. */
+  @Test fun hostToGuest_defaultedValueClassField() = withNewGuest { host, _ ->
+    assertObserved("host2js/wrapped-default/absent", "3|7") {
+      host.read("readBackWrappedDefault", WrappedDefaultPayload(n = 3))
+    }
+  }
+
+  /** A body property no host declares, computed by the guest's constructor. */
+  @Test fun hostToGuest_constructorComputesBodyValue() = withNewGuest { host, _ ->
+    assertObserved("host2js/validated/computed", "4|12") {
+      host.read("readBackValidated", ValidatedPayload(w = 4))
+    }
+  }
+
+  /**
+   * The same value judged by the two guests. This tree's shape has no validation, so -2 leaves here
+   * without objection; the new guest's initializer refuses it. That asymmetry is the point: a stamped
+   * payload would have been accepted exactly as the old guest accepts it.
+   */
+  @Test fun hostToGuest_constructorValidatesTheHostsValue() = withNewGuest { host, _ ->
+    assertObserved("host2js/validated/refused", "throws IllegalStateException: w must be positive, got -2") {
+      host.read("readBackValidated", ValidatedPayload(w = -2))
+    }
+  }
+
+  /** Defaulted and computed one level up, in the superclass the host's shape does not have. */
+  @Test fun hostToGuest_baseClassState() = withNewGuest { host, _ ->
+    assertObserved("host2js/base-state/inherited", "8|5|10") {
+      host.read("readBackBaseState", BaseStatePayload(own = 8))
+    }
+  }
+
+  /**
+   * Eight parameters past the first flag word, none of them sent by this tree's 32-parameter shape.
+   * `p32` is bit 0 of the second word, so a mask packed or read against the wrong base shows up here.
+   */
+  @Test fun hostToGuest_wideArityDefaultsHostToGuest() = withNewGuest { host, _ ->
+    assertObserved(
+      "host2js/wide-arity/second-word",
+      "WideDefaults(" + (0 until 40).joinToString(", ") { "p$it=$it" } + ")",
+    ) {
+      host.read("readBackWideDefaults", WideDefaults()).toString().replace(Regex("""\s+"""), " ")
+    }
+  }
+
+  /** No skew: this host and this tree's own guest, so every field arrives and no default is consulted. */
+  @Test fun control_hostToGuest_defaultedParams() = withOldGuest { host, _ ->
+    assertEquals("11|df", host.read("readBackDefaultedField", DefaultedFieldPayload(a = 11, b = "df")))
+    assertEquals("7|9", host.read("readBackSubset", SubsetPayload(a = 7, d = 9)))
+    assertEquals("3", host.read("readBackWrappedDefault", WrappedDefaultPayload(n = 3)))
+    assertEquals("4", host.read("readBackValidated", ValidatedPayload(w = 4)))
+    assertEquals("8", host.read("readBackBaseState", BaseStatePayload(own = 8)))
+  }
+
+  /** The new guest ships all five parameters; this host's shape keeps the two it knows. */
+  @Test fun guestToHost_subsetExtraFieldsIgnored() = withNewGuest { host, id ->
+    assertEquals(
+      "SubsetPayload(a=11, d=9)",
+      host.evaluateOne(provide("provideSubset", id)).toString(),
+    )
+  }
+
+  /** No skew: both sides have the same two parameters. */
+  @Test fun control_guestToHost_subset() = withOldGuest { host, id ->
+    assertEquals(
+      "SubsetPayload(a=11, d=9)",
+      host.evaluateOne(provide("provideSubset", id)).toString(),
+    )
+  }
 }

@@ -100,3 +100,27 @@ fun readBackOnlyInOld(p: OnlyInOld): String = "${p.x}"
 
 @JsExport
 fun provideWideDefaults(): WideDefaults = WideDefaults()
+
+/**
+ * Readers for the defaulted-parameter pairs. Each prints the fields THIS tree's shape declares, so an
+ * old-guest row reports the subset it could see and a new-guest row reports the defaults it produced.
+ * `readBackWideDefaults` prints the whole data class, as the guest -> host wide row does.
+ */
+@JsExport fun readBackDefaultedField(p: DefaultedFieldPayload): String = "${p.a}|${p.b}"
+
+@JsExport fun readBackSubset(p: SubsetPayload): String = "${p.a}|${p.d}"
+
+@JsExport fun readBackWrappedDefault(p: WrappedDefaultPayload): String = "${p.n}"
+
+@JsExport fun readBackValidated(p: ValidatedPayload): String = "${p.w}"
+
+@JsExport fun readBackBaseState(p: BaseStatePayload): String = "${p.own}"
+
+@JsExport fun readBackWideDefaults(p: WideDefaults): String = p.toString()
+
+/**
+ * Sends the two parameters this tree's shape has. The new host decodes into a class with three more,
+ * one of them (`twin`) defaulted from a value that is itself defaulted and from `a`, which did arrive.
+ */
+@JsExport
+fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, d = 9)

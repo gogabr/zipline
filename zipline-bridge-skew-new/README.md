@@ -68,6 +68,8 @@ the host tree. JVM observed values are from `jvmTest`; the Native column is `mac
 | Superclass removed on guest | new guest → old host | ❌ / ✅ | `ZiplineApiMismatchException: ...DroppedBasePayload.inherited expects a number but the guest sent undefined` | `DroppedBasePayload(keep=keep)` — native never asks | divergence #1 |
 | Superclass removed on host | old guest → new host | ✅ | `DroppedBasePayload(keep=keep)` | same | — |
 | 8 defaulted params added past the 32nd (`WideDefaults.p32..p39`) | old guest → new host | ✅ | `WideDefaults(p0=0, …, p39=39)` — the flags for those params live in the second mask word, so this row is what pins the packing against the JVM descriptor | same — native reaches the same values through `bridgeCreate`, so the row needs no `nativeExpected` any more | T2 |
+| 3 defaulted parameters added on host (`SubsetPayload.b/.c/.twin`) | old guest → new host | ✅ | `SubsetPayload(a=11, b=b, c=2.5, d=9, twin=13)` — the **host** is the side evaluating defaults here, including `twin = c.toInt() + a`, chained from one default and one received value; a decoder that read placeholders would report `twin=2` | same | T2 |
+| All five present, old host shape | new guest → old host | ✅ | `SubsetPayload(a=11, d=9)` — the guest's three extra values are dropped, not misaligned | same | — |
 | Interface added on guest | new guest → old host | ✅ | `InterfacePayload(v=11)` — wire-invisible | same | — |
 | Interface gained on host | old guest → new host | ✅ | `InterfacePayload(v=11)` | same | — |
 | Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for ...GrowthEnum` | same | — |
@@ -90,23 +92,45 @@ properties and default expressions happen, and a parameter the host does not hav
 constructor that requires it instead of arriving as `undefined`. There is no fallback to the old stamped
 path: a class the guest builds no factory for is refused, naming the factory.
 
+A defaulted parameter can only be *absent* through a pair of declarations. A host converter emits
+exactly `extractFields(hostClass)` — the fields its own class has — so no single-module test can make a
+host omit one of its own fields; `SubsetPayload` here exists twice, once per tree, with different
+declarations. `SubsetPayload` additionally carries `@WithJS2HostBridge`, because its rows run in both
+directions: host→guest pins the *guest* evaluating defaults, guest→host pins the *host* doing it. That is also why these rows need no "what stamping would have done" control: every
+expectation below is a value nobody sends — a default, a computed property, superclass state, or a
+refusal — so a stamped object cannot produce it.
+
+| Change kind | Direction | Verdict | JVM observed | Kotlin/Native observed | Follow-up |
+|---|---|---|---|---|---|
+| Parameter added on guest, **with a default** (`DefaultedFieldPayload.added`) | old host → new guest | ✅ | `11\|df\|99` — the guest's default, from a host that has never heard of the parameter | same | T2 |
+| Same shapes, old guest | new host → old guest | ✅ | `11\|df`, `7\|9`, `3`, `4`, `8` — every shape above has a mirror row: the extra parameter is ignored and the fields the older shape declares still arrive right, so an added parameter is additive rather than corrupting | same | — |
+| 8 parameters the guest has never heard of (`WideDefaults`, 40 → 32) | new host → old guest | ✅ | the guest's own thirty-two fields, all correct | same | — |
+| Several parameters absent, one defaulted **from another** (`SubsetPayload`) | old host → new guest | ✅ | `7\|b\|2.5\|9\|9` — `b`, `c` defaulted and `twin = c.toInt() + a` evaluated against the default `c` and the *sent* `a`; a factory that read placeholders would print `2` | same | T2 |
+| 8 defaulted parameters past the first flag word, host → guest (`WideDefaults.p32..p39`) | old host → new guest | ✅ | all forty printed, `p32=32 … p39=39` — those eight are bits in the **second** mask word, filled in by the guest while its host sends a 32-field object | same | T2 |
+| Constructor computes a body property (`ValidatedPayload.area`) | old host → new guest | ✅ | `4\|12` — `area` is no host's field; only the guest's initializer produces it | same | — |
+| Constructor validates (`require(w > 0)`) | old host → new guest | ❌ caught | `IllegalStateException: w must be positive, got -2` — legal for the sender's shape, refused by the receiver's | same | — |
+| Base-class state (`BaseStatePayload : BaseStateHost`) | old host → new guest | ✅ | `8\|5\|10` — `base` defaulted and `doubled` computed in a superclass the host's shape does not have | same | T4 |
+
+`WideDefaults` carries `@WithHost2JSBridge` for the wide host→guest row. Without it the JVM host still
+*compiles* — it reaches `convertToJs` through the runtime rather than through a member the plugin
+declared — and fails at run time with `NoSuchMethodError: L…WideDefaults;.convertToJs(J)J`.
+
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.
 
 A `@JvmInline value class` field crosses as the wrapper's **underlying value** — both hosts read its
 single backing field — and the guest's factory rebuilds the wrapper around it before the constructor
 sees it. Casting the read straight to the wrapper type instead would compile to `raw_1` on a number, i.e.
-`undefined` in the field, noticed only on the way back: the row `hostToGuest_valueClassField` reads the
-same `WrappedValue(v=42)` it read while this crossed by stamping, which is what makes the row a trap
-rather than a proof. The distinguishing tests are the two `valueClassField*` cases in
-`Host2JsBridgeEndToEndTest`, which show the guest's default running when the field is absent.
+`undefined` in the field, noticed only on the way back. The row that pins the rebuild is
+`hostToGuest_defaultedValueClassField`: the old tree declares only `n`, so `w` cannot cross at all and
+the guest has to produce `WrappedValue(7)` out of its own default — `3|7` reported back.
 
 | Change kind | Direction | Verdict | JVM observed | Kotlin/Native observed | Follow-up |
 |---|---|---|---|---|---|
 | Class deleted on guest (`OnlyInOld`) | old host → new guest | ❌ caught | `IllegalStateException: host2js: no registered prototype for app.cash.zipline.bridge.test.OnlyInOld; the guest module did not call __bridgeRegister for this class` | same message, wrapped as `JsException: callGuestFunction: cannot convert argument 0 ...` (folded) | T1 |
 | Class missing on guest (`OnlyInNew`) | new host → old guest | ❌ caught | same for `OnlyInNew` | same wrapped | T1 |
 | Field added on host | new host → old guest | ✅ | `11\|af` — guest ignores `c` | same | — |
-| Field added on guest | old host → new guest | ⚠️ | `11\|af\|undefined` — guest reads an absent JS property | same | — |
+| Field added on guest (no default) | old host → new guest | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.AddedFieldPayload.c was not sent by the host` | same message (wrapped, folded) | was `11\|af\|undefined` before the guest built its own payloads |
 | Field removed on guest | old host → new guest | ✅ | `11\|rf` — the host's extra `c` is ignored by the guest's shape | same | — |
 | Field removed on host | new host → old guest | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.RemovedFieldPayload.c was not sent by the host` — the guest's create-factory is the first place that knows the parameter is required | same message (wrapped, folded) | was `11\|rf\|undefined` before the guest built its own payloads |
 | Field renamed, no alias | both | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.RenamedFieldPayload.oldName was not sent by the host` | same message (wrapped, folded) | T3; was `null` — raw `undefined` crossing back — before the guest built its own payloads |
@@ -163,6 +187,12 @@ exit codes is deleted.
 carries the post-change fixtures. A future change extends the *new* side, then the current new side is
 copied over the old side to re-freeze it. Do not edit the old tree's fixtures to make a row pass —
 that erases the skew the harness exists to test.
+
+What that forbids is *editing a side to change an outcome*. Adding the other half of a pair is the
+harness working as designed, and sometimes necessary: a row in which a host lacks a field cannot be
+written from one tree, because the converter emits its own class's fields and no others. The
+`DefaultedFieldPayload` / `SubsetPayload` / `WrappedDefaultPayload` / `ValidatedPayload` /
+`BaseStatePayload` group therefore appears in both trees, in the same commit, declared differently.
 
 One fixture rule the harness discovered the hard way: a base class whose properties cross the wire
 **must** carry `@WithJS2HostBridge`/`@WithHost2JSBridge`. Kotlin/JS mangles an unannotated class's

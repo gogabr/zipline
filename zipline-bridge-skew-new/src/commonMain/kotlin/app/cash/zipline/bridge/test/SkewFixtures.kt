@@ -142,6 +142,7 @@ data class OnlyInNew(val x: Int)
  * generated for the runtime class.
  */
 @WithJS2HostBridge
+@WithHost2JSBridge
 data class WideDefaults(
   val p0: Int = 0,
   val p1: Int = 1,
@@ -184,3 +185,55 @@ data class WideDefaults(
   val p38: Int = 38,
   val p39: Int = 39,
 )
+// ------------------------------------------------------------------------------------------
+// Defaulted constructor parameters: the post-change half of each pair. See the old tree for the
+// matching declarations and for why these carry only `@WithHost2JSBridge` — except `SubsetPayload`,
+// which crosses both ways so that a chained default can be pinned with the HOST evaluating it.
+// ------------------------------------------------------------------------------------------
+
+/** `added` is the parameter this tree declares and the old host never sends. */
+@WithHost2JSBridge
+data class DefaultedFieldPayload(val a: Int, val b: String, val added: Int = 99)
+
+/**
+ * `b` and `c` are absent from the old host's shape, `d` is required in both, and `twin` is defaulted
+ * from a value that is itself defaulted and a value that arrived — so a factory that evaluated each
+ * default against placeholders rather than chosen values prints something else.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class SubsetPayload(
+  val a: Int = 1,
+  val b: String = "b",
+  val c: Double = 2.5,
+  val d: Int,
+  val twin: Int = c.toInt() + a,
+)
+
+/** A defaulted `@JvmInline value class` field: the guest has to construct the wrapper, not receive it. */
+@WithHost2JSBridge
+data class WrappedDefaultPayload(val n: Int, val w: WrappedValue = WrappedValue(7))
+
+/**
+ * The reason the payload has to be built rather than stamped: `area` is computed and no host declares
+ * it, and the initializer judges a value the old host ships without a second thought.
+ */
+@WithHost2JSBridge
+class ValidatedPayload(val w: Int) {
+  val area: Int = w * 3
+
+  init {
+    require(w > 0) { "w must be positive, got $w" }
+  }
+
+  override fun toString(): String = "ValidatedPayload(w=$w, area=$area)"
+}
+
+/** `base` and `doubled` live in the superclass, with a default — the state a stamped object lacks. */
+@WithHost2JSBridge
+open class BaseStateHost(val base: Int = 5) {
+  val doubled: Int = base * 2
+}
+
+@WithHost2JSBridge
+class BaseStatePayload(val own: Int = 3) : BaseStateHost()

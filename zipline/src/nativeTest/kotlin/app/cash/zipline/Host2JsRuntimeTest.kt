@@ -342,6 +342,46 @@ class Host2JsRuntimeTest {
     }
   }
 
+  /**
+   * Every bridged module registers its own factories object when the host warms it up, so the hook has
+   * to merge. Replace the global and the last module loaded owns it: the host then reports
+   * "the guest provides no create_..." for every class whose module loaded earlier -- which is what a
+   * real application (dozens of modules) hits, while a one-module test bundle cannot.
+   */
+  @Test
+  fun `a second module's runtime registration keeps the first module's factories`() {
+    publishGuestRuntime() // this module's factories: newLong, newArrayList, newLinkedHashMap
+    eval(
+      """
+      __bridgeRegisterRuntime({
+        create_com_example_SecondModulePayload: function (fields) { return { builtBy: 'second' }; }
+      });
+      """.trimIndent(),
+    )
+
+    // The first registration's factory must still answer for the host: a Long crosses only through
+    // newLong, which the second registration did not publish.
+    assertEquals(-5L, roundTrip(-5L))
+
+    // And the second registration's create-factory is reachable through the same object.
+    val fields = newJsObject(context, "com.example.Host2JsEcho")
+    val built = try {
+      host2JsCallCreateFactory(
+        context,
+        "com.example.SecondModulePayload",
+        "create_com_example_SecondModulePayload",
+        fields,
+      )
+    } finally {
+      HermesBridge_freeHandle(context, fields)
+    }
+    try {
+      assertEquals("second", stringPropertyOf(built, "builtBy"))
+    } finally {
+      HermesBridge_freeHandle(context, built)
+    }
+  }
+
   @Test
   fun `setJsProperty defines an own data property`() {
     publishGuestRuntime()

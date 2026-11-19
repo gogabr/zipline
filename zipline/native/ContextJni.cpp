@@ -47,6 +47,40 @@ jsi::Object globalBridgeMap(jsi::Runtime &rt, const char *name) {
   return created;
 }
 
+// Copy every property of [source] that the host could read on it -- own or inherited -- onto
+// [target]. Used for the globals the guest fills in module by module; see the
+// __bridgeRegisterRuntime hook.
+// jsi::Object has no copy or move constructor, so both handles come in by reference.
+void mergeBridgeFactories(jsi::Runtime &rt, jsi::Object &target, jsi::Object &source) {
+  // The guest's factories object is a Kotlin/JS `object` instance: newLong, newArrayList and every
+  // create-factory are methods on its PROTOTYPE and are not enumerable, so copying the own enumerable
+  // keys copies nothing at all -- the host would keep an empty map and report "the guest provides no
+  // create_..." for every class. Walk the prototype chain instead, which is what a property read on
+  // the instance does, so whatever the host could find on the instance it can still find here.
+  jsi::Object objectCtor = rt.global().getPropertyAsObject(rt, "Object");
+  jsi::Function getOwnPropertyNames = objectCtor.getPropertyAsFunction(rt, "getOwnPropertyNames");
+  jsi::Function getPrototypeOf = objectCtor.getPropertyAsFunction(rt, "getPrototypeOf");
+  jsi::Value objectPrototype = objectCtor.getProperty(rt, "prototype");
+
+  jsi::Value current = jsi::Value(rt, source);
+  while (current.isObject() && !jsi::Value::strictEquals(rt, current, objectPrototype)) {
+    jsi::Value args[1] = {jsi::Value(rt, current.asObject(rt))};
+    jsi::Object names =
+        getOwnPropertyNames.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1))
+            .asObject(rt);
+    // Explicit Value indices: a bare integer is ambiguous against jsi::Value's converting
+    // constructors, and this jsi has no Object::get(Runtime&, Value).
+    double count = names.getProperty(rt, "length").asNumber();
+    for (double i = 0; i < count; i++) {
+      jsi::Value name = names.getProperty(rt, jsi::Value(i));
+      std::string key = name.asString(rt).utf8(rt);
+      if (key == "constructor") continue;
+      target.setProperty(
+          rt, jsi::PropNameID::forUtf8(rt, key), current.asObject(rt).getProperty(rt, name));
+    }
+    current = getPrototypeOf.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1));
+  }
+}
 }  // namespace
 
 extern "C" __attribute__((used, visibility("default"))) void addBridgeEntry(const char* fq, jobject(*fn)(JNIEnv*,jsi::Runtime&,const jsi::Value&)) {
@@ -111,7 +145,17 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
             // the guest's own stdlib calls, so nothing here relies on Kotlin/JS internals. The
             // instance carries newLong/newArrayList/newLinkedHashMap through its prototype, so
             // the host can read them off it directly.
-            rt.global().setProperty(rt, HOST2JS_FACTORIES_GLOBAL, args[0]);
+            //
+            // MERGE, do not replace. Every bridged module calls __bridgeRegisterRuntime when it is
+            // warmed up, and each passes its own factories object -- prototypes are merged the same
+            // way just above, and for the same reason. Assigning the global would hand ownership to
+            // whichever module loaded last and silently discard every other module's create-factories
+            // and runtime factories. An application has dozens of modules; a test bundle has one,
+            // which is exactly why this is invisible until the app is run: the host then looks up
+            // `create_<fqn>` for a class whose module loaded earlier and finds nothing.
+            jsi::Object factories = globalBridgeMap(rt, HOST2JS_FACTORIES_GLOBAL);
+            jsi::Object published = args[0].asObject(rt);
+            mergeBridgeFactories(rt, factories, published);
             return jsi::Value::undefined();
         });
 

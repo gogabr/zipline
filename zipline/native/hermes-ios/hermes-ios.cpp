@@ -1062,6 +1062,39 @@ void HermesBridge_clearHandles(void* context) {
     ctx->bridgeHandles.clear();
 }
 
+// Copy every property of [source] that the host could read on it -- own or inherited -- onto
+// [target], so that every bridged module's factories stay reachable in one global object.
+// jsi::Object has no copy or move constructor, so both handles come in by reference.
+static void mergeBridgeFactories(jsi::Runtime &rt, jsi::Object &target, jsi::Object &source) {
+  // The guest's factories object is a Kotlin/JS `object` instance: newLong, newArrayList and every
+  // create-factory are methods on its PROTOTYPE and are not enumerable, so copying the own enumerable
+  // keys copies nothing at all -- the host would keep an empty map and report "the guest provides no
+  // create_..." for every class. Walk the prototype chain instead, which is what a property read on
+  // the instance does, so whatever the host could find on the instance it can still find here.
+  jsi::Object objectCtor = rt.global().getPropertyAsObject(rt, "Object");
+  jsi::Function getOwnPropertyNames = objectCtor.getPropertyAsFunction(rt, "getOwnPropertyNames");
+  jsi::Function getPrototypeOf = objectCtor.getPropertyAsFunction(rt, "getPrototypeOf");
+  jsi::Value objectPrototype = objectCtor.getProperty(rt, "prototype");
+
+  jsi::Value current = jsi::Value(rt, source);
+  while (current.isObject() && !jsi::Value::strictEquals(rt, current, objectPrototype)) {
+    jsi::Value args[1] = {jsi::Value(rt, current.asObject(rt))};
+    jsi::Object names =
+        getOwnPropertyNames.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1))
+            .asObject(rt);
+    // Explicit Value indices: a bare integer is ambiguous against jsi::Value's converting
+    // constructors, and this jsi has no Object::get(Runtime&, Value).
+    double count = names.getProperty(rt, "length").asNumber();
+    for (double i = 0; i < count; i++) {
+      jsi::Value name = names.getProperty(rt, jsi::Value(i));
+      std::string key = name.asString(rt).utf8(rt);
+      if (key == "constructor") continue;
+      target.setProperty(
+          rt, jsi::PropNameID::forUtf8(rt, key), current.asObject(rt).getProperty(rt, name));
+    }
+    current = getPrototypeOf.call(rt, static_cast<const jsi::Value *>(args), static_cast<size_t>(1));
+  }
+}
 // -- Bridge dispatch registration (__bridgeRegister) --
 
 static std::vector<std::pair<std::string, void*>> g_iosBridgeTable;
@@ -1144,7 +1177,17 @@ void HermesBridge_installBridgeRegister(void* jsiRuntime) {
         1,
         [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
             if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
-            rt.global().setProperty(rt, "__zipline_bridgeFactories", jsi::Value(rt, args[0]));
+            // Merge, do not replace: one call per bridged module, and the last module to load must
+            // not delete the create-factories of the modules before it. Mirrors the same hook in
+            // ContextJni.cpp for the JVM host; the prototypes global above has always merged.
+            jsi::Value existing = rt.global().getProperty(rt, "__zipline_bridgeFactories");
+            jsi::Object target = existing.isObject() ? existing.asObject(rt) : [&] {
+                jsi::Object created(rt);
+                rt.global().setProperty(rt, "__zipline_bridgeFactories", jsi::Value(rt, created));
+                return created;
+            }();
+            jsi::Object published = args[0].asObject(rt);
+            mergeBridgeFactories(rt, target, published);
             return jsi::Value::undefined();
         });
 

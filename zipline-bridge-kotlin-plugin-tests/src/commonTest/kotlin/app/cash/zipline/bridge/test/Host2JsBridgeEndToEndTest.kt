@@ -624,6 +624,45 @@ class Host2JsBridgeEndToEndTest {
     )
   }
 
+  /**
+   * The host warms up every bridged module, and each one publishes its own factories object through
+   * `__bridgeRegisterRuntime`. The host merges them into one global; had it assigned the global
+   * instead, the last module loaded would own it and every class whose module loaded earlier would
+   * lose its create-factory, with the host reporting "the guest provides no create_..." for it.
+   *
+   * No single-module test bundle can see this: only the guest module here has bridged classes, so
+   * there was exactly one registration and the two behaviours were indistinguishable. compose-live
+   * has dozens of modules, and it found the difference on the first payload it sent.
+   */
+  @Test
+  fun factoriesPublishedByAnEarlierModuleSurviveALaterRegistration() {
+    // Stand in for a module that loads after the one carrying the fixtures.
+    host.evaluateForBridge(
+      """
+      __bridgeRegisterRuntime({
+        create_app_cash_zipline_bridge_test_LaterModulePayload: function (fields) {
+          return { builtBy: 'later' };
+        }
+      });
+      0
+      """,
+    )
+
+    val factories = "globalThis.__zipline_bridgeFactories"
+    // The guest's own runtime factories are still reachable...
+    assertEquals("function", host.evaluateForBridge("typeof $factories.newLong"))
+    // ...the later registration is visible beside them...
+    assertEquals(
+      "function",
+      host.evaluateForBridge(
+        "typeof $factories.create_app_cash_zipline_bridge_test_LaterModulePayload",
+      ),
+    )
+    // ...and the guest's create-factories still build payloads, which is the behaviour an
+    // overwrite would have destroyed.
+    assertEquals(BridgedTestValues.data, roundTrip(BridgedTestValues.data))
+  }
+
   @Test
   fun mutableBodyFieldsSurviveARoundTrip() {
     val payload = BridgedMutableBody(a = 3).apply {

@@ -1412,7 +1412,7 @@ class ZiplineBridgeNativePluginTest {
 
     // One factory call per bridge, and nothing else constructs the class.
     assertEquals(1, Regex("\\.bridgeCreate\\(").findAll(content).count(), content)
-    assertTrue(content.contains("Defaults.bridgeCreate(_mask0, a = a, b = b, c = c)"), content)
+    assertTrue(content.contains("Defaults.Bridge.bridgeCreate(_mask0, a = a, b = b, c = c)"), content)
 
     // The flags come from what the guest sent. A defaulted parameter's bit is its position within
     // the word, and it is SET WHEN THE PARAMETER DID NOT ARRIVE: a set bit is the factory's
@@ -1465,7 +1465,7 @@ class ZiplineBridgeNativePluginTest {
   fun `a signature wider than one flag word passes two mask words to the factory`() {
     val params = (0 until 40).joinToString(", ") { "val p$it: Int = $it" }
     val content = generatedBridge("Wide.kt", "@WithJS2HostBridge class Wide($params)", "Wide")
-    assertTrue(content.contains("Wide.bridgeCreate(_mask0, _mask1, p0 = p0,"), content)
+    assertTrue(content.contains("Wide.Bridge.bridgeCreate(_mask0, _mask1, p0 = p0,"), content)
     assertTrue(content.contains("val _mask1 = (if (p32Sent) 0 else 1) or (if (p33Sent) 0 else 2)"), content)
   }
 

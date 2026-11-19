@@ -9,16 +9,15 @@ import org.jetbrains.kotlin.fir.declarations.DirectDeclarationsAccess
 import org.jetbrains.kotlin.fir.declarations.FirConstructor
 import org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin
 import org.jetbrains.kotlin.fir.declarations.FirRegularClass
-import org.jetbrains.kotlin.fir.declarations.utils.isCompanion
 import org.jetbrains.kotlin.fir.extensions.FirDeclarationGenerationExtension
 import org.jetbrains.kotlin.fir.extensions.FirDeclarationPredicateRegistrar
 import org.jetbrains.kotlin.fir.extensions.MemberGenerationContext
 import org.jetbrains.kotlin.fir.extensions.NestedClassGenerationContext
 import org.jetbrains.kotlin.fir.extensions.predicate.DeclarationPredicate
 import org.jetbrains.kotlin.fir.extensions.predicateBasedProvider
-import org.jetbrains.kotlin.fir.plugin.createCompanionObject
 import org.jetbrains.kotlin.fir.plugin.createConstructor
 import org.jetbrains.kotlin.fir.plugin.createMemberFunction
+import org.jetbrains.kotlin.fir.plugin.createNestedClass
 import org.jetbrains.kotlin.fir.resolve.getContainingClassSymbol
 import org.jetbrains.kotlin.fir.symbols.SymbolInternals
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassLikeSymbol
@@ -41,8 +40,25 @@ import org.jetbrains.kotlin.name.SpecialNames
 /** Marks every declaration this plugin generates, so later phases can recognise them. */
 internal object BridgeGeneratedKey : GeneratedDeclarationKey()
 
-/** The companion member that builds an instance from a flag word set plus supplied arguments. */
+/** The member that builds an instance from a flag word set plus supplied arguments. */
 internal val BRIDGE_CREATE_NAME: Name = Name.identifier("bridgeCreate")
+
+/**
+ * The nested object `bridgeCreate` lives in, for a class that has no companion of its own.
+ *
+ * Not the companion itself, which was the first attempt and which Redwood rejected: its payload
+ * classes are `@Serializable`, and kotlinx.serialization generates a `Companion` of its own for
+ * those, so two plugins produced a nested class of the same name in the same class and the compiler
+ * answered `Multiple plugins generated nested class with same name Companion` -- or, in the
+ * compilation where the clash was resolved by dropping ours, `Unresolved reference 'bridgeCreate'`.
+ * A companion we generate is therefore a name we do not own, and any third-party plugin may claim
+ * it. `Bridge` is a name this plugin owns.
+ *
+ * The factory therefore lives in exactly one place, named here, so the generators never have to
+ * discover it: a class that declares a `Bridge` of its own is reported rather than quietly sharing
+ * the name (see [declaresOwnBridgeContainer]).
+ */
+internal val BRIDGE_CONTAINER_NAME: Name = Name.identifier("Bridge")
 
 /** Primitives cannot carry `null`, so a bridge parameter for one keeps its type. */
 private val PRIMITIVE_CLASS_IDS = setOf(
@@ -62,9 +78,10 @@ private val WITH_HOST_2_JS = FqName("app.cash.zipline.bridge.support.WithHost2JS
 /**
  * Declares the construction factory that the generated host bridges call.
  *
- * The factory is a member of the annotated class's own companion object because a default-value
- * expression may call a `private` top-level declaration of the class's file or a `private` companion
- * member; nothing outside the class sees both. The body is filled in by
+ * The factory is a member of a classifier NESTED in the annotated class -- its companion when the
+ * source declares one, otherwise a generated object named [BRIDGE_CONTAINER_NAME] -- because a
+ * default-value expression may call a `private` top-level declaration of the class's file or a
+ * `private` companion member; nothing outside the class sees both. The body is filled in by
  * [ZiplineBridgeIrGenerationExtension], which is where the real default expressions live: this phase
  * only states the signature, so that the bridge text the generators emit can name the function.
  *
@@ -92,8 +109,12 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     context: NestedClassGenerationContext,
   ): Set<Name> = when {
     !classSymbol.needsBridgeCreate() -> emptySet()
-    classSymbol.hasOwnCompanion() -> emptySet()
-    else -> setOf(SpecialNames.DEFAULT_NAME_FOR_COMPANION_OBJECT)
+
+    // A `Bridge` the source declares itself is left alone; the IR pass reports the clash, because
+    // this phase has no message collector to report it with.
+    classSymbol.declaresOwnBridgeContainer() -> emptySet()
+
+    else -> setOf(BRIDGE_CONTAINER_NAME)
   }
 
   override fun generateNestedClassLikeDeclaration(
@@ -101,9 +122,10 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     name: Name,
     context: NestedClassGenerationContext,
   ): FirClassLikeSymbol<*>? {
-    if (name != SpecialNames.DEFAULT_NAME_FOR_COMPANION_OBJECT) return null
-    if (!owner.needsBridgeCreate() || owner.hasOwnCompanion()) return null
-    return createCompanionObject(owner, BridgeGeneratedKey).symbol
+    if (name != BRIDGE_CONTAINER_NAME) return null
+    if (!owner.needsBridgeCreate() || owner.declaresOwnBridgeContainer()) return null
+    // A plain nested object, deliberately not a companion: see BRIDGE_CONTAINER_NAME.
+    return createNestedClass(owner, BRIDGE_CONTAINER_NAME, BridgeGeneratedKey, ClassKind.OBJECT) {}.symbol
   }
 
   override fun getCallableNamesForClass(
@@ -115,15 +137,15 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     // A companion this extension generated also claims `<init>` (SpecialNames.INIT): `generateConstructors`
     // is only asked about names the extension claims, and an object without a constructor fails JVM
     // lowering with "Object should have a primary constructor".
-    return if (classSymbol.isBridgeCompanion()) {
+    return if (classSymbol.isBridgeGeneratedContainer()) {
       setOf(BRIDGE_CREATE_NAME, SpecialNames.INIT)
     } else {
       setOf(BRIDGE_CREATE_NAME)
     }
   }
 
-  /** The companion object this extension generated, as opposed to one the source declared. */
-  private fun FirClassSymbol<*>.isBridgeCompanion(): Boolean = (origin as? FirDeclarationOrigin.Plugin)?.key === BridgeGeneratedKey
+  /** The nested object this extension generated, as opposed to a companion the source declared. */
+  private fun FirClassSymbol<*>.isBridgeGeneratedContainer(): Boolean = (origin as? FirDeclarationOrigin.Plugin)?.key === BridgeGeneratedKey
 
   /**
    * The generated companion is an object, and the JVM backend insists that every object has a
@@ -135,7 +157,7 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     // Only the companion this extension generates: a companion the source declared brings its own
     // constructor, and the check cannot be "does the class have a companion" — by now it does, and it
     // is the one being asked about.
-    if (!companion.isBridgeCompanion()) return emptyList()
+    if (!companion.isBridgeGeneratedContainer()) return emptyList()
     // A primary constructor with nothing in it: an object needs one, and this is all it needs.
     val ctor = createConstructor(
       owner = companion,
@@ -191,8 +213,8 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
     )
   }
 
-  /** The annotated class whose companion this is, or null when this is not a bridge companion. */
-  private fun FirClassSymbol<*>.bridgeTargetClass(): FirClassSymbol<*>? = if (isCompanion) getContainingClassSymbol() as? FirClassSymbol<*> else null
+  /** The annotated class that owns the generated container; null for any other classifier. */
+  private fun FirClassSymbol<*>.bridgeTargetClass(): FirClassSymbol<*>? = if (isBridgeGeneratedContainer()) getContainingClassSymbol() as? FirClassSymbol<*> else null
 
   /**
    * Every bridged class with a primary constructor of its own gets the factory.
@@ -229,9 +251,15 @@ class ZiplineBridgeFirExtension(session: FirSession) : FirDeclarationGenerationE
       ?.singleOrNull { it.isPrimary }
       ?.symbol
 
-  /** Whether the class already has a companion to put the factory in — again, not through a scope. */
+  /**
+   * Whether the source declares a nested `Bridge` of its own, which the factory must not displace —
+   * read from the declaration list, not through a scope: the compiler is asking us for members
+   * precisely because it is building that scope.
+   */
   @OptIn(SymbolInternals::class, DirectDeclarationsAccess::class)
-  private fun FirClassSymbol<*>.hasOwnCompanion(): Boolean = (fir as? FirRegularClass)?.declarations?.any { (it.symbol as? FirClassLikeSymbol<*>)?.isCompanion == true } == true
+  private fun FirClassSymbol<*>.declaresOwnBridgeContainer(): Boolean = (fir as? FirRegularClass)?.declarations
+      ?.filterIsInstance<FirRegularClass>()
+      ?.any { it.name == BRIDGE_CONTAINER_NAME && !it.symbol.isBridgeGeneratedContainer() } == true
 
   /**
    * A bridge parameter must be able to say "absent": a reference type becomes nullable and `null`

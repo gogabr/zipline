@@ -30,6 +30,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
 import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.symbols.IrSymbol
+import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
@@ -72,6 +73,7 @@ internal fun fillBridgeCreateBodies(moduleFragment: IrModuleFragment, context: I
 
         override fun visitClass(declaration: IrClass) {
           reportBridgeCreateConflict(declaration, context)
+          reportBridgeContainerConflict(declaration, context)
           super.visitClass(declaration)
         }
       },
@@ -87,6 +89,37 @@ private fun IrSimpleFunction.isBridgeCreate(): Boolean = name == BRIDGE_CREATE_N
 private fun IrDeclaration.isBridgeGenerated(): Boolean = (origin as? IrDeclarationOrigin.GeneratedByPlugin)?.pluginKey === BridgeGeneratedKey
 
 /**
+ * Fail the build when a bridged class declares a nested `Bridge` of its own.
+ *
+ * The factory lives in a nested object named `Bridge` (see BRIDGE_CONTAINER_NAME), so a `Bridge` from
+ * the source leaves nowhere to put it. Declining silently would leave the generated host bridge to
+ * call whatever the author wrote -- a function with an unrelated signature, reached through a name the
+ * bridge believes it owns -- so the class is named and the author is asked to rename. Reporting here
+ * rather than in FIR, for the same reason as [reportBridgeCreateConflict]: this is where the plugin has
+ * a voice.
+ */
+private fun reportBridgeContainerConflict(clazz: IrClass, context: IrPluginContext) {
+  if (clazz.annotations.none { it.type.classFqName?.asString() in BRIDGE_ANNOTATION_FQ_NAMES }) return
+  val foreign = clazz.declarations
+    .filterIsInstance<IrClass>()
+    .filter { it.name == BRIDGE_CONTAINER_NAME && !it.isBridgeGenerated() }
+  if (foreign.isEmpty()) return
+  val ownerName = clazz.classId?.asSingleFqName()?.asString() ?: clazz.name.asString()
+  context.messageCollector.report(
+    CompilerMessageSeverity.ERROR,
+    "The Zipline bridge plugin generates a nested object named `Bridge` in $ownerName to hold " +
+      "`bridgeCreate`, but $ownerName declares a nested classifier of that name. Rename it: the " +
+      "generated object is what the generated host bridges reach through to construct $ownerName.",
+  )
+}
+
+/** The annotations that make a class a bridge payload, and so a class the plugin nests a `Bridge` in. */
+private val BRIDGE_ANNOTATION_FQ_NAMES = setOf(
+  "app.cash.zipline.bridge.support.WithJS2HostBridge",
+  "app.cash.zipline.bridge.support.WithHost2JSBridge",
+)
+
+/**
  * Fail the build when a bridged class declares `bridgeCreate` of its own.
  *
  * Silently keeping both would let a host bridge call the user's function, which is how a wrong value
@@ -99,6 +132,7 @@ private fun IrDeclaration.isBridgeGenerated(): Boolean = (origin as? IrDeclarati
  * building a proper diagnostic needs a registered diagnostic factory, which is more machinery than
  * the failure is worth. Reporting at IR time still fails the build before any output is written.
  */
+
 private fun reportBridgeCreateConflict(companion: IrClass, context: IrPluginContext) {
   if (companion.functions.none { it.isBridgeGenerated() && it.name == BRIDGE_CREATE_NAME }) return
   val foreign = companion.declarations.filter {
@@ -116,9 +150,9 @@ private fun reportBridgeCreateConflict(companion: IrClass, context: IrPluginCont
   }
   context.messageCollector.report(
     CompilerMessageSeverity.ERROR,
-    "The Zipline bridge plugin generates `bridgeCreate` on the companion object of $ownerName, but " +
-      "that companion also declares $described. Rename the declaration in the source: the generated " +
-      "factory is what the generated host bridges call to construct $ownerName.",
+    "The Zipline bridge plugin generates `bridgeCreate` in a nested object of $ownerName, but that " +
+      "class also declares $described. Rename the declaration in the source: the generated factory is " +
+      "what the generated host bridges call to construct $ownerName.",
   )
 }
 

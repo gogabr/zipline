@@ -5,6 +5,7 @@ import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.IrTypeProjection
@@ -605,7 +606,7 @@ internal fun generateNativeBridgeFile(
           .joinToString(" or ") { (index, field) -> "(if (${field.name}Sent) 0 else ${maskBit(index)})" }
         appendLine("    val _mask$word = ${if (flags.isEmpty()) "0" else flags}")
       }
-      append("    val _obj = $qualifier$className.bridgeCreate(")
+      append("    val _obj = $qualifier$className.$BRIDGE_CONTAINER_NAME.bridgeCreate(")
       append((0 until words).joinToString(", ") { "_mask$it" })
       append(", ")
       append(ctorFields.joinToString(", ") { "${it.name} = ${it.name}" })

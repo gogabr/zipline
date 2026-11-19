@@ -166,3 +166,6 @@ fun echoHostValue(value: Any?): Any? = value
 
 @JsExport
 fun stringifyHostValue(value: Any?): String = JSON.stringify(value)
+
+@JsExport
+fun describeMutableBody(value: BridgedMutableBody): String = "${value.a}|${value.extra}|${value.tags.joinToString("+")}|${value.w.raw}|${value.count}"

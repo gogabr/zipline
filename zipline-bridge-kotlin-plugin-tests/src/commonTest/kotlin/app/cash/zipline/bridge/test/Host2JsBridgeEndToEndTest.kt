@@ -434,4 +434,48 @@ class Host2JsBridgeEndToEndTest {
       unregisteredHost.close()
     }
   }
+
+  /**
+   * A mutable body field crosses host → guest, and only when the host actually has one.
+   *
+   * The converter emits body `var`s (JSON of the carrier shows `{"a_1":3,"extra_1":"from-host"}`), and
+   * the guest's factory now applies the ones that arrived *after* running the constructor — the guest
+   * constructor owns the initializer an absent field keeps, so the order is not interchangeable.
+   *
+   * This is the shape that made the create-factory a narrowing of the stamped path: stamping defined
+   * every field onto the object, so `extra` crossed without any work, while a constructor-only factory
+   * dropped it silently. Nothing caught it because no bridged class here had a mutable body field —
+   * which is why the fixture stays and the skew pair sits beside it: presence is asserted here,
+   * absence needs a peer that does not declare the field at all.
+   */
+  @Test
+  fun mutableBodyFieldFromHostReachesTheGuest() {
+    val payload = BridgedMutableBody(a = 3).apply {
+      extra = "from-host"
+      tags = listOf("a", "b")
+      w = BridgedInline(9)
+      count = 7
+    }
+    assertEquals("3|from-host|a+b|9|7", host.callGuestFunction("describeMutableBody", listOf(payload)))
+  }
+
+  /**
+   * The same properties coming back, which is the other half of the machinery: the host's decoder
+   * reads them, and a read made tolerant of absence answers with null for the reference-typed ones
+   * and with zero for `count`. Assigning that blindly would corrupt the host's own state, so the
+   * decode is presence-gated exactly like the guest's factory is.
+   */
+  @Test
+  fun mutableBodyFieldsSurviveARoundTrip() {
+    val payload = BridgedMutableBody(a = 3).apply {
+      extra = "from-host"
+      tags = listOf("a", "b")
+      w = BridgedInline(9)
+      count = 7
+    }
+    assertEquals(
+      "BridgedMutableBody(a=3, extra=from-host, tags=[a, b], w=BridgedInline(raw=9), count=7)",
+      roundTrip(payload).toString(),
+    )
+  }
 }

@@ -243,7 +243,24 @@ class BaseStatePayload(val own: Int = 3) : BaseStateHost()
  * else, which is the guarantee the generated companion exists to give: a factory emitted at file scope
  * would not see this, and the build would say so.
  */
+
 private fun hiddenMagic(): Int = 4242
+
+/**
+ * The receiving half of the mutable-body-field pair: `extra` is a mutable body property, so it is not
+ * a constructor parameter and `bridgeCreate`'s signature cannot carry it — the factory assigns it
+ * after construction, only when the carrier actually has it. Both directions are exercised: as a
+ * guest it receives the host's value, as a host its own guest may or may not send one.
+ */
+@WithHost2JSBridge
+@WithJS2HostBridge
+class MutableBodyPayload(val a: Int) {
+  var extra: String = "guest-default"
+
+  // Explicit, because the row has to show a body field the class's own toString would omit: a `val`
+  // in the constructor is printed by the generated toString, a body `var` is not.
+  override fun toString(): String = "MutableBodyPayload(a=$a, extra=$extra)"
+}
 
 /** `tag` reads a private companion value, `magic` the private top-level function above. */
 @WithJS2HostBridge

@@ -458,4 +458,15 @@ class CrossVersionTest {
       host.evaluateOne(provide("providePrivateDefaults", id)).toString(),
     )
   }
+
+  /**
+   * This host has no `extra` at all, so nothing arrives for it and the new guest's own initializer
+   * stands. That is the boundary the assignment must respect: writing `undefined` because a peer is
+   * older than the property would turn a version difference into corrupted state.
+   */
+  @Test fun hostToGuest_mutableBodyAbsentKeepsTheGuestsOwnValue() = withNewGuest { host, _ ->
+    assertObserved("host2js/mutable-body/absent", "7|guest-default") {
+      host.read("readBackMutableBody", MutableBodyPayload(a = 7))
+    }
+  }
 }

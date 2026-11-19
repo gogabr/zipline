@@ -546,3 +546,23 @@ object BridgedTestValues {
   val alignmentTopLevel = Alignment(value = 1)
   val alignmentNested = LineHeightStyle.Alignment(value = 2)
 }
+
+/**
+ * Mutable body properties: not constructor parameters, so not in `bridgeCreate`'s signature, and
+ * assignable only after construction — which means the receiver has to do the assigning, in both
+ * directions. The four types are here on purpose: the absence-tolerant reads answer with null for
+ * some of them and with a zero for others, and a receiver that assigns blindly would write a null
+ * into `extra` or a 0 into `count` whenever a peer predates the property.
+ *
+ * It bridges both ways so the round trip covers the decode as well as the construction.
+ */
+@WithHost2JSBridge
+@WithJS2HostBridge
+public class BridgedMutableBody(public val a: Int) {
+  public var extra: String = "guest-default"
+  public var tags: List<String> = listOf("guest")
+  public var w: BridgedInline = BridgedInline(1)
+  public var count: Int = 0
+
+  override fun toString(): String = "BridgedMutableBody(a=$a, extra=$extra, tags=$tags, w=$w, count=$count)"
+}

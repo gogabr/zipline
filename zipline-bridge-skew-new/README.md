@@ -122,6 +122,25 @@ factory that moved would fail there rather than silently widen the class's surfa
 *compiles* — it reaches `convertToJs` through the runtime rather than through a member the plugin
 declared — and fails at run time with `NoSuchMethodError: L…WideDefaults;.convertToJs(J)J`.
 
+**Mutable body properties are assigned after the receiver's constructor has run, and only when they
+arrived.** They are the fields a constructor cannot receive: `extractFields` returns them, the
+converters send them, and `bridgeCreate`'s signature is the constructor's, so nothing assigns them
+unless the receiver does it itself. This is the shape the create-factory narrowed without anyone
+noticing — stamping defined every field straight onto the object, so `extra` crossed for free, while a
+constructor-only factory dropped it in silence. Nothing in the suite could have caught it: no bridged
+class here had a mutable body field until it was the subject of a row.
+
+| | direction | expectation |
+| --- | --- | --- |
+| `host2js/mutable-body/present` | new host → new guest | `7\|from-host` — the host's value, on top of a constructor that ran |
+| `host2js/mutable-body/absent` | old host (no such property) → new guest | `7\|guest-default` — absence never writes over the receiver's own value |
+| `host2js/mutable-body/ignored` | new host → old guest (no such property) | `7` — an extra field is still just an extra field |
+
+`control_hostToGuest_mutableBodyPresent` in `Host2JsBridgeEndToEndTest` covers the same rule with four
+field types (`String`, `List<String>`, a `@JvmInline` wrapper, `Int`), because the absence-tolerant
+reads do not answer uniformly: null for the reference-typed ones, zero for the numeric one. The same
+property arriving *from* a guest is a host-side question — see the `js2host/mutable-body` rows.
+
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.
 

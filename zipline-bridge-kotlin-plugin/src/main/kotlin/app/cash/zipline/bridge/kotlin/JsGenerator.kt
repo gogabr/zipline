@@ -6,6 +6,7 @@ import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.builders.IrBlockBodyBuilder
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.IrValueParameterBuilder
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
@@ -21,12 +22,14 @@ import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irEquals
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irIfThen
 import org.jetbrains.kotlin.ir.builders.irIfThenElse
 import org.jetbrains.kotlin.ir.builders.irImplicitCast
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irNull
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
+import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.builders.irUnit
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
@@ -62,6 +65,7 @@ import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.primaryConstructor
+import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
@@ -690,7 +694,14 @@ private fun buildCreateFactory(
     "bridgeCreate of $targetFqn declares ${factoryParams.size} parameters, expected $maskWords mask " +
       "words + ${ctorParams.size} constructor parameters"
   }
-  val ctorFields = extractFields(clazz).filter { it.isConstructorParam }
+  val allFields = extractFields(clazz)
+  val ctorFields = allFields.filter { it.isConstructorParam }
+  // Mutable body properties: the converters send them (extractFields returns them), they are not
+  // constructor parameters, and the guest's constructor cannot know the host's value for them.
+  // Read-only body properties are absent from this list — `extractFields` skips `val` body fields on
+  // this path — because a computed property belongs to whoever computes it.
+  val bodyFields = allFields.filter { f -> !f.isConstructorParam }
+    .mapNotNull { f -> clazz.properties.firstOrNull { it.name.asString() == f.name && it.isVar }?.let { f to it } }
   check(ctorFields.size == ctorParams.size) {
     "create-factory for $targetFqn: ${ctorFields.size} bridged fields but ${ctorParams.size} " +
       "constructor parameters"
@@ -874,7 +885,28 @@ private fun buildCreateFactory(
         }
       }
     }
-    call
+    if (bodyFields.isEmpty()) return@buildObjectMethod call
+
+    // Constructor first, then the host's mutable body fields — never the other way round, and never
+    // for a field that did not arrive. The constructor has to run before the assignments because it
+    // owns the initializer the absent fields keep; and a field is assigned only when the carrier
+    // really carries it, so a peer that predates the property leaves the guest's own value standing
+    // rather than writing `undefined` into it.
+    with(builder) {
+      val obj = irTemporary(irImplicitCast(call, clazz.defaultType), "constructed")
+      bodyFields.forEach { (field, property) ->
+        val setter = property.setter ?: return@forEach
+        +irIfThen(
+          type = pluginContext.irBuiltIns.unitType,
+          condition = present(field.jsPropertyName),
+          thenPart = irCall(setter.symbol).apply {
+            dispatchReceiver = irGet(obj)
+            arguments[setter.parameters.last()] = readAs(field.type, field.jsPropertyName)
+          },
+        )
+      }
+      irGet(obj)
+    }
   }
 }
 
@@ -888,7 +920,7 @@ private fun buildObjectMethod(
   name: String,
   returnType: IrType,
   paramTypes: List<IrType>,
-  body: (IrBuilderWithScope, List<IrValueParameter>) -> IrExpression,
+  body: (IrBlockBodyBuilder, List<IrValueParameter>) -> IrExpression,
 ): IrSimpleFunction {
   val fn = pluginContext.irFactory.buildFun {
     this.name = Name.identifier(name)
@@ -911,7 +943,9 @@ private fun buildObjectMethod(
   addJsNameToFunction(fn, name, finder, pluginContext)
   val builder = pluginContext.irBuiltIns.createIrBuilder(fn.symbol)
   fn.body = builder.irBlockBody {
-    +irReturn(body(builder, params))
+    // The block builder, not `builder`, is handed to the body: a temporary or an `if` is a statement,
+    // and only this receiver appends to the body. Bodies that need neither are unaffected.
+    +irReturn(body(this, params))
   }
   owner.declarations += fn
   return fn

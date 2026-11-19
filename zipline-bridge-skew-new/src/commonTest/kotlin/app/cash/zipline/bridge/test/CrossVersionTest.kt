@@ -430,4 +430,25 @@ class CrossVersionTest {
       host.read("readBackPrivateDefaults", PrivateDefaultsPayload(a = 11, tag = "sent", magic = 1))
     }
   }
+
+  // ------------------------------------------------------------------------------------------
+  // Mutable body properties, which are the fields a constructor cannot receive: they are sent, and
+  // the receiver has to assign them itself once its own constructor has run. Absence is the half
+  // that needs two trees, and this tree supplies the presence half — a host that owns the property.
+  // ------------------------------------------------------------------------------------------
+
+  /** `extra` crosses and lands on top of a constructor that ran: `a` arrived, `extra` was assigned. */
+  @Test fun control_hostToGuest_mutableBodyPresent() = withNewGuest { host, _ ->
+    assertEquals(
+      "7|from-host",
+      host.read("readBackMutableBody", MutableBodyPayload(a = 7).apply { extra = "from-host" }),
+    )
+  }
+
+  /** The old guest declares no `extra`, so the value is ignored — and ignored quietly, as an extra field. */
+  @Test fun hostToGuest_mutableBodyIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/mutable-body/ignored", "7") {
+      host.read("readBackMutableBody", MutableBodyPayload(a = 7).apply { extra = "from-host" })
+    }
+  }
 }

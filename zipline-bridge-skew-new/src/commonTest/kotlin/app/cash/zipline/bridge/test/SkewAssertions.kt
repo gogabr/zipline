@@ -31,6 +31,7 @@ internal val NEW_GUEST_READERS = listOf(
   "readBackBaseState",
   "readBackWideDefaults",
   "readBackPrivateDefaults",
+  "readBackMutableBody",
 )
 
 /** The old bundle swaps `readBackOnlyInNew` for `readBackOnlyInOld`. */
@@ -56,6 +57,7 @@ internal val OLD_GUEST_READERS = listOf(
   "readBackBaseState",
   "readBackWideDefaults",
   "readBackPrivateDefaults",
+  "readBackMutableBody",
 )
 
 /** `require('<id>').app.cash.zipline.bridge.test.<fn>()` */

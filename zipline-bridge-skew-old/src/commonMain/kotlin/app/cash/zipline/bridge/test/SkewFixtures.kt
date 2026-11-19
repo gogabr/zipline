@@ -227,3 +227,15 @@ data class BaseStatePayload(val own: Int)
 @WithJS2HostBridge
 @WithHost2JSBridge
 data class PrivateDefaultsPayload(val a: Int)
+
+/**
+ * The sending half of the mutable-body-field pair: this tree declares no `extra` at all, so whatever
+ * the receiver's own initializer says is what has to arrive. The other tree adds `var extra` and
+ * prints it, which turns "absent" into a readable value instead of a crash — the state no
+ * single-module test can produce, because a host always sends the fields its own declaration has.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+class MutableBodyPayload(val a: Int) {
+  override fun toString(): String = "MutableBodyPayload(a=$a)"
+}

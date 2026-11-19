@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JsModuleKind
 import org.jetbrains.kotlin.gradle.plugin.PLUGIN_CLASSPATH_CONFIGURATION_NAME
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 import org.jetbrains.kotlin.gradle.tasks.KotlinNativeCompile
 import java.util.Base64
@@ -20,6 +21,21 @@ val cliRuntimeClasspath: Configuration by configurations.creating {
 }
 dependencies {
   add("cliRuntimeClasspath", project(":zipline-cli"))
+}
+
+// Declared, not inherited: the guest bundle this module embeds and the C / Kotlin/Native bridge
+// sources it compiles against come out of the SAME plugin jar, and a mismatch is not a build error
+// but a test that quietly exercises half-built bridges (a guest whose factories the host cannot
+// find, or converters whose mask packing predates the guest's). KGP hashes the compiler-plugin
+// classpath on its own, which is why nothing here is known to be broken; the skew matrix reads
+// another module's generated bundle, so the dependency is stated here rather than trusted.
+val bridgePluginClasspath: Configuration by configurations.creating {
+  isCanBeConsumed = false
+  isCanBeResolved = true
+  description = "The bridge compiler plugin, resolved so its contents can be a declared compile input."
+}
+dependencies {
+  add("bridgePluginClasspath", project(":zipline-bridge-kotlin-plugin"))
 }
 
 /** The other tree's generated guest holder; see the cross wiring below. */
@@ -134,6 +150,12 @@ kotlin {
 }
 
 tasks {
+
+  withType<KotlinCompilationTask<*>>().configureEach {
+    inputs.files(bridgePluginClasspath)
+      .withPropertyName("ziplineBridgePlugin")
+      .withNormalizer(ClasspathNormalizer::class)
+  }
   withType<KotlinJvmCompile>().configureEach {
     compilerOptions.freeCompilerArgs.addAll(
       "-P", "plugin:$bridgePluginId:cOutputDir=${bridgeCOutputDir.get().asFile}",

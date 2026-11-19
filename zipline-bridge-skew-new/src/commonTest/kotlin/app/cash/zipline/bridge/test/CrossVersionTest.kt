@@ -445,6 +445,18 @@ class CrossVersionTest {
     )
   }
 
+  /**
+   * The same rule, on the host: this host declares `extra`, the old guest never sends it, and the
+   * host's own initializer stands. Both directions of a mutable body field are therefore presence
+   * gated and never write over a receiver's own value with nothing — which is the parity the guest
+   * side needed, and why the fix went to the guest factory rather than to a special case.
+   */
+  @Test fun guestToHost_mutableBodyAbsentKeepsTheHostsOwnValue() = withOldGuest { host, id ->
+    assertObserved("js2host/mutable-body/absent", "MutableBodyPayload(a=11, extra=guest-default)") {
+      host.evaluateOne(provide("provideMutableBody", id))
+    }
+  }
+
   /** The old guest declares no `extra`, so the value is ignored — and ignored quietly, as an extra field. */
   @Test fun hostToGuest_mutableBodyIgnoredByOldGuest() = withOldGuest { host, _ ->
     assertObserved("host2js/mutable-body/ignored", "7") {

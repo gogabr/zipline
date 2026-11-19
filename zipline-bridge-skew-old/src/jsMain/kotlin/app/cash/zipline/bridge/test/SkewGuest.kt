@@ -125,6 +125,9 @@ fun provideWideDefaults(): WideDefaults = WideDefaults()
 @JsExport
 fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, d = 9)
 
+@JsExport
+fun provideMutableBody(): MutableBodyPayload = MutableBodyPayload(a = 11)
+
 @JsExport fun readBackMutableBody(p: MutableBodyPayload): String = "${p.a}"
 
 @JsExport fun readBackPrivateDefaults(p: PrivateDefaultsPayload): String = "${p.a}"

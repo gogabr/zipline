@@ -135,6 +135,12 @@ fun readBackWideDefaults(p: WideDefaults): String = p.toString()
 fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, b = "bb", c = 3.5, d = 9, twin = 55)
 
 @JsExport
+fun provideNarrowDefaults(): NarrowDefaultsPayload = NarrowDefaultsPayload(b = 11, s = 5, c = 'q')
+
+@JsExport
+fun readBackNarrowDefaults(p: NarrowDefaultsPayload): String = "${p.b}|${p.s}|${p.c}"
+
+@JsExport
 fun readBackMutableBody(p: MutableBodyPayload): String = "${p.a}|${p.extra}"
 
 @JsExport

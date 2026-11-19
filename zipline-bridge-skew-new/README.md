@@ -138,8 +138,17 @@ class here had a mutable body field until it was the subject of a row.
 
 `control_hostToGuest_mutableBodyPresent` in `Host2JsBridgeEndToEndTest` covers the same rule with four
 field types (`String`, `List<String>`, a `@JvmInline` wrapper, `Int`), because the absence-tolerant
-reads do not answer uniformly: null for the reference-typed ones, zero for the numeric one. The same
-property arriving *from* a guest is a host-side question — see the `js2host/mutable-body` rows.
+reads do not answer uniformly: null for the reference-typed ones, zero for the numeric one. The same property arriving *from* a
+guest is the host's own version of the same decision, and it used to be a divergence: with the old
+guest sending only `a`, the JVM host answered `MutableBodyPayload(a=11, extra=guest-default)` and the
+Kotlin/Native host refused the payload outright —
+`host bridge: app.cash.zipline.bridge.test.MutableBodyPayload.extra expects a string but the guest
+sent undefined`. Its tolerance was keyed to the flag word (`hasDefault` *and* a constructor parameter)
+rather than to the declaration. Both hosts now answer the same way, which is what the row pins:
+
+| | direction | expectation |
+| --- | --- | --- |
+| `js2host/mutable-body/absent` | old guest (no such property) → new host | `MutableBodyPayload(a=11, extra=guest-default)` on both hosts |
 
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.

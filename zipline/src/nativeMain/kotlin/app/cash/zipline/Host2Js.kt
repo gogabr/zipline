@@ -241,6 +241,22 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
 
     is Long -> kotlinLongToJs(ctx, value)
 
+    // Narrow and unsigned scalars reach the guest as numbers, as the array arms below already do for
+    // `ByteArray`/`CharArray`/`ShortArray`. The rule is that the *bits* travel and the receiver
+    // reinterprets them, which is what a `UInt` field of a bridged class already does on the
+    // generated route and what the JNI host does for the same values: `UByte(200u)` crosses as the
+    // byte `-56`, not as `200`. Zero-extending here instead would have made the two hosts put
+    // different numbers on the wire for one payload.
+    //
+    // `ULong` keeps `Long`'s boxed low/high representation, so its 64 bits survive unchanged.
+    is Byte -> newJsInt(ctx, value.toInt())
+    is Short -> newJsInt(ctx, value.toInt())
+    is Char -> newJsInt(ctx, value.code)
+    is UByte -> newJsInt(ctx, value.toByte().toInt())
+    is UShort -> newJsInt(ctx, value.toShort().toInt())
+    is UInt -> newJsInt(ctx, value.toInt())
+    is ULong -> kotlinLongToJs(ctx, value.toLong())
+
     is String -> {
       val handle = HermesBridge_createString(ctx, value)
       if (handle < 0) error("HOST2JS: failed to create a JS string")

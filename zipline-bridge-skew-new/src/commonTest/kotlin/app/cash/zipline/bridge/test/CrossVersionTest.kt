@@ -457,17 +457,22 @@ class CrossVersionTest {
     }
   }
 
-  /** `b` arrives; `s` and `c` are this host's to evaluate, a `Short` and a `Char` over the flag word. */
+  /**
+   * `b` arrives; `s`, `c` and `u` are this host's to evaluate over the flag word. `u` is the one
+   * that needed a placeholder of its own: an unsigned type has no IR constant, because it is an
+   * inline class, so the generated call has to build `UInt(0)` -- an expression that must compile
+   * even though the flag word guarantees it is never read.
+   */
   @Test fun guestToHost_narrowScalarDefaults() = withOldGuest { host, id ->
-    assertObserved("js2host/narrow-defaults/absent", "NarrowDefaultsPayload(b=11, s=9, c=z)") {
+    assertObserved("js2host/narrow-defaults/absent", "NarrowDefaultsPayload(b=11, s=9, c=z, u=4)") {
       host.evaluateOne(provide("provideNarrowDefaults", id))
     }
   }
 
-  /** No skew: the guest sends all three, so nothing is consulted on either side. */
+  /** No skew: the guest sends all four, so nothing is consulted on either side. */
   @Test fun control_guestToHost_narrowScalars() = withNewGuest { host, id ->
     assertEquals(
-      "NarrowDefaultsPayload(b=11, s=5, c=q)",
+      "NarrowDefaultsPayload(b=11, s=5, c=q, u=6)",
       host.evaluateOne(provide("provideNarrowDefaults", id)).toString(),
     )
   }
@@ -475,15 +480,15 @@ class CrossVersionTest {
   /** The old guest declares only `b`, so the two extra narrow scalars are ignored as any extra is. */
   @Test fun hostToGuest_narrowScalarsIgnoredByOldGuest() = withOldGuest { host, _ ->
     assertObserved("host2js/narrow-defaults/ignored", "7") {
-      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q'))
+      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q', u = 6u))
     }
   }
 
-  /** No skew: all three cross, each narrowed back to the type the property declares. */
+  /** No skew: all four cross, each narrowed back to the type the property declares. */
   @Test fun control_hostToGuest_narrowScalars() = withNewGuest { host, _ ->
     assertEquals(
-      "7|5|q",
-      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q')),
+      "7|5|q|6",
+      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q', u = 6u)),
     )
   }
 

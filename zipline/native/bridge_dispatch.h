@@ -1085,6 +1085,45 @@ static inline jsi::Value jsiHost2JsAnyToJs(JNIEnv *env, jsi::Runtime &rt, jobjec
     return result;
   }
 
+  // Kotlin's unsigned scalars are inline classes, so boxed in an `Any` position they arrive as
+  // kotlin.UInt, kotlin.ULong, kotlin.UByte and kotlin.UShort objects. None of them has a
+  // `convertToJs` member, so they reached the virtual dispatch at the bottom of this function and
+  // the host answered `NoSuchMethodError: Lkotlin/UInt;.convertToJs(J)J` -- true, but useless to
+  // whoever saw it. `unbox-impl` is the accessor the compiler generates to unwrap the box, and the
+  // number it returns is the signed bit pattern: the same thing the guest reinterprets on the way
+  // in for a `UInt` field that the generated converter sent, so both routes arrive at one value.
+  if (isInstanceOf("kotlin/UInt")) {
+    jsi::Value result = scalar("kotlin/UInt", "unbox-impl", "()I");
+    env->DeleteLocalRef(objClass);
+    return result;
+  }
+  if (isInstanceOf("kotlin/UByte")) {
+    jsi::Value result = scalar("kotlin/UByte", "unbox-impl", "()B");
+    env->DeleteLocalRef(objClass);
+    return result;
+  }
+  if (isInstanceOf("kotlin/UShort")) {
+    jsi::Value result = scalar("kotlin/UShort", "unbox-impl", "()S");
+    env->DeleteLocalRef(objClass);
+    return result;
+  }
+  if (isInstanceOf("kotlin/ULong")) {
+    jclass unsignedLongClass = env->FindClass("kotlin/ULong");
+    jmethodID unbox = env->GetMethodID(unsignedLongClass, "unbox-impl", "()J");
+    env->DeleteLocalRef(unsignedLongClass);
+    if (env->ExceptionCheck() || unbox == nullptr) {
+      env->DeleteLocalRef(objClass);
+      return jsi::Value::undefined();
+    }
+    // Not a JS number: 64 bits do not fit one, and the `longValue`-style read the `java/lang/Long`
+    // arm above uses would quietly round away the low bits of a value like 1.8e19. Hand the guest a
+    // real Kotlin/JS `Long` carrying the same bits, which is also what the Kotlin/Native host does,
+    // so the two hosts agree on the wire for this type as well.
+    jsi::Value result = jsiHost2JsLongToJs(env, rt, env->CallLongMethod(obj, unbox));
+    env->DeleteLocalRef(objClass);
+    return result;
+  }
+
   // A Kotlin Map: two parallel arrays the guest zips into its own LinkedHashMap.
   if (isInstanceOf("java/util/Map")) {
     jclass mapClass = env->FindClass("java/util/Map");

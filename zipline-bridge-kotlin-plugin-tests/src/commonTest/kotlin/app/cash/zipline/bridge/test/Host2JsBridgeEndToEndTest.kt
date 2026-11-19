@@ -483,6 +483,69 @@ class Host2JsBridgeEndToEndTest {
   }
 
   /**
+   * Task 5.15, the construction half. A `UByte` field used to make the Kotlin/Native host's
+   * generated code fail to compile, and a `UInt` field made the same host refuse the payload before
+   * the guest ever saw it. Both hosts are expected to answer identically, so a difference between
+   * them is a bug in one host and not a documented difference.
+   */
+  @Test fun narrowAndUnsignedScalarFieldsReachTheGuest() {
+    val payload = BridgedNarrowScalarProbe(
+      b = -1,
+      s = 300,
+      c = 'Z',
+      u = 4_000_000_000u,
+      ub = 200u,
+      us = 60_000u,
+      ul = 18_000_000_000_000_000_000uL,
+    )
+    assertEquals(
+      "-1|300|Z|4000000000|200|60000|18000000000000000000",
+      host.callGuestFunction("describeNarrowScalarProbe", listOf(payload)),
+    )
+  }
+
+  @Test fun narrowAndUnsignedScalarFieldsSurviveARoundTrip() {
+    val payload = BridgedNarrowScalarProbe(
+      b = -1,
+      s = 300,
+      c = 'Z',
+      u = 4_000_000_000u,
+      ub = 200u,
+      us = 60_000u,
+      ul = 18_000_000_000_000_000_000uL,
+    )
+    assertEquals(
+      "BridgedNarrowScalarProbe(b=-1, s=300, c=Z, u=4000000000, ub=200, us=60000, ul=18000000000000000000)",
+      roundTrip(payload).toString(),
+    )
+  }
+
+  /**
+   * Task 5.15, the `Any` half. A scalar that is not a field of a bridged class crosses through the
+   * host's dynamic encoder instead of a generated one, and that encoder is a separate list of
+   * cases: it refused every one of these with `HOST2JS: no bridge for 'kotlin.UInt'` on the
+   * Kotlin/Native host.
+   *
+   * The expectation is what the guest actually receives, which is the wire form rather than the
+   * Kotlin value: `Char` crosses as its code (as `CharArray` already did), and a `UInt` above
+   * `Int.MAX_VALUE` crosses as the `Int` with the same bits, because that is the number
+   * `HermesBridge_createInt` is handed. A receiver that decodes it back into a `UInt` reinterprets
+   * those bits and gets the original value, which is what the two tests above pin.
+   */
+  @Test fun narrowAndUnsignedScalarsCrossTheDynamicPath() {
+    val seen = listOf(
+      host.callGuestFunction("describeScalarArg", listOf(-1.toByte())),
+      host.callGuestFunction("describeScalarArg", listOf(300.toShort())),
+      host.callGuestFunction("describeScalarArg", listOf('Z')),
+      host.callGuestFunction("describeScalarArg", listOf(4_000_000_000u)),
+      host.callGuestFunction("describeScalarArg", listOf(200.toUByte())),
+      host.callGuestFunction("describeScalarArg", listOf(60_000.toUShort())),
+      host.callGuestFunction("describeScalarArg", listOf(18_000_000_000_000_000_000uL)),
+    )
+    assertEquals("-1|300|90|-294967296|-56|-5536|-446744073709551616", seen.joinToString("|"))
+  }
+
+  /**
    * The same properties coming back, which is the other half of the machinery: the host's decoder
    * reads them, and a read made tolerant of absence answers with null for the reference-typed ones
    * and with zero for `count`. Assigning that blindly would corrupt the host's own state, so the

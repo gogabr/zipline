@@ -163,15 +163,43 @@ it through `bridgeChar` instead of casting it, exactly as it builds value-class 
 
 | | direction | expectation |
 | --- | --- | --- |
-| `host2js/narrow-defaults/absent` | old host (`b` only) → new guest | `11\|9\|z` — a `Short` and a `Char` from their defaults, over the same flag word an `Int` uses |
+| `host2js/narrow-defaults/absent` | old host (`b` only) → new guest | `11\|9\|z\|4` — a `Short`, a `Char` and a `UInt` from their defaults, over the same flag word an `Int` uses |
 | `host2js/narrow-defaults/ignored` | new host → old guest (`b` only) | `7` |
-| `js2host/narrow-defaults/absent` | old guest → new host | `NarrowDefaultsPayload(b=11, s=9, c=z)`, both hosts |
+| `js2host/narrow-defaults/absent` | old guest → new host | `NarrowDefaultsPayload(b=11, s=9, c=z, u=4)`, both hosts |
 
 A defaulted narrow parameter was refused before any of this could be tested: the guest factory builds
 a placeholder for every defaulted parameter and had none for a type that is neither an `Int` nor a
 reference, so it said so. The placeholders are `IrConstImpl.byte/short/char` — a real zero of the right
 type, because the expression is evaluated even though the flag word guarantees it is never read.
-Unsigned types are a different matter: no host has any support for them on the wire at all.
+
+**The unsigned scalars were a different shape of the same gap, and each host lost it differently.**
+`UInt` and `ULong` worked by luck: the native generator has wrapper arms for their underlying `Int`
+and `Long`, and `inlineWrapperChain` built the wrapper around whatever the arm read. `UByte` and
+`UShort` have no such arm, so their field fell to the narrow-scalar arm above, which produced a
+`Byte` for a `UByte` property — not a runtime failure but a build failure:
+
+    app_cash_zipline_bridge_test_BridgedUnsignedProbe_bridge_native.kt:66:49
+      Argument type mismatch: actual type is 'Byte', but 'UByte' was expected.
+
+A value that is not a field of a bridged class takes the host's *dynamic* encoder instead, and there
+neither host had a case for them: the Kotlin/Native host refused with `HOST2JS: no bridge for
+'kotlin.UInt'`, and the JNI host fell through to the `convertToJs` dispatch for annotated classes and
+answered `NoSuchMethodError: Lkotlin/UInt;.convertToJs(J)J` — true, and useless as a diagnosis. Both
+now put the same thing on the wire, which the shared end-to-end row pins for both hosts at once:
+
+    -1|300|90|-294967296|-56|-5536|-446744073709551616
+
+That is the rule "the bits travel, the receiver reinterprets them": `UByte(200u)` crosses as the byte
+`-56`, not as `200`, because that is what the box holds and what the generated route for a `UInt`
+field already did. Zero-extending on one host only would have made the two hosts disagree on the wire
+for one payload, which is worse than either choice on its own. `ULong` is the exception, because 64
+bits do not fit a JS number: both hosts hand the guest a real Kotlin/JS `Long` carrying the same bits
+(the JNI host's `java/lang/Long` arm above still answers a lossy double, which is older behaviour this
+change leaves alone).
+
+A defaulted `UInt` parameter needs a placeholder too, and an unsigned type has no constant form at
+all — it is an inline class — so the generated call builds `UInt(0)` over the wrapper's own underlying
+type, read from the wrapper's constructor rather than named again here.
 
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.

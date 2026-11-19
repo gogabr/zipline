@@ -168,6 +168,12 @@ fun echoHostValue(value: Any?): Any? = value
 fun stringifyHostValue(value: Any?): String = JSON.stringify(value)
 
 @JsExport
+fun describeNarrowScalarProbe(value: BridgedNarrowScalarProbe): String = listOf(value.b, value.s, value.c, value.u, value.ub, value.us, value.ul).joinToString("|")
+
+@JsExport
+fun describeScalarArg(value: Any?): String = "$value"
+
+@JsExport
 fun describeNarrowHolder(value: BridgedNarrowHolder): String = "${value.b}|${value.s}|${value.c}|${value.opt ?: '-'}"
 
 @JsExport

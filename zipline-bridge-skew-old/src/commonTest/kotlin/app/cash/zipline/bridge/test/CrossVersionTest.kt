@@ -466,7 +466,7 @@ class CrossVersionTest {
    * is an `Int` to the type checker).
    */
   @Test fun hostToGuest_narrowScalarDefaults() = withNewGuest { host, _ ->
-    assertObserved("host2js/narrow-defaults/absent", "11|9|z") {
+    assertObserved("host2js/narrow-defaults/absent", "11|9|z|4") {
       host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 11))
     }
   }

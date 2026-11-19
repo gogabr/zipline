@@ -855,6 +855,29 @@ private fun buildCreateFactory(
 
         "kotlin.Char" -> IrConstImpl.char(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, '\u0000')
 
+        // The unsigned ones have no IR constant at all: they are inline classes, so the "constant"
+        // is a constructor call over the signed underlying value. Zero is the only sensible
+        // placeholder, and every wrapper takes it -- `UInt(0)`, `UByte(0)` -- which beats the loud
+        // refusal below, because the flag word means the value is never read.
+        "kotlin.UInt", "kotlin.ULong", "kotlin.UByte", "kotlin.UShort" -> {
+          val wrapper = type.getClass() ?: error("unsigned placeholder for $type ($targetFqn)")
+          val constructor = wrapper.primaryConstructor
+            ?: error("no primary constructor on ${type.classFqName} ($targetFqn)")
+          // The signed type the wrapper wraps, taken from the wrapper's own parameter rather than
+          // named here, so the four types above and the types their zeros are built with cannot
+          // drift apart.
+          val underlying = constructor.parameters.single().type
+          val zero = when (type.classFqName?.asString()) {
+            "kotlin.ULong" -> IrConstImpl.long(UNDEFINED_OFFSET, UNDEFINED_OFFSET, underlying, 0L)
+            "kotlin.UByte" -> IrConstImpl.byte(UNDEFINED_OFFSET, UNDEFINED_OFFSET, underlying, 0)
+            "kotlin.UShort" -> IrConstImpl.short(UNDEFINED_OFFSET, UNDEFINED_OFFSET, underlying, 0)
+            else -> IrConstImpl.int(UNDEFINED_OFFSET, UNDEFINED_OFFSET, underlying, 0)
+          }
+          builder.irCall(constructor.symbol).apply {
+            arguments[0] = zero
+          }
+        }
+
         "kotlin.String" -> builder.irString("")
 
         else -> if (type.isMarkedNullable()) {

@@ -568,6 +568,32 @@ public class BridgedNarrowHolder(
 }
 
 /**
+ * Every scalar the wire represents as a number but the type system refuses to treat as an `Int`: the
+ * narrow ones (`Byte`, `Short`, `Char`) and the unsigned ones. Values chosen to stress sign and
+ * width — `-1` as a `Byte`, `60_000` in a `Short`-sized field, a `UInt` above `Int.MAX_VALUE`, a
+ * `ULong` above `Long.MAX_VALUE`.
+ *
+ * Task 5.15. The Kotlin/Native host did not compile at all for the `UByte` field (its generated
+ * code produced a `Byte` for a `UByte` property) and refused the `UInt` field outright when the
+ * value reached the guest as an argument (`HOST2JS: no bridge for 'kotlin.UInt'`). `UInt` and
+ * `ULong` worked by accident: the wrapper arms for their underlying `Int` and `Long` happened to
+ * exist, and `inlineWrapperChain` built the wrapper around them.
+ */
+@WithHost2JSBridge
+@WithJS2HostBridge
+public class BridgedNarrowScalarProbe(
+  public val b: Byte,
+  public val s: Short,
+  public val c: Char,
+  public val u: UInt,
+  public val ub: UByte,
+  public val us: UShort,
+  public val ul: ULong,
+) {
+  override fun toString(): String = "BridgedNarrowScalarProbe(b=$b, s=$s, c=$c, u=$u, ub=$ub, us=$us, ul=$ul)"
+}
+
+/**
  * Mutable body properties: not constructor parameters, so not in `bridgeCreate`'s signature, and
  * assignable only after construction — which means the receiver has to do the assigning, in both
  * directions. The four types are here on purpose: the absence-tolerant reads answer with null for
@@ -576,7 +602,6 @@ public class BridgedNarrowHolder(
  *
  * It bridges both ways so the round trip covers the decode as well as the construction.
  */
-
 @WithHost2JSBridge
 @WithJS2HostBridge
 public class BridgedMutableBody(public val a: Int) {

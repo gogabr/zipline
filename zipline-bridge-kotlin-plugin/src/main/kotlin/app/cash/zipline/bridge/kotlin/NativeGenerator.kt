@@ -52,6 +52,10 @@ internal val PRIMITIVE_ARRAY_ELEMENT_TYPE = mapOf(
  * only scalar fields were ever left without an arm, which is how they ended up falling through to the
  * generic decoder and answering `Any?` against a `Byte` property.
  *
+ * The same table serves the wrapper arms, where it keys on `underlyingKtType`: `UByte` and `UShort`
+ * are inline classes over `Byte` and `Short`, so they are the same conversion inside a constructor
+ * call. `UInt` and `ULong` already worked, because the `Int` and `Long` wrapper arms existed and
+ * `inlineWrapperChain` built the wrapper around them.
  */
 internal val narrowScalarConversions = mapOf(
   "kotlin.Byte" to "toByte()",
@@ -287,6 +291,11 @@ internal fun generateNativeBridgeFile(
       }
       fun freeRef(): String = "HermesBridge_freeHandle(ctx, ${field.name}Ref)"
 
+      // What a wrapper over a narrow scalar narrows its number to, if that is what this field is.
+      // Resolved once because `underlyingKtType` is nullable and the arms below would otherwise ask
+      // the map the same question twice.
+      val narrowWrapperConversion = field.underlyingKtType?.let { narrowScalarConversions[it] }
+
       when {
         field.isInline && field.underlyingKtType == "kotlin.Int" -> {
           appendLine("    ${readProperty()}")
@@ -347,6 +356,29 @@ internal fun generateNativeBridgeFile(
           appendLine("    ${freeRef()}")
         }
 
+        field.isInline && narrowWrapperConversion != null -> {
+          // A wrapper over a narrow scalar — `UByte`, `UShort`, `value class ... (val c: Char)`. The
+          // wire carries a number and the wrapper's own property wants the narrow type, so the
+          // narrowing has to land *inside* the wrapper: `inlineWrapExpression` hands whatever it is
+          // given to the constructor, and a `UByte` constructor does not accept an `Int`. The
+          // parentheses matter: `a?.toInt() ?: b.toInt()` binds the `?:` looser than the call, so
+          // without them only the second branch would be narrowed.
+          val convert = narrowWrapperConversion
+          val inner = "(JsBoxedNumberToDouble(ctx, ${field.name}Ref)?.toInt() " +
+            "?: HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()).$convert"
+          appendLine("    ${readProperty()}")
+          if (field.isNullable) {
+            appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null")
+            appendLine("        else ${inlineWrapExpression(field, inner)}")
+          } else {
+            requireTagKt(field, setOf(1, 2, 5), "a number")
+            appendLine("    val ${field.name} = ${inlineWrapExpression(field, inner)}")
+          }
+          appendLine("    ${freeRef()}")
+        }
+
+        // Ordered after the inline arms above, which claim `UByte` and `UShort` (their underlying
+        // types are `Byte` and `Short`, and `effectiveKtType` says so).
         field.effectiveKtType in narrowScalarConversions -> {
           // One map entry both selects this arm and says what the read ends with, so the arm cannot
           // claim a type the conversion does not know.

@@ -258,6 +258,7 @@ data class NarrowDefaultsPayload(
   val b: Byte,
   val s: Short = 9,
   val c: Char = 'z',
+  val u: UInt = 4u,
 )
 
 /**

@@ -951,6 +951,9 @@ configure<MavenPublishBaseExtension> {
 val copyBridgeHeaders by tasks.registering(Copy::class) {
   from("native") {
     include("bridge_dispatch.h")
+    // bridge_dispatch.h includes this one: a consumer that compiles the bundled bridge_dispatch.h
+    // needs it in the same directory, or its CMake build stops at "JniUtf8.h file not found".
+    include("JniUtf8.h")
     include("quickjs/quickjs.h")
   }
   from("native/hermes/API/jsi") {

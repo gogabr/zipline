@@ -548,6 +548,26 @@ object BridgedTestValues {
 }
 
 /**
+ * The narrow scalars: `Byte`, `Short` and `Char`, plus a nullable one. All three cross as plain
+ * numbers, which is why the gap went unseen: the JNI host reads them with
+ * `SetByteField`/`SetShortField`/`SetCharField` and writes them back with the matching getters, while
+ * the Kotlin/Native decoder had no arm for them at all — they fell through to the generic one, whose
+ * answer is `Any?` against a `Byte` property, so the generated code did not compile. `Char` needs
+ * more than an arm: Kotlin/JS makes it an inline class, so the guest cannot cast a wire number into
+ * one and has to build it (see `bridgeChar`).
+ */
+@WithHost2JSBridge
+@WithJS2HostBridge
+public class BridgedNarrowHolder(
+  public val b: Byte,
+  public val s: Short,
+  public val c: Char,
+  public val opt: Char? = null,
+) {
+  override fun toString(): String = "BridgedNarrowHolder(b=$b, s=$s, c=$c, opt=$opt)"
+}
+
+/**
  * Mutable body properties: not constructor parameters, so not in `bridgeCreate`'s signature, and
  * assignable only after construction — which means the receiver has to do the assigning, in both
  * directions. The four types are here on purpose: the absence-tolerant reads answer with null for
@@ -556,6 +576,7 @@ object BridgedTestValues {
  *
  * It bridges both ways so the round trip covers the decode as well as the construction.
  */
+
 @WithHost2JSBridge
 @WithJS2HostBridge
 public class BridgedMutableBody(public val a: Int) {

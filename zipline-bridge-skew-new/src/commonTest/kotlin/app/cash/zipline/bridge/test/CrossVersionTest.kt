@@ -457,6 +457,36 @@ class CrossVersionTest {
     }
   }
 
+  /** `b` arrives; `s` and `c` are this host's to evaluate, a `Short` and a `Char` over the flag word. */
+  @Test fun guestToHost_narrowScalarDefaults() = withOldGuest { host, id ->
+    assertObserved("js2host/narrow-defaults/absent", "NarrowDefaultsPayload(b=11, s=9, c=z)") {
+      host.evaluateOne(provide("provideNarrowDefaults", id))
+    }
+  }
+
+  /** No skew: the guest sends all three, so nothing is consulted on either side. */
+  @Test fun control_guestToHost_narrowScalars() = withNewGuest { host, id ->
+    assertEquals(
+      "NarrowDefaultsPayload(b=11, s=5, c=q)",
+      host.evaluateOne(provide("provideNarrowDefaults", id)).toString(),
+    )
+  }
+
+  /** The old guest declares only `b`, so the two extra narrow scalars are ignored as any extra is. */
+  @Test fun hostToGuest_narrowScalarsIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/narrow-defaults/ignored", "7") {
+      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q'))
+    }
+  }
+
+  /** No skew: all three cross, each narrowed back to the type the property declares. */
+  @Test fun control_hostToGuest_narrowScalars() = withNewGuest { host, _ ->
+    assertEquals(
+      "7|5|q",
+      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 7, s = 5, c = 'q')),
+    )
+  }
+
   /** The old guest declares no `extra`, so the value is ignored — and ignored quietly, as an extra field. */
   @Test fun hostToGuest_mutableBodyIgnoredByOldGuest() = withOldGuest { host, _ ->
     assertObserved("host2js/mutable-body/ignored", "7") {

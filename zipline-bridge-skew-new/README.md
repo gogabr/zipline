@@ -150,6 +150,29 @@ rather than to the declaration. Both hosts now answer the same way, which is wha
 | --- | --- | --- |
 | `js2host/mutable-body/absent` | old guest (no such property) → new host | `MutableBodyPayload(a=11, extra=guest-default)` on both hosts |
 
+**`Byte`, `Short` and `Char` cross as numbers, and only one host could decode them.** They had no
+entry in any fixture, which is how this stayed hidden: the JNI side has had
+`SetByteField`/`SetShortField`/`SetCharField` (and the matching getters) from the start, while the
+Kotlin/Native decoder's scalar arms stop at `Int`, `Long`, `Float`, `Double`, `Boolean` — so a narrow
+field fell through to the generic decoder, whose answer is `Any?`, and the *generated code did not
+compile*: a bridged class could declare a `Byte` field all along, and the native host would fail at
+build time rather than at a boundary. `Char` needs one more thing, because Kotlin/JS has `Char` as an
+inline class: `bridgeGet(...) as Char` on a wire number answers garbage — measured, a host's `'z'`
+arrived as `'\u0000'` and a `Char?`'s `'X'` as `null`, with no failure anywhere — so the guest builds
+it through `bridgeChar` instead of casting it, exactly as it builds value-class wrappers.
+
+| | direction | expectation |
+| --- | --- | --- |
+| `host2js/narrow-defaults/absent` | old host (`b` only) → new guest | `11\|9\|z` — a `Short` and a `Char` from their defaults, over the same flag word an `Int` uses |
+| `host2js/narrow-defaults/ignored` | new host → old guest (`b` only) | `7` |
+| `js2host/narrow-defaults/absent` | old guest → new host | `NarrowDefaultsPayload(b=11, s=9, c=z)`, both hosts |
+
+A defaulted narrow parameter was refused before any of this could be tested: the guest factory builds
+a placeholder for every defaulted parameter and had none for a type that is neither an `Int` nor a
+reference, so it said so. The placeholders are `IrConstImpl.byte/short/char` — a real zero of the right
+type, because the expression is evaluated even though the flag word guarantees it is never read.
+Unsigned types are a different matter: no host has any support for them on the wire at all.
+
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.
 

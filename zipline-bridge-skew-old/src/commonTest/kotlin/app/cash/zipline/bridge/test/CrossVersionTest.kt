@@ -460,6 +460,18 @@ class CrossVersionTest {
   }
 
   /**
+   * This host has one narrow parameter; the new guest declares three, two of them defaulted, and
+   * evaluates both over the flag word — the same machinery an `Int` uses, now with the placeholder
+   * each narrow type needs (`Byte`, `Short` and `Char` are all numbers on the wire and none of them
+   * is an `Int` to the type checker).
+   */
+  @Test fun hostToGuest_narrowScalarDefaults() = withNewGuest { host, _ ->
+    assertObserved("host2js/narrow-defaults/absent", "11|9|z") {
+      host.read("readBackNarrowDefaults", NarrowDefaultsPayload(b = 11))
+    }
+  }
+
+  /**
    * This host has no `extra` at all, so nothing arrives for it and the new guest's own initializer
    * stands. That is the boundary the assignment must respect: writing `undefined` because a peer is
    * older than the property would turn a version difference into corrupted state.

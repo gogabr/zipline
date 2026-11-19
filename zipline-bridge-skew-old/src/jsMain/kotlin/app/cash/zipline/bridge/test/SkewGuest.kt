@@ -128,6 +128,11 @@ fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, d = 9)
 @JsExport
 fun provideMutableBody(): MutableBodyPayload = MutableBodyPayload(a = 11)
 
+@JsExport
+fun provideNarrowDefaults(): NarrowDefaultsPayload = NarrowDefaultsPayload(b = 11)
+
+@JsExport fun readBackNarrowDefaults(p: NarrowDefaultsPayload): String = "${p.b}"
+
 @JsExport fun readBackMutableBody(p: MutableBodyPayload): String = "${p.a}"
 
 @JsExport fun readBackPrivateDefaults(p: PrivateDefaultsPayload): String = "${p.a}"

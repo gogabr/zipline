@@ -127,8 +127,7 @@ public fun publishValueOps() {
  * module's compile classpath, exactly like [publishValueOps]: an unresolvable reference here must be a
  * compile error in a module that names this library, not a missing property at run time.
  */
-public fun bridgeHas(target: Any?, key: String): Boolean =
-  js("Object.prototype.hasOwnProperty.call(target, key)")
+public fun bridgeHas(target: Any?, key: String): Boolean = js("Object.prototype.hasOwnProperty.call(target, key)")
 
 /**
  * Read [key] off the host's payload object, for the same factory.
@@ -140,3 +139,18 @@ public fun bridgeHas(target: Any?, key: String): Boolean =
  */
 public fun bridgeGet(target: Any?, key: String): Any? = js("target[key]")
 
+/**
+ * A wire number into a `Char`, for the same factory.
+ *
+ * A cast will not do it. Kotlin/JS has no `Byte` or `Short` at run time — those are numbers, and
+ * `bridgeGet(...) as Byte` costs nothing — but `Char` is an inline class there, so casting a number to
+ * it answers with something the constructor cannot use: measured, a host's `'z'` arrived as
+ * `'\u0000'` and a `'X'` under `Char?` as `null`, silently, with no failure anywhere on the way.
+ * So the code point is taken out of the number and the wrapper built, which is what `Int.toChar()`
+ * does with the compiler's own knowledge of the representation — the same reason the factory builds
+ * value-class wrappers rather than casting to them.
+ *
+ * `Byte` and `Short` deliberately have no counterpart here: the cast is correct for them, and a helper
+ * would only obscure which of the three types needs building.
+ */
+public fun bridgeChar(value: Any?): Char = value!!.unsafeCast<Double>().toInt().toChar()

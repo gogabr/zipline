@@ -239,3 +239,14 @@ data class PrivateDefaultsPayload(val a: Int)
 class MutableBodyPayload(val a: Int) {
   override fun toString(): String = "MutableBodyPayload(a=$a)"
 }
+
+/**
+ * The sending half of the narrow-scalar pair: `Byte`, `Short` and `Char`, and this tree has only the
+ * `Byte`. Kotlin/JS holds all three as numbers, and until the native decoder grew arms for them a
+ * `Char` or `Short` field made the generated Kotlin fail to compile — a bridged class could declare
+ * them and only discover it on the host that had no arm. The defaults this tree omits are what the
+ * other tree has to evaluate, over the same flag word that carries an `Int`.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class NarrowDefaultsPayload(val b: Byte)

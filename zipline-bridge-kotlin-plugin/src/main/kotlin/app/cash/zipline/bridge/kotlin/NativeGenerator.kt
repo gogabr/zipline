@@ -43,6 +43,22 @@ internal val PRIMITIVE_ARRAY_ELEMENT_TYPE = mapOf(
   "kotlin.LongArray" to "kotlin.Long",
 )
 
+/**
+ * Narrow integer and character scalars, and the narrowing each property needs after the shared read.
+ * All three cross as a plain JS number — that is what the guest's runtime holds them as, and what the
+ * JNI host writes them from, via `jsi_value_get_int` into `SetByteField`/`SetShortField`/`SetCharField`
+ * — so the read is the Int read followed by whatever the property's own type asks for. The array
+ * element conversions below already read them exactly this way (see [PRIMITIVE_ARRAY_ELEMENT_TYPE]);
+ * only scalar fields were ever left without an arm, which is how they ended up falling through to the
+ * generic decoder and answering `Any?` against a `Byte` property.
+ *
+ */
+internal val narrowScalarConversions = mapOf(
+  "kotlin.Byte" to "toByte()",
+  "kotlin.Short" to "toShort()",
+  "kotlin.Char" to "toChar()",
+)
+
 /** Wraps a converted primitive into the full inline wrapper chain (Outer(Inner(value))). */
 private fun inlineWrapExpression(field: FieldInfo, innerExpr: String): String {
   val chain = field.inlineWrapperChain.map { it.substringAfterLast(".") }
@@ -327,6 +343,21 @@ internal fun generateNativeBridgeFile(
           } else {
             requireTagKt(field, setOf(1, 2), "a number")
             appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt()")
+          }
+          appendLine("    ${freeRef()}")
+        }
+
+        field.effectiveKtType in narrowScalarConversions -> {
+          // One map entry both selects this arm and says what the read ends with, so the arm cannot
+          // claim a type the conversion does not know.
+          val convert = narrowScalarConversions.getValue(field.effectiveKtType)
+          appendLine("    ${readProperty()}")
+          if (field.isNullable) {
+            nullableReads += field.name
+            appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt().$convert")
+          } else {
+            requireTagKt(field, setOf(1, 2), "a number")
+            appendLine("    val ${field.name} = HermesBridge_getValueDouble(ctx, ${field.name}Ref).toInt().$convert")
           }
           appendLine("    ${freeRef()}")
         }

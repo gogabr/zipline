@@ -460,11 +460,43 @@ class Host2JsBridgeEndToEndTest {
   }
 
   /**
+   * `Byte`, `Short` and `Char` into the guest. All three are numbers on the wire, so what is being
+   * pinned is not the encoding but the decoding: the receiver has to narrow back to the type the
+   * property declares, and the guest's runtime — which calls them numbers too — cannot be the reason
+   * one host manages it and the other cannot.
+   */
+  @Test
+  fun narrowScalarFieldsReachTheGuest() {
+    val payload = BridgedNarrowHolder(b = 7, s = -9, c = 'z', opt = 'X')
+    assertEquals("7|-9|z|X", host.callGuestFunction("describeNarrowHolder", listOf(payload)))
+  }
+
+  @Test
+  fun narrowScalarFieldsAbsentFromTheGuestSide() {
+    // The nullable one is the interesting case: absent-as-null has to stay distinguishable from the
+    // zero a narrow read answers with, or a missing `Char` would silently become `'\u0000'`.
+    //
+    // `é` rather than an ASCII letter, because the value crosses as a code point and the round trip
+    // through `Int.toChar()` is only tested by a number that is not also a small integer in disguise.
+    val payload = BridgedNarrowHolder(b = -1, s = 2, c = 'é')
+    assertEquals("-1|2|é|-", host.callGuestFunction("describeNarrowHolder", listOf(payload)))
+  }
+
+  /**
    * The same properties coming back, which is the other half of the machinery: the host's decoder
    * reads them, and a read made tolerant of absence answers with null for the reference-typed ones
    * and with zero for `count`. Assigning that blindly would corrupt the host's own state, so the
    * decode is presence-gated exactly like the guest's factory is.
    */
+  @Test
+  fun narrowScalarFieldsSurviveARoundTrip() {
+    val payload = BridgedNarrowHolder(b = 7, s = -9, c = 'z', opt = 'X')
+    assertEquals(
+      "BridgedNarrowHolder(b=7, s=-9, c=z, opt=X)",
+      roundTrip(payload).toString(),
+    )
+  }
+
   @Test
   fun mutableBodyFieldsSurviveARoundTrip() {
     val payload = BridgedMutableBody(a = 3).apply {

@@ -247,6 +247,20 @@ class BaseStatePayload(val own: Int = 3) : BaseStateHost()
 private fun hiddenMagic(): Int = 4242
 
 /**
+ * The receiving half of the narrow-scalar pair. `s` and `c` are defaulted, so this is also the row
+ * that puts a `Short` and a `Char` through the flag word: a defaulted narrow parameter used to be
+ * refused outright by the guest factory, which had no placeholder for a type that is neither an `Int`
+ * nor a reference.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class NarrowDefaultsPayload(
+  val b: Byte,
+  val s: Short = 9,
+  val c: Char = 'z',
+)
+
+/**
  * The receiving half of the mutable-body-field pair: `extra` is a mutable body property, so it is not
  * a constructor parameter and `bridgeCreate`'s signature cannot carry it — the factory assigns it
  * after construction, only when the carrier actually has it. Both directions are exercised: as a

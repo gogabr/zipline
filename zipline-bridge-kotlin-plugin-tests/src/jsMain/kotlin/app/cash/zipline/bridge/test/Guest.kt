@@ -168,4 +168,7 @@ fun echoHostValue(value: Any?): Any? = value
 fun stringifyHostValue(value: Any?): String = JSON.stringify(value)
 
 @JsExport
+fun describeNarrowHolder(value: BridgedNarrowHolder): String = "${value.b}|${value.s}|${value.c}|${value.opt ?: '-'}"
+
+@JsExport
 fun describeMutableBody(value: BridgedMutableBody): String = "${value.a}|${value.extra}|${value.tags.joinToString("+")}|${value.w.raw}|${value.count}"

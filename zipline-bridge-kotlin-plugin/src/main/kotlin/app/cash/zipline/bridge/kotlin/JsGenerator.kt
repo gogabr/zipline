@@ -664,6 +664,9 @@ private fun buildCreateFactory(
   val bridgeGetSymbol = finder.findFunctions(
     CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeGet")),
   ).firstOrNull() ?: error("bridgeGet not found on the compile classpath ($targetFqn)")
+  val bridgeCharSymbol = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeChar")),
+  ).firstOrNull() ?: error("bridgeChar not found on the compile classpath ($targetFqn)")
   val errorSymbol = finder.findFunctions(
     CallableId(FqName("kotlin"), Name.identifier("error")),
   ).firstOrNull { fn -> fn.owner.parameters.count { it.kind == IrParameterKind.Regular } == 1 }
@@ -780,19 +783,43 @@ private fun buildCreateFactory(
      * and the payload comes back wrong on the return leg, which is where it surfaces. So the factory
      * builds the wrapper chain itself.
      */
+    // The leaf value of a wire read: the number/boolean/string a payload carries, in the type the
+    // property declares. `Char` is the one that cannot be cast into existence — see `bridgeChar` —
+    // and it is asked for here rather than at each call site so that a value class *wrapping* a
+    // `Char` builds its wrapper over a real `Char`. (A KDoc would not be allowed on a local fun.)
+    fun leafValue(type: IrType, jsName: String): IrExpression = when (type.classFqName?.asString()) {
+      "kotlin.Char" -> {
+        val built = builder.irCall(bridgeCharSymbol).apply {
+          arguments[bridgeCharSymbol.owner.parameters.last()] = readRaw(jsName)
+        }
+        if (!type.isMarkedNullable()) {
+          built
+        } else {
+          builder.irIfThenElse(
+            type = type,
+            condition = builder.irEquals(readRaw(jsName), builder.irNull(pluginContext.irBuiltIns.anyNType)),
+            thenPart = builder.irNull(type),
+            elsePart = built,
+          )
+        }
+      }
+
+      else -> builder.irImplicitCast(readRaw(jsName), type)
+    }
+
     fun readAs(type: IrType, jsName: String): IrExpression {
-      if (wrapperChain(type).isEmpty()) return builder.irImplicitCast(readRaw(jsName), type)
+      if (wrapperChain(type).isEmpty()) return leafValue(type, jsName)
       val crossing = crossingType(type).let {
         if (type.isMarkedNullable() && !it.isMarkedNullable()) it.makeNullable() else it
       }
-      if (!type.isMarkedNullable()) return wrapChain(type, builder.irImplicitCast(readRaw(jsName), crossing))
+      if (!type.isMarkedNullable()) return wrapChain(type, leafValue(crossing, jsName))
       // Read twice rather than binding a temporary: this body builds expressions, and a variable
       // declaration is a statement. Two property reads of one field have no observable order.
       return builder.irIfThenElse(
         type = type,
         condition = builder.irEquals(readRaw(jsName), builder.irNull(pluginContext.irBuiltIns.anyNType)),
         thenPart = builder.irNull(type),
-        elsePart = wrapChain(type, builder.irImplicitCast(readRaw(jsName), crossing)),
+        elsePart = wrapChain(type, leafValue(crossing, jsName)),
       )
     }
 
@@ -818,6 +845,15 @@ private fun buildCreateFactory(
         "kotlin.Float" -> IrConstImpl.float(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0.0f)
 
         "kotlin.Boolean" -> builder.irBoolean(false)
+
+        // The narrow scalars. All three are numbers on the wire and none of them is an `Int` to the
+        // type checker, so each gets its own zero of the right type; the flag word makes sure nobody
+        // reads it, but the expression is still evaluated, which rules out anything that could throw.
+        "kotlin.Byte" -> IrConstImpl.byte(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0)
+
+        "kotlin.Short" -> IrConstImpl.short(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, 0)
+
+        "kotlin.Char" -> IrConstImpl.char(UNDEFINED_OFFSET, UNDEFINED_OFFSET, type, '\u0000')
 
         "kotlin.String" -> builder.irString("")
 

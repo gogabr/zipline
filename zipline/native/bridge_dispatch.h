@@ -763,6 +763,38 @@ static inline jsi::Value jsiHost2JsFindCreateFactory(jsi::Runtime &rt, const cha
 }
 
 /**
+ * What the host could actually see when a create-factory was missing, appended to the report.
+ *
+ * "the guest provides no create_X" covers three different failures that the message alone cannot tell
+ * apart: no module published a factories object at all (the warm-up hook never ran, or the host never
+ * installed the hook and the guest's tolerance swallowed that), a factories object is there but empty
+ * (a registration arrived and contributed nothing), or a perfectly good object came from other modules
+ * while this class's module never registered. The prototype question separates the last of those, since
+ * prototypes reach the host by a different route than the factories do.
+ */
+static inline std::string jsiHost2JsRegistrationState(jsi::Runtime &rt, const char *fq) {
+  std::string out;
+  jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);
+  if (!factories.isObject()) {
+    out = "the factories global is absent (no module published one, or __bridgeRegisterRuntime was "
+          "never installed on this runtime)";
+  } else {
+    jsi::Value newLong = factories.asObject(rt).getProperty(rt, "newLong");
+    if (newLong.isObject() && newLong.asObject(rt).isFunction(rt)) {
+      out = "a factories object is present and its newLong is reachable, so some module registered "
+            "and this class's module did not";
+    } else {
+      out = "a factories object is present but its newLong is not reachable, so a registration "
+            "arrived empty";
+    }
+  }
+  out += jsiHost2JsPrototype(rt, fq).isObject()
+             ? "; this class registered its prototype"
+             : "; this class registered no prototype";
+  return out;
+}
+
+/**
  * Hand the host's fields object to the guest's `create_<name>` and return the instance the guest built
  * from it. The guest's constructor runs, defaults and all; the object's prototype is not consulted
  * beyond own-property reads.
@@ -777,7 +809,8 @@ static inline jsi::Value jsiHost2JsCallCreateFactory(
   if (factory.isUndefined()) {
     std::string message = std::string("host2js: the guest provides no ") + name + " for " + fq +
                           "; this class shape gets no create-factory (a guest built without "
-                          "create-factories, or a value-class constructor parameter)";
+                          "create-factories, or a value-class constructor parameter). What the host "
+                          "could see: " + jsiHost2JsRegistrationState(rt, fq);
     env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), message.c_str());
     return jsi::Value::undefined();
   }

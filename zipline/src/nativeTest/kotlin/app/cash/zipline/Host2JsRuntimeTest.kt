@@ -343,6 +343,41 @@ class Host2JsRuntimeTest {
   }
 
   /**
+   * "the guest provides no create_X" covers several different failures, so the report has to say which
+   * one: whether any module published factories at all, and whether the class in question registered a
+   * prototype -- which is the difference between "this class has no factory" and "this class's module
+   * never registered anything", since prototypes and factories reach the host by different routes.
+   */
+  @Test
+  fun `a missing create-factory says what the host could see`() {
+    publishGuestRuntime()
+
+    // A class the guest never mentioned at all: factories are published, and this class registered
+    // neither a prototype nor a factory.
+    val fields = newJsObject(context, "com.example.Host2JsEcho")
+    try {
+      val e = assertFailsWith<IllegalStateException> {
+        host2JsCallCreateFactory(context, "com.example.NotPublished", "create_com_example_NotPublished", fields)
+      }
+      assertTrue(e.message!!.contains("newLong is reachable"), "was: " + e.message)
+      assertTrue(e.message!!.contains("registered no prototype"), "was: " + e.message)
+
+      // A class the guest did register, whose shape simply has no factory of that name.
+      val e2 = assertFailsWith<IllegalStateException> {
+        host2JsCallCreateFactory(
+          context,
+          "com.example.Host2JsEcho",
+          "create_com_example_Host2JsEcho_absent",
+          fields,
+        )
+      }
+      assertTrue(e2.message!!.contains("registered its prototype"), "was: " + e2.message)
+    } finally {
+      HermesBridge_freeHandle(context, fields)
+    }
+  }
+
+  /**
    * Every bridged module registers its own factories object when the host warms it up, so the hook has
    * to merge. Replace the global and the last module loaded owns it: the host then reports
    * "the guest provides no create_..." for every class whose module loaded earlier -- which is what a

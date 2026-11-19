@@ -87,7 +87,7 @@ public fun host2JsCallCreateFactory(
     error(
       "HOST2JS: the guest provides no $factoryName for $fqName; this class shape gets no " +
         "create-factory (a guest built without create-factories, or a value-class constructor " +
-        "parameter)",
+        "parameter). What the host could see: ${host2JsRegistrationState(ctx, fqName)}",
     )
   }
   val instance = callOnFactory(ctx, factory, intArrayOf(fieldsHandle))
@@ -146,6 +146,42 @@ private fun callFactory(ctx: COpaquePointer?, name: String, args: IntArray): Int
   val result = callOnFactory(ctx, factory, args)
   if (result < 0) error("HOST2JS: the guest $name runtime factory failed")
   return result
+}
+
+/**
+ * What the host could actually see when a create-factory was missing, appended to the report: three
+ * different failures answer to "the guest provides no create_X" -- no module published a factories
+ * object, a registration arrived empty, or other modules registered and this class's module did not.
+ * The prototype question separates the last one, because prototypes reach the host by a different route
+ * than the factories do. The JNI host says the same thing in `bridge_dispatch.h`.
+ */
+private fun host2JsRegistrationState(ctx: COpaquePointer?, fqName: String): String {
+  val factories = HermesBridge_getProperty(ctx, 0, "__zipline_bridgeFactories")
+  val published =
+    if (factories < 0) {
+      "the factories global is absent (no module published one, or __bridgeRegisterRuntime was never " +
+        "installed on this runtime)"
+    } else {
+      val newLong = HermesBridge_getProperty(ctx, factories, "newLong")
+      HermesBridge_freeHandle(ctx, factories)
+      if (newLong >= 0) {
+        "a factories object is present and its newLong is reachable, so some module registered and " +
+          "this class's module did not"
+      } else {
+        "a factories object is present but its newLong is not reachable, so a registration arrived " +
+          "empty"
+      }
+    }
+  val prototypes = HermesBridge_getProperty(ctx, 0, "__zipline_bridgePrototypes")
+  val registered =
+    if (prototypes < 0) {
+      "the prototypes global is absent"
+    } else {
+      val proto = HermesBridge_getProperty(ctx, prototypes, fqName)
+      HermesBridge_freeHandle(ctx, prototypes)
+      if (proto >= 0) "this class registered its prototype" else "this class registered no prototype"
+    }
+  return "$published; $registered"
 }
 
 /**

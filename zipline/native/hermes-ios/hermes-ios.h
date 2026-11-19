@@ -204,6 +204,12 @@ int HermesBridge_getValueBool(void* context, int handle);
 /** Get the string value from a handle. Returns malloc'd string; caller frees with free(). */
 char* HermesBridge_getValueString(void* context, int handle);
 
+/** Get the string value as standard UTF-8 **with its length**, so that a NUL inside the value
+ *  survives: `HermesBridge_getValueString` keeps only the bytes before the first NUL because that
+ *  is all a NUL-terminated `char*` can carry. Returns malloc'd bytes; caller frees with free().
+ *  Writes 0 to *outLength and returns NULL when the value is not a string. */
+char* HermesBridge_getValueStringUtf8(void* context, int handle, int* outLength);
+
 /** Release a handle. Does NOT free memory; just clears the slot. */
 void HermesBridge_freeHandle(void* context, int handle);
 
@@ -251,6 +257,16 @@ int HermesBridge_createDouble(void* context, double value);
 int HermesBridge_createBool(void* context, int value);
 /** Create a string handle from UTF-8 bytes. */
 int HermesBridge_createString(void* context, const char* utf8);
+
+/** Create a string handle from exactly `length` UTF-8 bytes. Unlike `HermesBridge_createString`
+ *  this does not stop at a NUL, which is the only way a Kotlin `String` containing one can reach
+ *  the guest: the caller encodes to a byte array and pins it, because cinterop would otherwise
+ *  convert the `String` argument with `toCString`. Pass NULL with length 0 for the empty string.
+ *
+ *  The byte pointer is `unsigned char*` on purpose: cinterop maps a `const char*` parameter to a
+ *  Kotlin `String` and would convert the argument with `toCString` again, which is the very
+ *  truncation this function exists to avoid. */
+int HermesBridge_createStringUtf8(void* context, const unsigned char* bytes, int length);
 int HermesBridge_createNull(void* context);
 
 /** Read the property [name] of the object at [parentHandle] as a new handle.

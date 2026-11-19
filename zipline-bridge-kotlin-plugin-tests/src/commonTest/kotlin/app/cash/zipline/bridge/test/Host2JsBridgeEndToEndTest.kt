@@ -563,6 +563,43 @@ class Host2JsBridgeEndToEndTest {
     assertEquals("3|20013|tail", host.callGuestFunction("describeEncodingProbe", listOf(payload)))
   }
 
+  /**
+   * Task 5.17, the second disagreement between the two encodings: a NUL, which ends a C string.
+   * These rows were pinned per host while only the JVM host could carry them; both hosts do now, so
+   * they live here with the rest of the shared contract.
+   */
+  @Test fun nulStringReachesTheGuest() {
+    val payload = BridgedEncodingProbe(s = "a\u0000b", tail = "tail")
+    assertEquals("3|98|tail", host.callGuestFunction("describeEncodingProbe", listOf(payload)))
+  }
+
+  /** The guest's own string, built with a NUL in it, arriving whole. */
+  @Test fun nulStringFromTheGuestReachesTheHost() {
+    assertEquals(
+      "BridgedEncodingProbe(len=3, last=121, tail=guest-tail)",
+      host.callGuestFunction("provideEncodingProbe", emptyList()).toString(),
+    )
+  }
+
+  /** Both halves in one value, since a truncation on either leg is invisible from the other. */
+  @Test fun nulStringSurvivesARoundTrip() {
+    val payload = BridgedEncodingProbe(s = "a\u0000b", tail = "tail")
+    assertEquals(
+      "BridgedEncodingProbe(len=3, last=98, tail=tail)",
+      roundTrip(payload).toString(),
+    )
+  }
+
+  /**
+   * A high surrogate on its own, which no encoding can represent: Hermes hands over WTF-8 and JNI
+   * cannot represent it either. Both hosts replace it with U+FFFD rather than disagreeing by host or
+   * throwing, which is what this row holds them to -- the policy, not the damage.
+   */
+  @Test fun unpairedSurrogateBecomesAReplacementCharacter() {
+    val payload = BridgedEncodingProbe(s = "\uD800", tail = "tail")
+    assertEquals("1|65533|tail", host.callGuestFunction("describeEncodingProbe", listOf(payload)))
+  }
+
   /** And back out of the guest intact, which is the other side of the same boundary. */
   @Test fun supplementaryCharacterSurvivesARoundTrip() {
     val payload = BridgedEncodingProbe(s = "\uD83D\uDE00", tail = "tail")

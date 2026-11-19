@@ -183,6 +183,8 @@ internal fun generateNativeBridgeFile(
     }
     // bridgeForAny is the fallback decoder for object fields and untyped elements.
     appendLine("import app.cash.zipline.bridgeForAny")
+    // String content is read with its length, so an embedded NUL survives the C boundary.
+    appendLine("import app.cash.zipline.bridgeJsString")
     // Enums read their ordinal through the guest's value ops (Kotlin/JS mangles `ordinal`), and
     // collections are decoded by the guest's own iteration.
     appendLine("import app.cash.zipline.jsEnumOrdinal")
@@ -440,13 +442,13 @@ internal fun generateNativeBridgeFile(
 
         field.effectiveKtType == "kotlin.String" -> {
           appendLine("    ${readProperty()}")
-          appendLine("    val ${field.name}Str = HermesBridge_getValueString(ctx, ${field.name}Ref)")
+          appendLine("    val ${field.name}Str = bridgeJsString(ctx, ${field.name}Ref)")
           if (field.isNullable || absentIsDefault) {
             nullableReads += field.name
-            appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else ${field.name}Str?.toKStringFromUtf8()?.also { platform.posix.free(${field.name}Str) }")
+            appendLine("    val ${field.name} = if (HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_UNDEFINED || HermesBridge_getValueTag(ctx, ${field.name}Ref) == TAG_NULL) null else ${field.name}Str")
           } else {
             requireTagKt(field, setOf(3), "a string")
-            appendLine("    val ${field.name} = ${field.name}Str!!.toKStringFromUtf8().also { platform.posix.free(${field.name}Str) }")
+            appendLine("    val ${field.name} = ${field.name}Str!!")
           }
           appendLine("    ${freeRef()}")
         }
@@ -809,7 +811,7 @@ private fun emitElementConversion(
   val underlying = if (isInlineElem) unwrapInlineUnderlying(elemClass) else null
 
   return when {
-    ktType == "kotlin.String" -> "HermesBridge_getValueString(ctx, $expr)?.let { s -> s.toKStringFromUtf8()?.also { platform.posix.free(s) } } ?: \"\""
+    ktType == "kotlin.String" -> "bridgeJsString(ctx, $expr) ?: \"\""
 
     // A value class in a collection arrives BOXED when Kotlin/JS boxes it as a type argument (see
     // the BridgedLongBoxHolder case: `{"value_1":{"low_1":..,"high_1":..}}`), so its payload must be

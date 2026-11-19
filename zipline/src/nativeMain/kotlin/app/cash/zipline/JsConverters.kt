@@ -448,6 +448,33 @@ private val UNBRIDGED_DECODE_EXEMPT_CLASSES = setOf(
 )
 
 /**
+ * The JS string at [handle], decoded as standard UTF-8 **with its length**, or null when the value
+ * is not a string.
+ *
+ * This is the only correct way to read string *content* across this boundary. The older
+ * `HermesBridge_getValueString` returns a NUL-terminated `char*`, so a value containing a NUL
+ * arrived as the bytes before the NUL and nothing anywhere complained; `toKString()` on the Kotlin
+ * side is the same trap. Property and class names still use the old entry point, since a name
+ * cannot contain a NUL.
+ */
+public fun bridgeJsString(context: COpaquePointer?, handle: Int): String? {
+  if (context == null) return null
+  return memScoped {
+    val length = alloc<IntVar>()
+    length.value = 0
+    val bytes = HermesBridge_getValueStringUtf8(context, handle, length.ptr) ?: return@memScoped null
+    try {
+      // decodeToString() rather than toKString(): the tolerant decoder, which replaces an invalid
+      // sequence with U+FFFD. That is also what the JNI host's converter does with an unpaired
+      // surrogate, so a damaged value looks the same on both hosts instead of differing by host.
+      bytes.readBytes(length.value).decodeToString()
+    } finally {
+      platform.posix.free(bytes)
+    }
+  }
+}
+
+/**
  * Dispatch a single JS value to its Kotlin equivalent using bridge dispatch for objects.
  * Used by generated bridge code for elements of unknown type (Any? fields, List elements).
  */
@@ -458,10 +485,7 @@ fun bridgeForAny(context: COpaquePointer?, handle: Int): Any? {
 
     TAG_BOOL -> HermesBridge_getValueBool(context, handle) != 0
 
-    TAG_STRING -> {
-      val str = HermesBridge_getValueString(context, handle)
-      str?.toKStringFromUtf8()?.also { platform.posix.free(str) }
-    }
+    TAG_STRING -> bridgeJsString(context, handle)
 
     TAG_NULL, TAG_UNDEFINED -> null
 

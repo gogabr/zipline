@@ -66,6 +66,7 @@ _HermesBridge_getBridgeDispatch
 _HermesBridge_getValueBool
 _HermesBridge_getValueDouble
 _HermesBridge_getValueString
+_HermesBridge_getValueStringUtf8
 _HermesBridge_getValueTag
 _HermesBridge_addBridgeEntry
 _HermesBridge_installBridgeRegister
@@ -77,6 +78,7 @@ _HermesBridge_createDouble
 _HermesBridge_createInt
 _HermesBridge_createNull
 _HermesBridge_createString
+_HermesBridge_createStringUtf8
 _HermesBridge_defineProperty
 _HermesBridge_getProperty
 _HermesBridge_hasGlobalFunction

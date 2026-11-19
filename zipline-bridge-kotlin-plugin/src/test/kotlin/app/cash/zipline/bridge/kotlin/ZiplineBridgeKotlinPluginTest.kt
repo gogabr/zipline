@@ -1523,8 +1523,8 @@ class ZiplineBridgeNativePluginTest {
     assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"age\")"))
 
     // String conversion frees the C string
-    assertTrue(content.contains("HermesBridge_getValueString(ctx, nameRef)"))
-    assertTrue(content.contains("nameStr!!.toKStringFromUtf8().also { platform.posix.free(nameStr) }"))
+    assertTrue(content.contains("bridgeJsString(ctx, nameRef)"))
+    assertTrue(content.contains("val name = nameStr!!"))
 
     // Int extraction
     assertTrue(content.contains("HermesBridge_getValueDouble(ctx, ageRef).toInt()"))
@@ -1570,8 +1570,8 @@ class ZiplineBridgeNativePluginTest {
        assertTrue(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"age\")"))
 
        // String conversion
-       assertTrue(content.contains("HermesBridge_getValueString(ctx, nameRef)"))
-       assertTrue(content.contains("toKStringFromUtf8"))
+       assertTrue(content.contains("bridgeJsString(ctx, nameRef)"))
+       assertTrue(content.contains("bridgeJsString(ctx, "))
 
        // Int extraction
        assertTrue(content.contains("HermesBridge_getValueDouble(ctx, ageRef).toInt()"))
@@ -1697,8 +1697,11 @@ class ZiplineBridgeNativePluginTest {
              "HermesBridge_getValueTag(ctx, nameRef) == TAG_NULL) null else",
          ),
        )
-       assertTrue(content.contains("toKStringFromUtf8"))
-       assertTrue(content.contains("platform.posix.free(nameStr)"))
+       assertTrue(content.contains("bridgeJsString(ctx, "))
+       // The helper owns the buffer it mallocs and frees, so the generated file must not free it
+       // too: doing that again would be a double free, and the old code freed it here because the
+       // conversion was inlined.
+       assertFalse(content.contains("posix.free("))
      } finally {
        outputDir.toFile().deleteRecursively()
      }
@@ -1733,8 +1736,8 @@ class ZiplineBridgeNativePluginTest {
        assertTrue(content.contains("HermesBridge_createHandle(ctx, itemsRef, \"array_1\")"))
        assertTrue(content.contains("conv_items(ctx, itemsArrRef)"))
        assertTrue(content.contains("jsCollectionToKotlin(ctx, jsArrHandle, CollectionKind.LIST)"))
-       assertTrue(content.contains("HermesBridge_getValueString(ctx, element)"))
-       assertTrue(content.contains("toKStringFromUtf8"))
+       assertTrue(content.contains("bridgeJsString(ctx, element)"))
+       assertTrue(content.contains("bridgeJsString(ctx, "))
      } finally {
        outputDir.toFile().deleteRecursively()
      }

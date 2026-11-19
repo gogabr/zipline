@@ -9,6 +9,7 @@ import app.cash.zipline.hermes.HermesBridge_createDouble
 import app.cash.zipline.hermes.HermesBridge_createInt
 import app.cash.zipline.hermes.HermesBridge_createNull
 import app.cash.zipline.hermes.HermesBridge_createString
+import app.cash.zipline.hermes.HermesBridge_createStringUtf8
 import app.cash.zipline.hermes.HermesBridge_defineProperty
 import app.cash.zipline.hermes.HermesBridge_freeHandle
 import app.cash.zipline.hermes.HermesBridge_getProperty
@@ -18,7 +19,10 @@ import app.cash.zipline.hermes.HermesBridge_setArrayElement
 import app.cash.zipline.hermes.HermesContext_getLastError
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.toKString
+import kotlinx.cinterop.usePinned
 
 /**
  * Implemented by classes annotated with `@WithHost2JSBridge` on Kotlin/Native. The bridge compiler
@@ -196,6 +200,22 @@ private fun jsArrayFrom(ctx: COpaquePointer?, size: Int, convert: (Int) -> Int):
 }
 
 /**
+ * A JS string carrying [value], NUL and all.
+ *
+ * Not `HermesBridge_createString(ctx, value)`: cinterop converts a `const char*` argument with
+ * `toCString`, so the C++ side never sees anything past a NUL and the guest received `"a"` for
+ * `"a\u0000b"` with nothing complaining on either side. Encoding to bytes and pinning them keeps
+ * the length, which is the one thing a `String` has that a C string cannot carry.
+ */
+internal fun bridgeCreateJsString(ctx: COpaquePointer?, value: String): Int {
+  val bytes = value.encodeToByteArray()
+  if (bytes.isEmpty()) return HermesBridge_createString(ctx, "")
+  return bytes.usePinned { pinned ->
+    HermesBridge_createStringUtf8(ctx, pinned.addressOf(0).reinterpret(), bytes.size)
+  }
+}
+
+/**
  * Convert an arbitrary host value to its JS counterpart in [ctx]. The caller owns the returned
  * handle.
  *
@@ -211,6 +231,7 @@ private fun jsArrayFrom(ctx: COpaquePointer?, size: Int, convert: (Int) -> Int):
  * Anything else is an assertion error, never a silent null; the only null produced here is for an
  * actual [null] data value.
  */
+
 public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
   return when (value) {
     null -> HermesBridge_createNull(ctx).also {
@@ -250,15 +271,21 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
     //
     // `ULong` keeps `Long`'s boxed low/high representation, so its 64 bits survive unchanged.
     is Byte -> newJsInt(ctx, value.toInt())
+
     is Short -> newJsInt(ctx, value.toInt())
+
     is Char -> newJsInt(ctx, value.code)
+
     is UByte -> newJsInt(ctx, value.toByte().toInt())
+
     is UShort -> newJsInt(ctx, value.toShort().toInt())
+
     is UInt -> newJsInt(ctx, value.toInt())
+
     is ULong -> kotlinLongToJs(ctx, value.toLong())
 
     is String -> {
-      val handle = HermesBridge_createString(ctx, value)
+      val handle = bridgeCreateJsString(ctx, value)
       if (handle < 0) error("HOST2JS: failed to create a JS string")
       handle
     }

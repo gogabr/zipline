@@ -220,16 +220,27 @@ path also pinned a character buffer it never released.
 | `supplementaryCharacterSurvivesTheBridge` | host → guest | `2\|56832\|tail` — **both hosts**, one assertion in the shared suite |
 | `multiByteCharactersSurviveTheBridge` | host → guest | `3\|20013\|tail` — code points below the surrogate range, which both encodings already agreed on |
 | `supplementaryCharacterSurvivesARoundTrip` | host → guest → host | `len=2, last=56832`, **both hosts** |
-| `nulStringReachesTheGuest` | host → guest | `3\|98\|tail` on the JVM host; `1\|97\|tail` on the Kotlin/Native host |
-| `nulStringFromTheGuestReachesTheHost` | guest → host | `len=3, last=121, tail=guest-tail` on the JVM host; `len=1, last=120` on the Kotlin/Native host |
+| `nulStringReachesTheGuest` | host → guest | `3\|98\|tail` — **both hosts** |
+| `nulStringFromTheGuestReachesTheHost` | guest → host | `len=3, last=121, tail=guest-tail` — **both hosts** |
+| `nulStringSurvivesARoundTrip` | host → guest → host | `len=3, last=98` — **both hosts** |
+| `unpairedSurrogateBecomesAReplacementCharacter` | host → guest | `1\|65533\|tail` — **both hosts**, the same U+FFFD |
 
-The NUL rows are pinned **per host**, in `jvmTest` and `nativeTest` respectively, because the two
-hosts genuinely differ there and a shared assertion would have had to be written to the weaker one.
-The Kotlin/Native host goes through a NUL-terminated C string at both ends: cinterop converts a
-`String` argument with `toCString`, and `HermesBridge_getValueString` computes the UTF-8 length,
-then `strdup`s the buffer and keeps only the bytes before the first NUL. Giving that path a length is
-task 5.17; the native rows are pinned as broken so that the fix is a change in them rather than a
-discovery.
+**A NUL needed more than an encoding fix, because the other host's boundary carries no length (5.17).**
+The Kotlin/Native host does not cross a JNI boundary at all: it crosses a C one, where a `String` was
+converted by cinterop with `toCString` going out and read back through `HermesBridge_getValueString`,
+which computes `s.size()` and then `strdup`s `s.c_str()` — keeping only the bytes before the first NUL.
+The length was in hand one line earlier and discarded, so the fix is two entry points that carry it:
+`HermesBridge_getValueStringUtf8(ctx, handle, &outLength)` and
+`HermesBridge_createStringUtf8(ctx, bytes, length)`. The Kotlin side encodes to a byte array and pins
+it, because handing a `String` to the C call would let cinterop truncate it again — which is also why
+the byte pointer is `unsigned char*`: a `const char*` parameter maps to a Kotlin `String`.
+`HermesBridge_getValueString` stays for **names**, since a property name or a class name cannot contain
+a NUL, and the header says so rather than leaving it as folklore. Both directions of a NUL now arrive
+whole on both hosts, which is why these rows moved from per-host files into the shared suite.
+
+An unpaired surrogate is the third thing no encoding can represent: Hermes hands over WTF-8 and JNI
+cannot express it either. Both hosts answer U+FFFD, so the row pins the *policy* — a damaged value
+looks the same on every host — instead of pretending nothing happened.
 
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.

@@ -896,7 +896,8 @@ int HermesBridge_getValueBool(void* context, int handle) {
     return val->isBool() ? (val->asBool() ? 1 : 0) : 0;
 }
 
-char* HermesBridge_getValueString(void* context, int handle) {
+char* HermesBridge_getValueStringUtf8(void* context, int handle, int* outLength) {
+    if (outLength != nullptr) *outLength = 0;
     ContextNative* ctx = asNativeContext(context);
     if (!ctx || !ctx->runtime) return NULL;
     if (handle < 0 || static_cast<size_t>(handle) >= ctx->bridgeHandles.size()) return NULL;
@@ -906,7 +907,21 @@ char* HermesBridge_getValueString(void* context, int handle) {
     if (!val->isString()) return NULL;
 
     std::string s = val->asString(rt).utf8(rt);
-    return strdup(s.c_str());  // caller frees with free()
+    char* copy = static_cast<char*>(malloc(s.size() + 1));  // caller frees with free()
+    if (copy == nullptr) return NULL;
+    // memcpy, not strcpy: the value may contain NUL, and `s.size()` is the whole string. The NUL
+    // byte after it stays for callers that still treat the buffer as a C string.
+    memcpy(copy, s.data(), s.size());
+    copy[s.size()] = '\0';
+    if (outLength != nullptr) *outLength = static_cast<int>(s.size());
+    return copy;
+}
+
+char* HermesBridge_getValueString(void* context, int handle) {
+    // Kept for callers that read names (property and class names, which cannot contain NUL).
+    // Anything carrying user text must use HermesBridge_getValueStringUtf8: the length this call
+    // computes and discards is exactly what a NUL-containing value needs.
+    return HermesBridge_getValueStringUtf8(context, handle, nullptr);
 }
 
 void HermesBridge_freeHandle(void* context, int handle) {
@@ -1218,6 +1233,24 @@ int HermesBridge_createBool(void* context, int value) {
     ContextNative* ctx = asNativeContext(context);
     if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid context");
     return allocBridgeHandle(ctx, std::make_shared<jsi::Value>(*ctx->runtime, value != 0));
+}
+
+int HermesBridge_createStringUtf8(void* context, const unsigned char* bytes, int length) {
+    ContextNative* ctx = asNativeContext(context);
+    if (!ctx || !ctx->runtime) return bridgeFailure(ctx, "bridge: invalid string");
+    if (bytes == nullptr && length != 0) return bridgeFailure(ctx, "bridge: invalid string");
+    jsi::Runtime& rt = *ctx->runtime;
+    try {
+        std::string value = (bytes != nullptr && length > 0)
+            ? std::string(reinterpret_cast<const char*>(bytes), static_cast<size_t>(length))
+            : std::string();
+        return allocBridgeHandle(ctx,
+            std::make_shared<jsi::Value>(rt, jsi::String::createFromUtf8(rt, std::move(value))));
+    } catch (const jsi::JSError& e) {
+        return bridgeFailure(ctx, e.getMessage());
+    } catch (const std::exception& e) {
+        return bridgeFailure(ctx, e.what());
+    }
 }
 
 int HermesBridge_createString(void* context, const char* utf8) {

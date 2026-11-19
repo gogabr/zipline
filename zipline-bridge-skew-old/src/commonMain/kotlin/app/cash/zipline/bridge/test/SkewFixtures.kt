@@ -215,3 +215,15 @@ data class ValidatedPayload(val w: Int)
 /** The new tree inherits a defaulted `base` from its superclass and computes `doubled` there. */
 @WithHost2JSBridge
 data class BaseStatePayload(val own: Int)
+
+/**
+ * The old half of the visibility pair. This shape has one parameter, so a receiver that declares three
+ * has to work out `tag` and `magic` itself — from a private companion value and a private top-level
+ * function, which is what forces a generated factory to sit inside the class rather than beside it.
+ *
+ * It bridges both ways on purpose: the guest -> host rows are the ones that make the HOST evaluate the
+ * defaults, and that is the Kotlin/Native half of the claim.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class PrivateDefaultsPayload(val a: Int)

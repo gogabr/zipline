@@ -133,3 +133,10 @@ fun readBackWideDefaults(p: WideDefaults): String = p.toString()
 /** Sends everything this tree's shape has, so a receiver can only be missing fields it lacks itself. */
 @JsExport
 fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, b = "bb", c = 3.5, d = 9, twin = 55)
+
+@JsExport
+fun readBackPrivateDefaults(p: PrivateDefaultsPayload): String = "${p.a}|${p.tag}|${p.magic}"
+
+/** Sends all three, so a receiver can only be missing fields it does not declare. */
+@JsExport
+fun providePrivateDefaults(): PrivateDefaultsPayload = PrivateDefaultsPayload(a = 11, tag = "sent", magic = 1)

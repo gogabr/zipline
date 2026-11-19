@@ -70,6 +70,8 @@ the host tree. JVM observed values are from `jvmTest`; the Native column is `mac
 | 8 defaulted params added past the 32nd (`WideDefaults.p32..p39`) | old guest → new host | ✅ | `WideDefaults(p0=0, …, p39=39)` — the flags for those params live in the second mask word, so this row is what pins the packing against the JVM descriptor | same — native reaches the same values through `bridgeCreate`, so the row needs no `nativeExpected` any more | T2 |
 | 3 defaulted parameters added on host (`SubsetPayload.b/.c/.twin`) | old guest → new host | ✅ | `SubsetPayload(a=11, b=b, c=2.5, d=9, twin=13)` — the **host** is the side evaluating defaults here, including `twin = c.toInt() + a`, chained from one default and one received value; a decoder that read placeholders would report `twin=2` | same | T2 |
 | All five present, old host shape | new guest → old host | ✅ | `SubsetPayload(a=11, d=9)` — the guest's three extra values are dropped, not misaligned | same | — |
+| Defaults reaching **private** members (`PrivateDefaultsPayload.tag`, `.magic`) | old host → new guest | ✅ | `7\|pc\|4242` — `tag` is a private companion `const` and `magic` the result of a private top-level function of the receiver's file; a factory generated beside the class rather than inside it would not compile against them | same | — |
+| Same, host decoding | old guest → new host | ✅ | `PrivateDefaultsPayload(a=11, tag=pc, magic=4242)` — here the **host** evaluates them: JVM through its masked constructor, Kotlin/Native through `bridgeCreate`, one string either way | same | — |
 | Interface added on guest | new guest → old host | ✅ | `InterfacePayload(v=11)` — wire-invisible | same | — |
 | Interface gained on host | old guest → new host | ✅ | `InterfacePayload(v=11)` | same | — |
 | Enum appended on guest (`GrowthEnum.C`) | new guest → old host | ❌ | `ZiplineApiMismatchException: host bridge: ordinal 2 is out of range for ...GrowthEnum` | same | — |
@@ -110,6 +112,11 @@ refusal — so a stamped object cannot produce it.
 | Constructor computes a body property (`ValidatedPayload.area`) | old host → new guest | ✅ | `4\|12` — `area` is no host's field; only the guest's initializer produces it | same | — |
 | Constructor validates (`require(w > 0)`) | old host → new guest | ❌ caught | `IllegalStateException: w must be positive, got -2` — legal for the sender's shape, refused by the receiver's | same | — |
 | Base-class state (`BaseStatePayload : BaseStateHost`) | old host → new guest | ✅ | `8\|5\|10` — `base` defaulted and `doubled` computed in a superclass the host's shape does not have | same | T4 |
+
+The private-member pair is also the reason the generated factory is a companion member: private
+top-level declarations are visible to a companion object (same file) but to no generated file-scope
+function, and the plugin tests obtain `bridgeCreate` by looking it up on the nested `Companion`, so a
+factory that moved would fail there rather than silently widen the class's surface.
 
 `WideDefaults` carries `@WithHost2JSBridge` for the wide host→guest row. Without it the JVM host still
 *compiles* — it reaches `convertToJs` through the runtime rather than through a member the plugin

@@ -429,4 +429,33 @@ class CrossVersionTest {
       host.evaluateOne(provide("provideSubset", id)).toString(),
     )
   }
+
+  // ------------------------------------------------------------------------------------------
+  // Defaults that reach private members. The receiver declares two parameters this shape never
+  // sends, and both are decided by something no sender can see: a private companion value and a
+  // private top-level function in the receiver's own file. A factory generated beside the class
+  // instead of inside it would not compile against those.
+  // ------------------------------------------------------------------------------------------
+
+  @Test fun hostToGuest_privateDefaults() = withNewGuest { host, _ ->
+    assertObserved("host2js/private-defaults/absent", "7|pc|4242") {
+      host.read("readBackPrivateDefaults", PrivateDefaultsPayload(a = 7))
+    }
+  }
+
+  @Test fun guestToHost_privateDefaultsExtraFieldsIgnored() = withNewGuest { host, id ->
+    assertEquals(
+      "PrivateDefaultsPayload(a=11)",
+      host.evaluateOne(provide("providePrivateDefaults", id)).toString(),
+    )
+  }
+
+  /** No skew: one parameter declared, one parameter sent. */
+  @Test fun control_privateDefaults() = withOldGuest { host, id ->
+    assertEquals("7", host.read("readBackPrivateDefaults", PrivateDefaultsPayload(a = 7)))
+    assertEquals(
+      "PrivateDefaultsPayload(a=11)",
+      host.evaluateOne(provide("providePrivateDefaults", id)).toString(),
+    )
+  }
 }

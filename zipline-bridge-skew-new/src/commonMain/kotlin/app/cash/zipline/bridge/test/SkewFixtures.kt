@@ -237,3 +237,23 @@ open class BaseStateHost(val base: Int = 5) {
 
 @WithHost2JSBridge
 class BaseStatePayload(val own: Int = 3) : BaseStateHost()
+
+/**
+ * Visible to this file only. A default that calls it compiles inside the annotated class and nowhere
+ * else, which is the guarantee the generated companion exists to give: a factory emitted at file scope
+ * would not see this, and the build would say so.
+ */
+private fun hiddenMagic(): Int = 4242
+
+/** `tag` reads a private companion value, `magic` the private top-level function above. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class PrivateDefaultsPayload(
+  val a: Int,
+  val tag: String = TAG,
+  val magic: Int = hiddenMagic(),
+) {
+  private companion object {
+    private const val TAG = "pc"
+  }
+}

@@ -403,4 +403,31 @@ class CrossVersionTest {
       host.evaluateOne(provide("provideSubset", id)).toString(),
     )
   }
+
+  /**
+   * The Kotlin/Native half of the visibility claim: the old guest sends one parameter and the HOST
+   * decodes three, so `tag` and `magic` are evaluated by the host's own generated factory — over a
+   * private companion value and a private top-level function. The JVM host runs its masked
+   * constructor and the native host runs `bridgeCreate`; both have to see what the class sees.
+   */
+  @Test fun guestToHost_privateDefaultsEvaluatedByHost() = withOldGuest { host, id ->
+    assertObserved(
+      "js2host/private-defaults/absent",
+      "PrivateDefaultsPayload(a=11, tag=pc, magic=4242)",
+    ) { host.evaluateOne(provide("providePrivateDefaults", id)) }
+  }
+
+  /** No skew: this guest sends all three, so nothing is left to decide. */
+  @Test fun control_guestToHost_privateDefaults() = withNewGuest { host, id ->
+    assertEquals(
+      "PrivateDefaultsPayload(a=11, tag=sent, magic=1)",
+      host.evaluateOne(provide("providePrivateDefaults", id)).toString(),
+    )
+  }
+
+  @Test fun hostToGuest_privateDefaultsIgnoredByOldGuest() = withOldGuest { host, _ ->
+    assertObserved("host2js/private-defaults/ignored", "11") {
+      host.read("readBackPrivateDefaults", PrivateDefaultsPayload(a = 11, tag = "sent", magic = 1))
+    }
+  }
 }

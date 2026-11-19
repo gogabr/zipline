@@ -124,3 +124,9 @@ fun provideWideDefaults(): WideDefaults = WideDefaults()
  */
 @JsExport
 fun provideSubset(): SubsetPayload = SubsetPayload(a = 11, d = 9)
+
+@JsExport fun readBackPrivateDefaults(p: PrivateDefaultsPayload): String = "${p.a}"
+
+/** Sends only what this tree declares, so the receiver's other two parameters are its own to decide. */
+@JsExport
+fun providePrivateDefaults(): PrivateDefaultsPayload = PrivateDefaultsPayload(a = 11)

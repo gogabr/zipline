@@ -35,7 +35,11 @@ actual class TestHost2Js actual constructor() {
         "globalThis.describeNarrowScalarProbe = function (v) { " +
         "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeNarrowScalarProbe(v); }; " +
         "globalThis.describeScalarArg = function (v) { " +
-        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeScalarArg(v); }; 0",
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeScalarArg(v); }; " +
+        "globalThis.describeEncodingProbe = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEncodingProbe(v); }; " +
+        "globalThis.provideEncodingProbe = function () { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.provideEncodingProbe(); }; 0",
       "host2js_test_globals.js",
     )
   }

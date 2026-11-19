@@ -527,7 +527,11 @@ internal fun generateBridgeFile(
               // check so the failure is the catchable mismatch, never an escaping C++ exception.
               requireTag(field.name, setOf(JS_TAG_STRING), "a string")
               appendLine("        std::string str_${field.name} = js_${field.name}.asString(rt).utf8(rt);")
-              appendLine("        $javaVar = env->NewStringUTF(str_${field.name}.c_str());")
+              // Not `NewStringUTF`: JNI's encoding is Java's modified UTF-8, which encodes NUL as two
+              // bytes and a supplementary character as a surrogate pair, while Hermes produced standard
+              // UTF-8 above. The raw call cut the field at a NUL and turned an emoji into one
+              // replacement character. `utf8ToJniString` converts through UTF-16, which both agree on.
+              appendLine("        $javaVar = zipline::utf8ToJniString(env, str_${field.name});")
             }
 
             field.effectiveKtType in MAP_C_TYPES ||
@@ -772,7 +776,8 @@ private fun emitCValueConverter(
         """
         static jobject $name(JNIEnv *env, jsi::Runtime &rt, const jsi::Value &jsVal) {
           std::string s = jsVal.asString(rt).utf8(rt);
-          jobject r = env->NewStringUTF(s.c_str());
+          // Modified UTF-8 against standard UTF-8 again; see the per-field conversion above.
+          jobject r = zipline::utf8ToJniString(env, s);
           return r;
         }
         """.trimIndent(),

@@ -546,6 +546,33 @@ class Host2JsBridgeEndToEndTest {
   }
 
   /**
+   * Task 5.16, the half both hosts can be held to. A supplementary character is one of the two
+   * places where Java's modified UTF-8 and standard UTF-8 disagree (a surrogate pair in six bytes,
+   * where UTF-8 wants four), and it is what the JNI host's raw `GetStringUTFChars` destroyed: the
+   * guest received an *empty string*, and reported it as `JsException: Char sequence is empty`.
+   * Nothing in the call was wrong, and nothing about the value was recoverable afterwards.
+   */
+  @Test fun supplementaryCharacterSurvivesTheBridge() {
+    val payload = BridgedEncodingProbe(s = "\uD83D\uDE00", tail = "tail")
+    assertEquals("2|56832|tail", host.callGuestFunction("describeEncodingProbe", listOf(payload)))
+  }
+
+  /** Code points below the surrogate boundary, which both encodings happen to agree on. */
+  @Test fun multiByteCharactersSurviveTheBridge() {
+    val payload = BridgedEncodingProbe(s = "éß中", tail = "tail")
+    assertEquals("3|20013|tail", host.callGuestFunction("describeEncodingProbe", listOf(payload)))
+  }
+
+  /** And back out of the guest intact, which is the other side of the same boundary. */
+  @Test fun supplementaryCharacterSurvivesARoundTrip() {
+    val payload = BridgedEncodingProbe(s = "\uD83D\uDE00", tail = "tail")
+    assertEquals(
+      "BridgedEncodingProbe(len=2, last=56832, tail=tail)",
+      roundTrip(payload).toString(),
+    )
+  }
+
+  /**
    * The same properties coming back, which is the other half of the machinery: the host's decoder
    * reads them, and a read made tolerant of absence answers with null for the reference-typed ones
    * and with zero for `count`. Assigning that blindly would corrupt the host's own state, so the

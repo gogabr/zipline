@@ -201,6 +201,36 @@ A defaulted `UInt` parameter needs a placeholder too, and an unsigned type has n
 all — it is an inline class — so the generated call builds `UInt(0)` over the wrapper's own underlying
 type, read from the wrapper's constructor rather than named again here.
 
+**A `String` crossed the JNI bridge as Java's *modified* UTF-8 into a consumer expecting UTF-8.**
+The two encodings differ in exactly two places, and both were silent. A NUL ended the value:
+host→guest and guest→host both answered `"a"` for `"a\u0000b"`. Anything above U+FFFF was worse,
+because modified UTF-8 spends six bytes on a surrogate pair where UTF-8 wants four — an emoji sent by
+a host arrived at the guest as an **empty string**, and the only reason anyone noticed is that the
+guest then called `last()` on it and threw `JsException: Char sequence is empty`. Nothing on either
+side failed, and nothing was recoverable.
+
+`zipline/native/JniUtf8.h` already existed for exactly this, with a comment naming the bug: it
+converts through UTF-16, which both sides agree on, and the JSON path (`ContextJni::toJavaString`)
+uses it. The bridge path never got it — four sites in `bridge_dispatch.h` and two in the C the plugin
+generates were still on `GetStringUTFChars`/`NewStringUTF`. The raw `GetStringUTFChars` on the map-key
+path also pinned a character buffer it never released.
+
+| row | direction | expectation |
+| --- | --- | --- |
+| `supplementaryCharacterSurvivesTheBridge` | host → guest | `2\|56832\|tail` — **both hosts**, one assertion in the shared suite |
+| `multiByteCharactersSurviveTheBridge` | host → guest | `3\|20013\|tail` — code points below the surrogate range, which both encodings already agreed on |
+| `supplementaryCharacterSurvivesARoundTrip` | host → guest → host | `len=2, last=56832`, **both hosts** |
+| `nulStringReachesTheGuest` | host → guest | `3\|98\|tail` on the JVM host; `1\|97\|tail` on the Kotlin/Native host |
+| `nulStringFromTheGuestReachesTheHost` | guest → host | `len=3, last=121, tail=guest-tail` on the JVM host; `len=1, last=120` on the Kotlin/Native host |
+
+The NUL rows are pinned **per host**, in `jvmTest` and `nativeTest` respectively, because the two
+hosts genuinely differ there and a shared assertion would have had to be written to the weaker one.
+The Kotlin/Native host goes through a NUL-terminated C string at both ends: cinterop converts a
+`String` argument with `toCString`, and `HermesBridge_getValueString` computes the UTF-8 length,
+then `strdup`s the buffer and keeps only the bytes before the first NUL. Giving that path a length is
+task 5.17; the native rows are pinned as broken so that the fix is a change in them rather than a
+discovery.
+
 `object` payloads are answered with the guest's **own singleton** — they have no constructor to run, and a
 second instance of a class with exactly one is visible to `===` and to a `when` against the singleton.
 

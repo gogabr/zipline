@@ -174,6 +174,12 @@ fun describeNarrowScalarProbe(value: BridgedNarrowScalarProbe): String = listOf(
 fun describeScalarArg(value: Any?): String = "$value"
 
 @JsExport
+fun describeEncodingProbe(value: BridgedEncodingProbe): String = "${value.s.length}|${value.s.lastOrNull()?.code ?: -1}|${value.tail}"
+
+@JsExport
+fun provideEncodingProbe(): BridgedEncodingProbe = BridgedEncodingProbe(s = "x\u0000y", tail = "guest-tail")
+
+@JsExport
 fun describeNarrowHolder(value: BridgedNarrowHolder): String = "${value.b}|${value.s}|${value.c}|${value.opt ?: '-'}"
 
 @JsExport

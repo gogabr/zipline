@@ -26,6 +26,8 @@
 #include <cstring>
 #include <string>
 
+#include "JniUtf8.h"  // JNI speaks MODIFIED UTF-8, Hermes speaks UTF-8
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
@@ -589,7 +591,13 @@ static inline jobject jsi_value_to_boxed(
     return boxed;
   }
   if (v.isString()) {
-    jstring s = env->NewStringUTF(v.asString(rt).utf8(rt).c_str());
+    // `NewStringUTF` does not take UTF-8: JNI's encoding is Java's *modified* UTF-8, which
+    // encodes NUL as two bytes and a supplementary character as a surrogate pair. Handing it
+    // Hermes' output truncates at a NUL and mangles anything above U+FFFF -- measured, a host
+    // that sent "a\u0000b" got back "a". `utf8ToJniString` converts through UTF-16, which both
+    // sides agree on. The JSON path already does this via ContextJni::toJavaString; only the
+    // bridge path was left on the raw JNI call.
+    jstring s = zipline::utf8ToJniString(env, v.asString(rt).utf8(rt));
     if (env->ExceptionCheck()) return nullptr;
     return s;
   }
@@ -818,7 +826,9 @@ static inline jsi::Value jsiHost2JsKeyToJs(JNIEnv *env, jsi::Runtime &rt, jobjec
 
   jsi::Value result;
   if (isInstanceOf("java/lang/String")) {
-    result = jsi::String::createFromUtf8(rt, env->GetStringUTFChars(static_cast<jstring>(key), nullptr));
+    // Same encoding boundary as above, and the raw call also leaked the character buffer it
+    // pinned: `GetStringUTFChars` needs a matching release, which this line never had.
+    result = jsi::String::createFromUtf8(rt, zipline::jniStringToUtf8(env, static_cast<jstring>(key)));
   } else if (isInstanceOf("java/lang/Integer") || isInstanceOf("java/lang/Long") ||
              isInstanceOf("java/lang/Short") || isInstanceOf("java/lang/Byte") ||
              isInstanceOf("java/lang/Float") || isInstanceOf("java/lang/Double")) {
@@ -845,9 +855,7 @@ static inline jsi::Value jsiHost2JsKeyToJs(JNIEnv *env, jsi::Runtime &rt, jobjec
       env->DeleteLocalRef(cls);
       return jsi::Value::undefined();
     }
-    const char *chars = env->GetStringUTFChars(s, nullptr);
-    result = jsi::String::createFromUtf8(rt, chars);
-    env->ReleaseStringUTFChars(s, chars);
+    result = jsi::String::createFromUtf8(rt, zipline::jniStringToUtf8(env, s));
     env->DeleteLocalRef(s);
   }
   env->DeleteLocalRef(cls);
@@ -939,9 +947,9 @@ static inline jsi::Value jsiArrayToJs(JNIEnv *env, jsi::Runtime &rt, jobject arr
   if (env->ExceptionCheck()) return jsi::Value::undefined();
   std::string name;
   if (componentName != nullptr) {
-    const char *chars = env->GetStringUTFChars(componentName, nullptr);
-    name = chars;
-    env->ReleaseStringUTFChars(componentName, chars);
+    // A name in practice, and an ASCII one; converted anyway so that "the bridge hands Hermes
+    // modified UTF-8" is not a rule anyone has to remember in order to read this file.
+    name = zipline::jniStringToUtf8(env, componentName);
     env->DeleteLocalRef(componentName);
   }
 
@@ -1033,9 +1041,7 @@ static inline jsi::Value jsiHost2JsAnyToJs(JNIEnv *env, jsi::Runtime &rt, jobjec
 
   if (isInstanceOf("java/lang/String")) {
     jstring s = static_cast<jstring>(obj);
-    const char *chars = env->GetStringUTFChars(s, nullptr);
-    jsi::Value result = jsi::String::createFromUtf8(rt, chars);
-    env->ReleaseStringUTFChars(s, chars);
+    jsi::Value result = jsi::String::createFromUtf8(rt, zipline::jniStringToUtf8(env, s));
     env->DeleteLocalRef(objClass);
     return result;
   }

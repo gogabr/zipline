@@ -579,6 +579,7 @@ public class BridgedNarrowHolder(
  * `ULong` worked by accident: the wrapper arms for their underlying `Int` and `Long` happened to
  * exist, and `inlineWrapperChain` built the wrapper around them.
  */
+
 @WithHost2JSBridge
 @WithJS2HostBridge
 public class BridgedNarrowScalarProbe(
@@ -591,6 +592,23 @@ public class BridgedNarrowScalarProbe(
   public val ul: ULong,
 ) {
   override fun toString(): String = "BridgedNarrowScalarProbe(b=$b, s=$s, c=$c, u=$u, ub=$ub, us=$us, ul=$ul)"
+}
+
+/**
+ * Strings that sit on an encoding boundary: a NUL, a supplementary character, and multi-byte code
+ * points below the surrogate range. The tail is there so that truncation shows up as *missing text*
+ * rather than as a length nobody thought to compare.
+ *
+ * Task 5.16. Java's modified UTF-8 and standard UTF-8 disagree in exactly two places -- NUL and
+ * anything above U+FFFF -- and the JNI bridge was handing one to a consumer expecting the other.
+ */
+@WithHost2JSBridge
+@WithJS2HostBridge
+public class BridgedEncodingProbe(
+  public val s: String,
+  public val tail: String,
+) {
+  override fun toString(): String = "BridgedEncodingProbe(len=${s.length}, last=${s.lastOrNull()?.code ?: -1}, tail=$tail)"
 }
 
 /**

@@ -114,7 +114,11 @@ class ZiplineBridgeKotlinPluginTest {
 
       // String field conversion
       assertTrue(content.contains("std::string str_name = js_name.asString(rt).utf8(rt);"))
-      assertTrue(content.contains("NewStringUTF(str_name.c_str())"))
+      // Not `NewStringUTF`: JNI's encoding is Java's modified UTF-8 while Hermes produced standard
+      // UTF-8 one line above, which truncates at a NUL and mangles anything above U+FFFF. The
+      // conversion goes through UTF-16, so the generated C must not contain the raw call.
+      assertTrue(content.contains("zipline::utf8ToJniString(env, str_name)"))
+      assertFalse(content.contains("NewStringUTF"))
 
       // Int field conversion
       assertTrue(content.contains("jsi_value_get_int(js_age)"))
@@ -570,7 +574,11 @@ class ZiplineBridgeKotlinPluginTest {
       // Null check wrapping string extraction
       assertTrue(content.contains("!js_name.isUndefined() && !js_name.isNull()"))
       assertTrue(content.contains("std::string str_name = js_name.asString(rt).utf8(rt);"))
-      assertTrue(content.contains("NewStringUTF(str_name.c_str())"))
+      // Not `NewStringUTF`: JNI's encoding is Java's modified UTF-8 while Hermes produced standard
+      // UTF-8 one line above, which truncates at a NUL and mangles anything above U+FFFF. The
+      // conversion goes through UTF-16, so the generated C must not contain the raw call.
+      assertTrue(content.contains("zipline::utf8ToJniString(env, str_name)"))
+      assertFalse(content.contains("NewStringUTF"))
 
       // Null branch sets to NULL
       assertTrue(content.contains("java_name = NULL;"))

@@ -69,6 +69,7 @@ kotlin {
     binaries.executable()
     compilerOptions {
       moduleKind.set(JsModuleKind.MODULE_UMD)
+      target.set("es2015")
     }
   }
 

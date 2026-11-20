@@ -162,7 +162,8 @@ internal fun injectCompanionInitBlocks(
   // Companion constructors register through the same symbol the module-load hook uses: zipline's
   // tolerant `registerBridge` when it is on the classpath, otherwise the raw `__bridgeRegister`
   // external. See findOrCreateBridgeRegister.
-  val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
+  val bridgeRegister =
+    findOrCreateBridgeRegister(finder, pluginContext, fileForModule, moduleFragment.name.asString())
 
   for (clazz in dispatchClasses) {
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
@@ -359,16 +360,22 @@ internal fun injectModuleLoadBridgeRegistration(
   ).firstOrNull()
 
   val kclassJsGetterSymbol = findKClassJsGetter(finder)
-  val bridgeRegister = findOrCreateBridgeRegister(finder, pluginContext, fileForModule)
-  val bridgeRegisterRuntime =
-    findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
-  val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses)
+  val bridgeRegister =
+    findOrCreateBridgeRegister(finder, pluginContext, fileForModule, moduleFragment.name.asString())
+  val bridgeRegisterRuntime = findOrCreateBridgeRegisterRuntime(
+    finder, pluginContext, fileForModule, moduleFragment.name.asString(),
+  )
+  val factoriesClass =
+    buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses, moduleFragment.name.asString())
 
   // `@JsExport fun __bridgeWarmUpHost2Js(): Boolean` — the host calls this from loadJsModule
   // right after the module is defined (see BRIDGE_WARM_UP_JS host-side). Being exported keeps it
   // reachable from the host and immune to dead-code elimination.
+  // The Kotlin name carries a module key, because two modules that share a package would otherwise
+  // publish one signature (see [bridgeDeclarationName]); the host searches the exports for the fixed
+  // name below, so @JsName pins it back.
   val warmUpFn = pluginContext.irFactory.buildFun {
-    name = Name.identifier(BRIDGE_WARM_UP_FUNCTION_NAME)
+    name = Name.identifier(warmUpFunctionName(moduleFragment.name.asString()))
     returnType = pluginContext.irBuiltIns.booleanType
     visibility = DescriptorVisibilities.PUBLIC
     origin = IrDeclarationOrigin.DEFINED
@@ -391,6 +398,7 @@ internal fun injectModuleLoadBridgeRegistration(
       )
     }
   }
+  addJsNameToFunction(warmUpFn, BRIDGE_WARM_UP_FUNCTION_NAME, finder, pluginContext)
 
   val builder = pluginContext.irBuiltIns.createIrBuilder(warmUpFn.symbol)
   warmUpFn.body = builder.irBlockBody {
@@ -446,6 +454,44 @@ internal fun injectModuleLoadBridgeRegistration(
 internal const val BRIDGE_WARM_UP_FUNCTION_NAME: String = "__bridgeWarmUpHost2Js"
 
 /**
+ * The name of [moduleName]'s runtime-factories object.
+ *
+ * The module key is not decoration. Synthetic module-level declarations are signed with the package of
+ * the module's first source file, and two Clive modules share a package: both `:wb:nodes:main:common`
+ * and `:wb:nodes:design-system:common` declare in `ru.wildberries.clive.compose`. Both therefore
+ * published `ru.wildberries.clive.compose/__BridgeRuntimeFactories`, and `:wb:live`'s guest bundle
+ * requires both, so the JS backend met one signature twice while loading the IC caches -- it keys
+ * declarations by signature across the whole link and assumes a repeated signature is the same
+ * declaration:
+ *
+ * ```
+ * e: java.lang.IllegalStateException: IrClassSymbolImpl is already bound.
+ *    Signature: ru.wildberries.clive.compose/__BridgeRuntimeFactories|null[0]
+ * ```
+ *
+ * Nothing the host does depends on this name: it merges the object's *members* into its factories
+ * global and reaches each one through its `@JsName`-pinned name, so a module-unique name is free. The
+ * key is a hash of the module name rather than the name itself because module names carry `:` and `-`,
+ * and it is stable because the module name is the only input.
+ */
+internal fun bridgeDeclarationName(base: String, moduleName: String): String {
+  val digest = moduleName.hashCode().toULong().toString(16)
+  val readable = moduleName.map { if (it.isLetterOrDigit()) it else '_' }
+    .joinToString("")
+    .trim('_')
+    .take(24)
+  return if (readable.isEmpty()) "${base}_$digest" else "${base}$readable-$digest".replace('-', '_')
+}
+
+/** See [bridgeDeclarationName]: the Kotlin name is keyed, the JS name is not, so the host is unaffected. */
+internal fun runtimeFactoriesClassName(moduleName: String): String =
+  bridgeDeclarationName("__BridgeRuntimeFactories", moduleName)
+
+/** [BRIDGE_WARM_UP_FUNCTION_NAME] with a module key: the host finds the hook by its JS name. */
+internal fun warmUpFunctionName(moduleName: String): String =
+  bridgeDeclarationName(BRIDGE_WARM_UP_FUNCTION_NAME, moduleName)
+
+/**
  * Build the synthetic internal `object __BridgeRuntimeFactories` with the three factory
  * methods the host calls (by name, from the object's prototype) to construct real Kotlin/JS
  * Long/ArrayList/LinkedHashMap instances.
@@ -456,9 +502,10 @@ private fun buildRuntimeFactories(
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
   host2JsClasses: List<IrClass>,
+  moduleName: String,
 ): IrClass {
   val factoriesClass = pluginContext.irFactory.buildClass {
-    name = Name.identifier("__BridgeRuntimeFactories")
+    name = Name.identifier(runtimeFactoriesClassName(moduleName))
     kind = ClassKind.OBJECT
     modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
     visibility = DescriptorVisibilities.INTERNAL
@@ -1146,6 +1193,7 @@ private fun findOrCreateBridgeRegister(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
+  moduleName: String,
 ): BridgeRegisterTarget {
   // Prefer zipline's helper: it no-ops when no host installed `__bridgeRegister` (a bare Kotlin/JS
   // runtime, e.g. a unit test), where the raw call below would throw at class-initialization time
@@ -1155,13 +1203,14 @@ private fun findOrCreateBridgeRegister(
     .firstOrNull()
     ?.let { return BridgeRegisterTarget(it, isRaw = false) }
 
+  val keyedName = bridgeDeclarationName("__bridgeRegister", moduleName)
   val existing = fileForModule.declarations
     .filterIsInstance<IrSimpleFunction>()
-    .firstOrNull { it.name.asString() == "__bridgeRegister" }
+    .firstOrNull { it.name.asString() == "__bridgeRegister" || it.name.asString() == keyedName }
   if (existing != null) return BridgeRegisterTarget(existing.symbol, isRaw = true)
 
   val bridgeRegisterFn = pluginContext.irFactory.buildFun {
-    name = Name.identifier("__bridgeRegister")
+    name = Name.identifier(keyedName)
     returnType = pluginContext.irBuiltIns.unitType
     visibility = DescriptorVisibilities.INTERNAL
     origin = IrDeclarationOrigin.DEFINED
@@ -1208,14 +1257,16 @@ private fun findOrCreateBridgeRegisterRuntime(
   finder: DeclarationFinder,
   pluginContext: IrPluginContext,
   fileForModule: IrFile,
+  moduleName: String,
 ): BridgeRegisterTarget {
+  val keyedName = bridgeDeclarationName("__bridgeRegisterRuntime", moduleName)
   val existing = fileForModule.declarations
     .filterIsInstance<IrSimpleFunction>()
-    .firstOrNull { it.name.asString() == "__bridgeRegisterRuntime" }
+    .firstOrNull { it.name.asString() == "__bridgeRegisterRuntime" || it.name.asString() == keyedName }
   if (existing != null) return BridgeRegisterTarget(existing.symbol, isRaw = true)
 
   val bridgeRegisterRuntimeFn = pluginContext.irFactory.buildFun {
-    name = Name.identifier("__bridgeRegisterRuntime")
+    name = Name.identifier(keyedName)
     returnType = pluginContext.irBuiltIns.unitType
     visibility = DescriptorVisibilities.INTERNAL
     origin = IrDeclarationOrigin.DEFINED

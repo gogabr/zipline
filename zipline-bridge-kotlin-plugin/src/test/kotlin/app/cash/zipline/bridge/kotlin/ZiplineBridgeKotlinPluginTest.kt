@@ -21,6 +21,7 @@ import com.tschuchort.compiletesting.SourceFile
 import kotlin.io.path.createTempDirectory
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar
@@ -1500,6 +1501,29 @@ class ZiplineBridgeNativePluginTest {
     assertTrue(
       lines[hint - 1].contains("com.example.Bordered"),
       "the hint must name the class whose module needs the plugin: ${lines[hint - 1]}",
+    )
+  }
+
+  /**
+   * The factories object is signed with the package of the module's first source file, so a fixed name
+   * makes two modules that share a package declare one signature -- which is how `:wb:live`'s guest
+   * bundle failed to link two Clive modules that both declare in `ru.wildberries.clive.compose`:
+   * "IrClassSymbolImpl is already bound". A stable per-module key is the whole fix, so it is pinned.
+   */
+  @Test
+  fun `the runtime factories object is named for its module`() {
+    val main = runtimeFactoriesClassName(":wb:nodes:main:common")
+    val designSystem = runtimeFactoriesClassName(":wb:nodes:design-system:common")
+    assertNotEquals(main, designSystem, "modules sharing a package must not share the signature")
+    assertEquals(main, runtimeFactoriesClassName(":wb:nodes:main:common"), "the name must be stable")
+    assertTrue(
+      Regex("^[A-Za-z_][A-Za-z0-9_]*$").matches(main),
+      "must be a legal JS identifier, was: $main",
+    )
+    // Two modules named `common` in different places still differ.
+    assertNotEquals(
+      runtimeFactoriesClassName(":core:nodes:foundation:common"),
+      runtimeFactoriesClassName(":wb:features:shelfs:common"),
     )
   }
 

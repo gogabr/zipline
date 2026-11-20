@@ -7,6 +7,7 @@
 #include <jsi/jsi.h>
 
 #include <cstring>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -480,6 +481,62 @@ bool findExportedFunction(
 
 }  // namespace
 
+// Records, per module, what the warm-up lookup decided, into three globals the host can quote when a
+// create-factory turns out to be missing.
+//
+// Every early return in HermesCore_warmUpModule is a *silent* no-op by design -- a module compiled
+// without the bridge plugin has no hook, and that must not be an error -- so from outside, "loader not
+// installed", "module not in the map under this id", "hook not found in these exports" and "never
+// called at all" are indistinguishable. compose-live proved the distinction matters: 46 warm-up
+// attempts, 6 of which found and called a hook. That says the lookup works for some modules and not
+// for others, and a single "last outcome" global cannot then tell you which list the module you care
+// about is on. So each module keeps its verdict:
+//
+//   __zipline_bridgeWarmUpCalled   space-separated ids whose hook was found and called
+//   __zipline_bridgeWarmUpMissed   `id=code` for the rest, where code is one of
+//                                  no-require | no-module-map | id-not-in-map | hook-not-found
+//   __zipline_bridgeWarmUpStatus   counters: attempts and calls so far
+struct WarmUpLog {
+  std::map<std::string, std::string> outcomes;
+  int attempts = 0;
+  int calls = 0;
+};
+
+WarmUpLog& warmUpLog() {
+  static WarmUpLog log;
+  return log;
+}
+
+void publishWarmUpLog(jsi::Runtime& rt) {
+  WarmUpLog& log = warmUpLog();
+  std::string called;
+  std::string missed;
+  for (const auto& entry : log.outcomes) {
+    std::string& target = entry.second == "called" ? called : missed;
+    if (!target.empty()) target += " ";
+    target += entry.second == "called" ? entry.first : entry.first + "=" + entry.second;
+  }
+  try {
+    rt.global().setProperty(
+        rt, "__zipline_bridgeWarmUpCalled", jsi::String::createFromUtf8(rt, called));
+    rt.global().setProperty(
+        rt, "__zipline_bridgeWarmUpMissed", jsi::String::createFromUtf8(rt, missed));
+    rt.global().setProperty(
+        rt, "__zipline_bridgeWarmUpStatus",
+        jsi::String::createFromUtf8(
+            rt, "attempts=" + std::to_string(log.attempts) + ", called=" + std::to_string(log.calls)));
+  } catch (const std::exception&) {
+  }
+}
+
+void recordWarmUpOutcome(jsi::Runtime& rt, const char* moduleId, const char* code, bool called) {
+  WarmUpLog& log = warmUpLog();
+  log.attempts++;
+  if (called) log.calls++;
+  log.outcomes[moduleId ? moduleId : "?"] = code;
+  publishWarmUpLog(rt);
+}
+
 int HermesCore_warmUpModule(void* context, const char* moduleId, const char* functionName, char** errorOut) {
   ContextBase* ctx = static_cast<ContextBase*>(context);
   if (!ctx || !ctx->runtime) {
@@ -492,6 +549,7 @@ int HermesCore_warmUpModule(void* context, const char* moduleId, const char* fun
 
     jsi::Value requireVal = rt.global().getProperty(rt, "require");
     if (!requireVal.isObject() || !requireVal.asObject(rt).isFunction(rt)) {
+      recordWarmUpOutcome(rt, moduleId, "no-require", false);
       return 0;
     }
 
@@ -500,10 +558,13 @@ int HermesCore_warmUpModule(void* context, const char* moduleId, const char* fun
     // look the export up directly and skip the hook when it is not there.
     jsi::Value registryVal = rt.global().getProperty(rt, "app_cash_zipline_idToExports");
     if (!registryVal.isObject()) {
+      recordWarmUpOutcome(rt, moduleId, "no-module-map", false);
       return 0;
     }
     jsi::Value exports = registryVal.asObject(rt).getProperty(rt, moduleId ? moduleId : "");
     if (!exports.isObject()) {
+      // The id the host loaded the module under is not the key the module defined itself with.
+      recordWarmUpOutcome(rt, moduleId, "id-not-in-map", false);
       return 0;
     }
 
@@ -514,11 +575,16 @@ int HermesCore_warmUpModule(void* context, const char* moduleId, const char* fun
       // hook is usually one or more namespace objects deep. Search for it rather than making the
       // generator depend on the export layout.
       std::optional<jsi::Function> found;
-      if (!findExportedFunction(rt, exports, name.c_str(), 0, found)) return 0;
+      if (!findExportedFunction(rt, exports, name.c_str(), 0, found)) {
+        recordWarmUpOutcome(rt, moduleId, "hook-not-found", false);
+        return 0;
+      }
+      recordWarmUpOutcome(rt, moduleId, "called", true);
       found->call(rt, nullptr, 0);
       return 1;
     }
 
+    recordWarmUpOutcome(rt, moduleId, "called", true);
     hook.asObject(rt).asFunction(rt).call(rt, nullptr, 0);
     return 1;
   } catch (const std::exception& e) {

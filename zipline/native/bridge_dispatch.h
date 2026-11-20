@@ -772,12 +772,44 @@ static inline jsi::Value jsiHost2JsFindCreateFactory(jsi::Runtime &rt, const cha
  * while this class's module never registered. The prototype question separates the last of those, since
  * prototypes reach the host by a different route than the factories do.
  */
+// Reads a diagnostic global the C++ warm-up bookkeeping maintains, with a cap: these strings exist to
+// be printed inside an exception message, and a bundle with dozens of modules must not turn the report
+// into a wall of ids.
+static inline std::string jsiGlobalString(jsi::Runtime &rt, const char *name, size_t limit) {
+  std::string out = " <unset>";
+  try {
+    jsi::Value value = rt.global().getProperty(rt, name);
+    if (value.isString()) {
+      out = value.asString(rt).utf8(rt);
+      if (out.empty()) out = " <none>";
+      if (out.size() > limit) out = out.substr(0, limit) + "...";
+    }
+  } catch (const std::exception &) {
+  }
+  return out;
+}
+
+// "is a function" / "is undefined": whether the host installed a hook at all is a different defect
+// from a guest that never called it, and the factories global being absent looks identical either way.
+static inline const char *jsiRuntimeGlobalType(jsi::Runtime &rt, const char *name) {
+  try {
+    jsi::Value value = rt.global().getProperty(rt, name);
+    if (value.isUndefined()) return "there is";
+    if (value.isObject() && value.asObject(rt).isFunction(rt)) return "there is a";
+    return "there is a non-function";
+  } catch (const std::exception &) {
+    return "reading";
+  }
+}
+
 static inline std::string jsiHost2JsRegistrationState(jsi::Runtime &rt, const char *fq) {
   std::string out;
   jsi::Value factories = rt.global().getProperty(rt, HOST2JS_FACTORIES_GLOBAL);
   if (!factories.isObject()) {
-    out = "the factories global is absent (no module published one, or __bridgeRegisterRuntime was "
-          "never installed on this runtime)";
+    out = std::string("the factories global is absent (no module published one; on this runtime ") +
+          jsiRuntimeGlobalType(rt, "__bridgeRegisterRuntime") +
+          " __bridgeRegisterRuntime, and " + jsiRuntimeGlobalType(rt, "__bridgeRegister") +
+          " __bridgeRegister)";
   } else {
     jsi::Value newLong = factories.asObject(rt).getProperty(rt, "newLong");
     if (newLong.isObject() && newLong.asObject(rt).isFunction(rt)) {
@@ -791,6 +823,14 @@ static inline std::string jsiHost2JsRegistrationState(jsi::Runtime &rt, const ch
   out += jsiHost2JsPrototype(rt, fq).isObject()
              ? "; this class registered its prototype"
              : "; this class registered no prototype";
+  // What the host did about each module's warm-up hook. A failure to find a create-factory is
+  // indistinguishable from "this module was never warmed up", and the guest swallows a missing host
+  // hook, so this is the only place the distinction surfaces. Truncated because a 46-module app
+  // produces more line than a log message should carry; the ids that matter -- the ones that were
+  // called, and this class's own module if it appears -- are short.
+  out += "; warm-up " + jsiGlobalString(rt, "__zipline_bridgeWarmUpStatus", 80);
+  out += "; hooks called for:" + jsiGlobalString(rt, "__zipline_bridgeWarmUpCalled", 320);
+  out += "; missed:" + jsiGlobalString(rt, "__zipline_bridgeWarmUpMissed", 320);
   return out;
 }
 

@@ -372,6 +372,15 @@ class Host2JsRuntimeTest {
         )
       }
       assertTrue(e2.message!!.contains("registered its prototype"), "was: " + e2.message)
+
+      // The warm-up verdicts ride along, because "no module published factories" and "the host never
+      // warmed this module up" have to be tellable apart. This harness never runs the module loader, so
+      // the honest expectation is the unset marker -- what is being pinned is that the clause is there
+      // at all and says it has no data, rather than silently disappearing from the report.
+      assertTrue(
+        e2.message!!.contains("warm-up") && e2.message!!.contains("hooks called for:"),
+        "was: " + e2.message,
+      )
     } finally {
       HermesBridge_freeHandle(context, fields)
     }

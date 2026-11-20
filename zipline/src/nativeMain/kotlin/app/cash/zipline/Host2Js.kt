@@ -172,6 +172,12 @@ private fun host2JsRegistrationState(ctx: COpaquePointer?, fqName: String): Stri
           "empty"
       }
     }
+  // The warm-up bookkeeping the C++ layer keeps per module: which modules had their hook found and
+  // called, and which were skipped with which verdict. Without it, "this module published no
+  // factories" and "the host never warmed this module up" are the same message.
+  val warmUp = jsiDiagnosticGlobal(ctx, "__zipline_bridgeWarmUpStatus") +
+    "; hooks called for:" + jsiDiagnosticGlobal(ctx, "__zipline_bridgeWarmUpCalled") +
+    "; missed:" + jsiDiagnosticGlobal(ctx, "__zipline_bridgeWarmUpMissed")
   val prototypes = HermesBridge_getProperty(ctx, 0, "__zipline_bridgePrototypes")
   val registered =
     if (prototypes < 0) {
@@ -181,7 +187,17 @@ private fun host2JsRegistrationState(ctx: COpaquePointer?, fqName: String): Stri
       HermesBridge_freeHandle(ctx, prototypes)
       if (proto >= 0) "this class registered its prototype" else "this class registered no prototype"
     }
-  return "$published; $registered"
+  return "$published; $registered; warm-up $warmUp"
+}
+
+// Reads one of the diagnostic globals the C++ warm-up bookkeeping maintains, capped: it exists to be
+// printed inside an exception message, and a bundle with dozens of modules must not turn that report
+// into a wall of ids.
+private fun jsiDiagnosticGlobal(ctx: COpaquePointer?, name: String, limit: Int = 320): String {
+  val handle = HermesBridge_getProperty(ctx, 0, name)
+  if (handle < 0) return " <unset>"
+  val value = bridgeJsString(ctx, handle) ?: return " <not a string>"
+  return if (value.length <= limit) value.ifEmpty { " <none>" } else value.take(limit) + "..."
 }
 
 /**

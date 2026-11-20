@@ -464,6 +464,31 @@ private fun buildRuntimeFactories(
     visibility = DescriptorVisibilities.PRIVATE
     isPrimary = true
   }
+  // LIVE DEFECT, measured 2026-11-20, not fixed here: this constructor has no body, and the JS
+  // backend generates the construction of this internal class as a static accessor whose body IS the
+  // constructor's body. Where the backend inlines the call it works, and every single-module test
+  // bundle takes that route:
+  //
+  //     __bridgeRegisterRuntime(new __BridgeRuntimeFactories());
+  //
+  // In the multi-module lowering the app ships with it goes through the accessor instead, which is
+  // emitted empty and so returns `undefined`:
+  //
+  //     static new_io_...___BridgeRuntimeFactories_t6f8x1_k$($box) {
+  //     }
+  //
+  // The host is handed `undefined`, nothing merges, and the tolerant try/catch around the call makes
+  // it silent. That is the reason compose-live reports prototypes registered and no factories global.
+  // Two repairs were tried and neither is a fix, both measured:
+  //   * `irBlockBody { }` -> the JS backend fails outright: "Back-end: Please report this problem ...
+  //     Problem with `internal class __BridgeRuntimeFactories`".
+  //   * a body calling the superclass constructor -> the accessor becomes `return createThis(this,
+  //     $box)`, which makes compose-live's guest publish, and takes the skew bundles onto the same
+  //     route with a source object the merge finds empty: 19 skew `CrossVersionTest` rows fail on
+  //     "a registration arrived empty". So the accessor route is unsound in a second, deeper way that
+  //     this comment does not explain.
+  // What follows is a change of construction route, not a body for this constructor: the registration
+  // must stop depending on a synthetic constructor the backend may or may not be able to route.
 
   val longClass = finder.findClass(ClassId(FqName("kotlin"), Name.identifier("Long")))?.owner
     ?: error("kotlin.Long class not found")

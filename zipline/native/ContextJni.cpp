@@ -155,6 +155,18 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
             // `create_<fqn>` for a class whose module loaded earlier and finds nothing.
             jsi::Object factories = globalBridgeMap(rt, HOST2JS_FACTORIES_GLOBAL);
             jsi::Object published = args[0].asObject(rt);
+            // Merged rather than assigned: the guest publishes one factories object per warmed-up
+            // module, so assigning hands the global to whichever module warmed up last and silently
+            // discards every other module's create-factories and newLong. A test bundle has a single
+            // bridged module -- one registration, where the two behave identically -- and compose-live's
+            // first host->JS payload is what told them apart.
+            //
+            // Merging is unconditional, and that is deliberate. Skipping repeats by marking the source's
+            // constructor was tried, and is not sound: two registrations whose sources are plain object
+            // literals share `Object` as their constructor, so the second is silently dropped -- caught
+            // by `a second module's runtime registration keeps the first module's factories` in
+            // Host2JsRuntimeTest. Repeated registrations from one module would cost a few thousand
+            // property copies at load; the merge is the part worth keeping simple.
             mergeBridgeFactories(rt, factories, published);
             return jsi::Value::undefined();
         });

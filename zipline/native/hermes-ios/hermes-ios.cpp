@@ -1187,6 +1187,9 @@ void HermesBridge_installBridgeRegister(void* jsiRuntime) {
                 return created;
             }();
             jsi::Object published = args[0].asObject(rt);
+            // Merged every time; no skip-the-repeat guard, for the reason recorded at length in the
+            // same hook in ContextJni.cpp: a constructor-based guard is not sound, and the cost it
+            // saves is microseconds.
             mergeBridgeFactories(rt, target, published);
             return jsi::Value::undefined();
         });

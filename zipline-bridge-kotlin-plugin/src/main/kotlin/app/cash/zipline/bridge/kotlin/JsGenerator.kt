@@ -42,22 +42,21 @@ import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
-import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.expressions.IrBlockBody
-import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
 import org.jetbrains.kotlin.ir.expressions.impl.IrCatchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrType
-import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.types.makeNullable
@@ -363,7 +362,10 @@ internal fun injectModuleLoadBridgeRegistration(
   val bridgeRegister =
     findOrCreateBridgeRegister(finder, pluginContext, fileForModule, moduleFragment.name.asString())
   val bridgeRegisterRuntime = findOrCreateBridgeRegisterRuntime(
-    finder, pluginContext, fileForModule, moduleFragment.name.asString(),
+    finder,
+    pluginContext,
+    fileForModule,
+    moduleFragment.name.asString(),
   )
   val factoriesClass =
     buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses, moduleFragment.name.asString())
@@ -484,12 +486,10 @@ internal fun bridgeDeclarationName(base: String, moduleName: String): String {
 }
 
 /** See [bridgeDeclarationName]: the Kotlin name is keyed, the JS name is not, so the host is unaffected. */
-internal fun runtimeFactoriesClassName(moduleName: String): String =
-  bridgeDeclarationName("__BridgeRuntimeFactories", moduleName)
+internal fun runtimeFactoriesClassName(moduleName: String): String = bridgeDeclarationName("__BridgeRuntimeFactories", moduleName)
 
 /** [BRIDGE_WARM_UP_FUNCTION_NAME] with a module key: the host finds the hook by its JS name. */
-internal fun warmUpFunctionName(moduleName: String): String =
-  bridgeDeclarationName(BRIDGE_WARM_UP_FUNCTION_NAME, moduleName)
+internal fun warmUpFunctionName(moduleName: String): String = bridgeDeclarationName(BRIDGE_WARM_UP_FUNCTION_NAME, moduleName)
 
 /**
  * Build the synthetic internal `object __BridgeRuntimeFactories` with the three factory

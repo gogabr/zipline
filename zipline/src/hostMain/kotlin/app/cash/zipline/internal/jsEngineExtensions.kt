@@ -12,9 +12,28 @@ import kotlinx.serialization.json.Json
  */
 internal const val BRIDGE_WARM_UP_FUNCTION_NAME = "__bridgeWarmUpHost2Js"
 
+/**
+ * Set by the host's own `__bridgeRegisterRuntime` hook when a guest registration arrives unusable --
+ * not an object at all, or an object with nothing on it. The host records instead of throwing because
+ * the guest wraps the call in a tolerant try/catch, and a throw across that boundary is lost. Read
+ * back here, after each module load, where nothing can swallow it and the module id is known.
+ */
+internal const val BRIDGE_FACTORIES_PROBLEM_GLOBAL = "__zipline_bridgeFactoriesProblem"
+
 private fun warmUpBridges(jsEngine: JsEngine, id: String) {
   // A module compiled without the bridge plugin has no hook; that is not an error.
   jsEngine.warmUpModule(id, BRIDGE_WARM_UP_FUNCTION_NAME)
+  assertBridgeFactoriesUsable(jsEngine, id)
+}
+
+internal fun assertBridgeFactoriesUsable(jsEngine: JsEngine, id: String) {
+  val problem = jsEngine.getGlobalProperty(BRIDGE_FACTORIES_PROBLEM_GLOBAL)
+    ?: return
+  throw IllegalStateException(
+    "module $id published unusable host->JS runtime factories: $problem. Loading stops here because " +
+      "the alternative is that the first payload which needs one fails, much later and elsewhere, " +
+      "with 'the guest provides no create_<fqn>' -- which names neither this module nor this reason.",
+  )
 }
 
 internal fun collectModuleDependencies(jsEngine: JsEngine) {

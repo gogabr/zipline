@@ -60,6 +60,39 @@ class Host2JsBridgeEndToEndTest {
 
   private fun roundTrip(value: Any): Any? = host.roundTrip(value)
 
+  /**
+   * A registration that arrives empty has to fail at load, in the host, where nothing can swallow it.
+   * The guest wraps its own `__bridgeRegisterRuntime` call in a tolerant try/catch, so an exception
+   * raised inside the hook is lost -- that is what made the ES-class lowering defect travel from a
+   * detail of plugin IR all the way to a device, and arrive named only as
+   * "the guest provides no create_<fqn>".
+   *
+   * Calling the hook with `undefined` is precisely what a broken construction does: it is how the
+   * app-shaped bundle failed, and the es2015 skew modules fail the same way.
+   */
+  @Test
+  fun theHostRefusesAModuleWhoseRegistrationArrivesEmpty() {
+    assertEquals(BridgedTestValues.data, roundTrip(BridgedTestValues.data))
+
+    val recorded = host.evaluateForBridge(
+      """
+      delete globalThis.__zipline_bridgeFactoriesProblem;
+      __bridgeRegisterRuntime(undefined);
+      typeof globalThis.__zipline_bridgeFactoriesProblem;
+      """,
+    )
+    assertEquals("string", recorded, "the host did not record the bad registration")
+
+    try {
+      val e = assertFailsWith<IllegalStateException> { host.loadGuest() }
+      assertTrue(e.message!!.contains("published unusable host->JS runtime factories"), "was: " + e.message)
+      assertTrue(e.message!!.contains("called with undefined"), "was: " + e.message)
+    } finally {
+      // The record is sticky by design, so clear it: the other rows must not inherit this verdict.
+      host.evaluateForBridge("delete globalThis.__zipline_bridgeFactoriesProblem; 0")
+    }
+  }
+
   @Test
   fun data() {
     assertEquals(BridgedTestValues.data, roundTrip(BridgedTestValues.data))

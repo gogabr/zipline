@@ -51,6 +51,42 @@ jsi::Object globalBridgeMap(jsi::Runtime &rt, const char *name) {
 // [target]. Used for the globals the guest fills in module by module; see the
 // __bridgeRegisterRuntime hook.
 // jsi::Object has no copy or move constructor, so both handles come in by reference.
+// Records that a guest registration arrived unusable, and what arrived, into a global the host reads
+// back after each module load. Recorded rather than thrown: the guest wraps its own
+// `__bridgeRegisterRuntime` call in a tolerant try/catch, so an exception raised here cannot escape --
+// the defect survives to a much later host->JS conversion as "the guest provides no create_<fqn>",
+// naming neither the module nor the reason. Only the first problem is kept: it is the one that
+// happened, everything after it is downstream.
+void recordFactoriesProblem(jsi::Runtime &rt, const std::string &detail) {
+    try {
+        if (rt.global().getProperty(rt, "__zipline_bridgeFactoriesProblem").isString()) return;
+        // The bad registration is attributed to the module that was loading, which the loader keeps
+        // in this global (CURRENT_MODULE_ID in hostMain's defineJs.kt). Without it the report can only
+        // name whichever module the host checked first, and a module that loaded cleanly before the
+        // culprit would be blamed for it.
+        std::string message = detail;
+        jsi::Value loading = rt.global().getProperty(rt, "app_cash_zipline_currentModuleId");
+        if (loading.isString()) message += " (while loading " + loading.asString(rt).utf8(rt) + ")";
+        rt.global().setProperty(
+            rt, "__zipline_bridgeFactoriesProblem", jsi::String::createFromUtf8(rt, message));
+    } catch (const std::exception &) {
+    }
+}
+
+// jsi::Value cannot be copied, so this takes the hook's argument array rather than a value: the
+// "called with nothing" case has no value to name.
+const char *describeBridgeArgument(const jsi::Value *args, size_t argc) {
+    if (argc < 1) return "nothing";
+    const jsi::Value &value = args[0];
+    if (value.isUndefined()) return "undefined";
+    if (value.isNull()) return "null";
+    if (value.isBool()) return "a boolean";
+    if (value.isNumber()) return "a number";
+    if (value.isString()) return "a string";
+    if (value.isSymbol()) return "a symbol";
+    return "a value of no recognisable kind";
+}
+
 void mergeBridgeFactories(jsi::Runtime &rt, jsi::Object &target, jsi::Object &source) {
   // The guest's factories object is a Kotlin/JS `object` instance: newLong, newArrayList and every
   // create-factory are methods on its PROTOTYPE and are not enumerable, so copying the own enumerable
@@ -140,7 +176,15 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
         jsi::PropNameID::forUtf8(rt, "__bridgeRegisterRuntime"),
         1,
         [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
-            if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
+            if (argc < 1 || !args[0].isObject()) {
+              // The call site is generated, so a non-object is not a caller mistake: the construction
+              // the plugin emitted produced nothing at all.
+              recordFactoriesProblem(rt,
+                  std::string("__bridgeRegisterRuntime was called with ") +
+                      describeBridgeArgument(args, argc) +
+                      " instead of a factories object");
+              return jsi::Value::undefined();
+            }
             // The factories build real Kotlin/JS Long/ArrayList/LinkedHashMap instances; they are
             // the guest's own stdlib calls, so nothing here relies on Kotlin/JS internals. The
             // instance carries newLong/newArrayList/newLinkedHashMap through its prototype, so
@@ -168,6 +212,11 @@ extern "C" __attribute__((used, visibility("default"))) void register_all(jsi::R
             // Host2JsRuntimeTest. Repeated registrations from one module would cost a few thousand
             // property copies at load; the merge is the part worth keeping simple.
             mergeBridgeFactories(rt, factories, published);
+            jsi::Value newLong = factories.getProperty(rt, "newLong");
+            if (!newLong.isObject() || !newLong.asObject(rt).isFunction(rt)) {
+              recordFactoriesProblem(rt,
+                  "the published factories object carries no newLong, so it had no methods to merge");
+            }
             return jsi::Value::undefined();
         });
 

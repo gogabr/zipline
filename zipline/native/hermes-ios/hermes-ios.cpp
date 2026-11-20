@@ -1065,7 +1065,45 @@ void HermesBridge_clearHandles(void* context) {
 // Copy every property of [source] that the host could read on it -- own or inherited -- onto
 // [target], so that every bridged module's factories stay reachable in one global object.
 // jsi::Object has no copy or move constructor, so both handles come in by reference.
-static void mergeBridgeFactories(jsi::Runtime &rt, jsi::Object &target, jsi::Object &source) {
+static // Mirrors the same two helpers in ContextJni.cpp for the JVM host; the registration hook is duplicated
+// across these two files, so its diagnostics are too.
+// Records that a guest registration arrived unusable, and what arrived, into a global the host reads
+// back after each module load. Recorded rather than thrown: the guest wraps its own
+// `__bridgeRegisterRuntime` call in a tolerant try/catch, so an exception raised here cannot escape --
+// the defect survives to a much later host->JS conversion as "the guest provides no create_<fqn>",
+// naming neither the module nor the reason. Only the first problem is kept: it is the one that
+// happened, everything after it is downstream.
+static void recordFactoriesProblem(jsi::Runtime &rt, const std::string &detail) {
+    try {
+        if (rt.global().getProperty(rt, "__zipline_bridgeFactoriesProblem").isString()) return;
+        // The bad registration is attributed to the module that was loading, which the loader keeps
+        // in this global (CURRENT_MODULE_ID in hostMain's defineJs.kt). Without it the report can only
+        // name whichever module the host checked first, and a module that loaded cleanly before the
+        // culprit would be blamed for it.
+        std::string message = detail;
+        jsi::Value loading = rt.global().getProperty(rt, "app_cash_zipline_currentModuleId");
+        if (loading.isString()) message += " (while loading " + loading.asString(rt).utf8(rt) + ")";
+        rt.global().setProperty(
+            rt, "__zipline_bridgeFactoriesProblem", jsi::String::createFromUtf8(rt, message));
+    } catch (const std::exception &) {
+    }
+}
+
+// jsi::Value cannot be copied, so this takes the hook's argument array rather than a value: the
+// "called with nothing" case has no value to name.
+const char *describeBridgeArgument(const jsi::Value *args, size_t argc) {
+    if (argc < 1) return "nothing";
+    const jsi::Value &value = args[0];
+    if (value.isUndefined()) return "undefined";
+    if (value.isNull()) return "null";
+    if (value.isBool()) return "a boolean";
+    if (value.isNumber()) return "a number";
+    if (value.isString()) return "a string";
+    if (value.isSymbol()) return "a symbol";
+    return "a value of no recognisable kind";
+}
+
+void mergeBridgeFactories(jsi::Runtime &rt, jsi::Object &target, jsi::Object &source) {
   // The guest's factories object is a Kotlin/JS `object` instance: newLong, newArrayList and every
   // create-factory are methods on its PROTOTYPE and are not enumerable, so copying the own enumerable
   // keys copies nothing at all -- the host would keep an empty map and report "the guest provides no
@@ -1176,7 +1214,13 @@ void HermesBridge_installBridgeRegister(void* jsiRuntime) {
         jsi::PropNameID::forUtf8(rt, "__bridgeRegisterRuntime"),
         1,
         [](jsi::Runtime& rt, const jsi::Value&, const jsi::Value* args, size_t argc) -> jsi::Value {
-            if (argc < 1 || !args[0].isObject()) return jsi::Value::undefined();
+            if (argc < 1 || !args[0].isObject()) {
+                recordFactoriesProblem(rt,
+                    std::string("__bridgeRegisterRuntime was called with ") +
+                        describeBridgeArgument(args, argc) +
+                        " instead of a factories object");
+                return jsi::Value::undefined();
+            }
             // Merge, do not replace: one call per bridged module, and the last module to load must
             // not delete the create-factories of the modules before it. Mirrors the same hook in
             // ContextJni.cpp for the JVM host; the prototypes global above has always merged.
@@ -1191,6 +1235,11 @@ void HermesBridge_installBridgeRegister(void* jsiRuntime) {
             // same hook in ContextJni.cpp: a constructor-based guard is not sound, and the cost it
             // saves is microseconds.
             mergeBridgeFactories(rt, target, published);
+            jsi::Value newLong = target.getProperty(rt, "newLong");
+            if (!newLong.isObject() || !newLong.asObject(rt).isFunction(rt)) {
+                recordFactoriesProblem(rt,
+                    "the published factories object carries no newLong, so it had no methods to merge");
+            }
             return jsi::Value::undefined();
         });
 

@@ -42,7 +42,9 @@ import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.expressions.IrBlockBody
+import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
 import org.jetbrains.kotlin.ir.expressions.impl.IrCatchImpl
@@ -53,6 +55,7 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.types.classFqName
 import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.getClass
@@ -360,9 +363,6 @@ internal fun injectModuleLoadBridgeRegistration(
   val bridgeRegisterRuntime =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
   val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule, host2JsClasses)
-  val factoriesCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
-    .firstOrNull { it.isPrimary }
-    ?: error("__BridgeRuntimeFactories primary constructor not found")
 
   // `@JsExport fun __bridgeWarmUpHost2Js(): Boolean` — the host calls this from loadJsModule
   // right after the module is defined (see BRIDGE_WARM_UP_JS host-side). Being exported keeps it
@@ -423,7 +423,15 @@ internal fun injectModuleLoadBridgeRegistration(
     }
     +tolerantBridgeCall(
       call = irCall(bridgeRegisterRuntime.symbol).apply {
-        arguments[0] = irCall(factoriesCtor)
+        // The object's instance, not a value we construct: this is what an object access compiles to.
+        // The constructor still runs -- the backend calls it from the singleton accessor -- but the call
+        // site no longer synthesises a construction the backend may or may not be able to route.
+        arguments[0] = IrGetObjectValueImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          factoriesClass.defaultType,
+          factoriesClass.symbol,
+        )
       },
       raw = bridgeRegisterRuntime.isRaw,
       parent = warmUpFn,
@@ -451,44 +459,66 @@ private fun buildRuntimeFactories(
 ): IrClass {
   val factoriesClass = pluginContext.irFactory.buildClass {
     name = Name.identifier("__BridgeRuntimeFactories")
-    kind = ClassKind.CLASS
+    kind = ClassKind.OBJECT
     modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
     visibility = DescriptorVisibilities.INTERNAL
     origin = IrDeclarationOrigin.DEFINED
   }
   factoriesClass.parent = fileForModule
-  // A plain class (not an object): a synthetic object's singleton accessor proved unreliable
-  // in the JS backend, so the registration constructs an instance via the constructor instead.
+  // An object, not a class: nothing has to be *constructed* for the host to get its factories, which
+  // removes the whole class of defect where the JS backend decides to route construction through a
+  // generated accessor (it does, for ES classes -- see the note on the constructor below). The earlier
+  // note here claimed a synthetic object's singleton accessor "proved unreliable in the JS backend";
+  // that was never measured, and it was load-bearing: it is why this was a class at all. What it
+  // actually described is the ES5-only coverage of every test bundle, which hides the accessor route
+  // entirely -- see `build the skew pair the way the app is built`.
   factoriesClass.createThisReceiverParameter()
   factoriesClass.addConstructor {
     visibility = DescriptorVisibilities.PRIVATE
     isPrimary = true
   }
-  // LIVE DEFECT, measured 2026-11-20, not fixed here: this constructor has no body, and the JS
-  // backend generates the construction of this internal class as a static accessor whose body IS the
-  // constructor's body. Where the backend inlines the call it works, and every single-module test
-  // bundle takes that route:
+  // The object route and this body are a pair; the object on its own buys nothing. The singleton
+  // accessor lowers to a call to the very same static accessor:
   //
-  //     __bridgeRegisterRuntime(new __BridgeRuntimeFactories());
-  //
-  // In the multi-module lowering the app ships with it goes through the accessor instead, which is
-  // emitted empty and so returns `undefined`:
-  //
-  //     static new_io_...___BridgeRuntimeFactories_t6f8x1_k$($box) {
+  //     function __BridgeRuntimeFactories_getInstance() {
+  //       if (__BridgeRuntimeFactories_instance === VOID)
+  //         __BridgeRuntimeFactories.new_..._vf6i4j_k$();  // empty body: no instance is ever created
+  //       return __BridgeRuntimeFactories_instance;
   //     }
   //
-  // The host is handed `undefined`, nothing merges, and the tolerant try/catch around the call makes
-  // it silent. That is the reason compose-live reports prototypes registered and no factories global.
-  // Two repairs were tried and neither is a fix, both measured:
-  //   * `irBlockBody { }` -> the JS backend fails outright: "Back-end: Please report this problem ...
-  //     Problem with `internal class __BridgeRuntimeFactories`".
-  //   * a body calling the superclass constructor -> the accessor becomes `return createThis(this,
-  //     $box)`, which makes compose-live's guest publish, and takes the skew bundles onto the same
-  //     route with a source object the merge finds empty: 19 skew `CrossVersionTest` rows fail on
-  //     "a registration arrived empty". So the accessor route is unsound in a second, deeper way that
-  //     this comment does not explain.
-  // What follows is a change of construction route, not a body for this constructor: the registration
-  // must stop depending on a synthetic constructor the backend may or may not be able to route.
+  // so with a body-less constructor the object route fails exactly as the class route did -- which is
+  // the whole content of the old note here claiming a synthetic object's singleton accessor was
+  // "unreliable in the JS backend". What the object does buy is that the call site stops constructing
+  // anything by hand: the registration reads the instance (IrGetObjectValueImpl below) and the backend
+  // owns creation, in one place, where it can get it right.
+  val singletonCtor = factoriesClass.declarations.filterIsInstance<IrConstructor>()
+    .first { it.isPrimary }
+  singletonCtor.body =
+    pluginContext.irBuiltIns.createIrBuilder(singletonCtor.symbol).irBlockBody {
+      +irDelegatingConstructorCall(
+        pluginContext.irBuiltIns.anyClass.owner.primaryConstructor
+          ?: error("kotlin.Any primary constructor not found"),
+      )
+    }
+  // This constructor needs a real body, and that is not obvious, so the failure mode is written out.
+  // The JS backend creates instances of this internal class through a generated static accessor, and
+  // the accessor body IS this constructor body. Given nothing, the accessor is emitted empty:
+  //
+  //     static new_io_...___BridgeRuntimeFactories_t6f8x1_k$($box) {
+  //     }                                    <- returns undefined, assigns nothing
+  //
+  // which is what made compose-live report prototypes registered and no factories global. An empty
+  // `irBlockBody { }` is not enough either: the JS backend then fails outright on this class, with
+  // "Back-end: Please report this problem" naming `internal class __BridgeRuntimeFactories`. What works
+  // is a body that delegates to the superclass constructor, which is what every real primary
+  // constructor of a concrete class has; the accessor then lowers correctly, including the singleton
+  // assignment the object route relies on.
+  //
+  // Why nothing caught this for so long: only the ES-class lowering generates the accessor. Every test
+  // bundle was ES5, where construction lowers inline as `new __BridgeRuntimeFactories()` and a
+  // body-less constructor is harmless. The two changes that fixed that -- building the skew pair with
+  // ES classes, and refusing to load a module whose factories arrive empty -- reproduce and detect this
+  // in about fifteen seconds.
 
   val longClass = finder.findClass(ClassId(FqName("kotlin"), Name.identifier("Long")))?.owner
     ?: error("kotlin.Long class not found")

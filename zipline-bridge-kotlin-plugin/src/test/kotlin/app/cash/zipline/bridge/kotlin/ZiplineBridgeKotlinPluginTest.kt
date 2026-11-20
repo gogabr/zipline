@@ -1412,7 +1412,7 @@ class ZiplineBridgeNativePluginTest {
 
     // One factory call per bridge, and nothing else constructs the class.
     assertEquals(1, Regex("\\.bridgeCreate\\(").findAll(content).count(), content)
-    assertTrue(content.contains("Defaults.Bridge.bridgeCreate(_mask0, a = a, b = b, c = c)"), content)
+    assertTrue(content.contains("_bridge.bridgeCreate(_mask0, a = a, b = b, c = c)"), content)
 
     // The flags come from what the guest sent. A defaulted parameter's bit is its position within
     // the word, and it is SET WHEN THE PARAMETER DID NOT ARRIVE: a set bit is the factory's
@@ -1465,8 +1465,42 @@ class ZiplineBridgeNativePluginTest {
   fun `a signature wider than one flag word passes two mask words to the factory`() {
     val params = (0 until 40).joinToString(", ") { "val p$it: Int = $it" }
     val content = generatedBridge("Wide.kt", "@WithJS2HostBridge class Wide($params)", "Wide")
-    assertTrue(content.contains("Wide.Bridge.bridgeCreate(_mask0, _mask1, p0 = p0,"), content)
+    assertTrue(content.contains("val _bridge = Wide.Bridge"), content)
+    assertTrue(content.contains("_bridge.bridgeCreate(_mask0, _mask1, p0 = p0,"), content)
     assertTrue(content.contains("val _mask1 = (if (p32Sent) 0 else 1) or (if (p33Sent) 0 else 2)"), content)
+  }
+
+  /**
+   * A host converter builds its value through the `Bridge` holder, which exists only in the compilation
+   * that compiles the class. When a host target resolves a declaring module built without the plugin --
+   * which is what an iOS build of a Redwood generated module did -- the generated file fails with a bare
+   * "unresolved reference 'Bridge'", and nothing in that message says what to change. So the file says
+   * it, on the lines directly above the statement that fails, where the compiler and Xcode will show it.
+   */
+  @Test
+  fun `the generated converter explains a holder that does not resolve`() {
+    val content = generatedBridge(
+      "Bordered.kt",
+      "@WithJS2HostBridge class Bordered(val color: Int = 1, val shape: Int = 2)",
+      "Bordered",
+    )
+
+    val lines = content.lines()
+    // The file imports the class, so the lookup is unqualified: assert on what is emitted, not on
+    // what the package would allow.
+    val call = lines.indexOfFirst { it.contains("val _bridge = ") && it.contains("Bordered.Bridge") }
+    assertTrue(call > 0, "no holder lookup in:\n$content")
+    val hint = lines.indexOfFirst { it.contains("unresolved reference 'Bridge'") }
+    assertTrue(hint > 0, "no explanation of the failure in:\n$content")
+    assertTrue(
+      lines.subList(maxOf(0, call - 8), call).any { it.contains("without the zipline bridge compiler plugin") },
+      "the explanation must sit directly above the statement that fails:\n$content",
+    )
+    // The remedy has to name the thing to go and change, not just the symptom.
+    assertTrue(
+      lines[hint - 1].contains("com.example.Bordered"),
+      "the hint must name the class whose module needs the plugin: ${lines[hint - 1]}",
+    )
   }
 
   /** Compiles [source] and returns the generated native bridge for [className]. */

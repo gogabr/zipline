@@ -606,7 +606,19 @@ internal fun generateNativeBridgeFile(
           .joinToString(" or ") { (index, field) -> "(if (${field.name}Sent) 0 else ${maskBit(index)})" }
         appendLine("    val _mask$word = ${if (flags.isEmpty()) "0" else flags}")
       }
-      append("    val _obj = $qualifier$className.$BRIDGE_CONTAINER_NAME.bridgeCreate(")
+      // The holder lookup is given its own statement, and the explanation its own comment, so that
+      // the failure lands where it can be read: Xcode and the compiler both quote the lines around
+      // the offending one, and "unresolved reference 'Bridge'" in a generated file otherwise says
+      // nothing about what to go and change.
+      appendLine("    // $fqn is constructed through the `Bridge` holder this plugin generates for it, and")
+      appendLine("    // that holder exists only in the compilation that compiles $fqn. If the next line fails")
+      appendLine("    // with \"unresolved reference 'Bridge'\", the module that declares $fqn was compiled for")
+      appendLine("    // THIS target without the zipline bridge compiler plugin: this file is generated once,")
+      appendLine("    // from the JVM compilation, and then compiled for every host target, so a target whose")
+      appendLine("    // declaring-module build lacks the plugin gets the caller without the declaration.")
+      appendLine("    // Fix that module's build for this target; regenerating this file changes nothing.")
+      appendLine("    val _bridge = $qualifier$className.$BRIDGE_CONTAINER_NAME")
+      append("    val _obj = _bridge.bridgeCreate(")
       append((0 until words).joinToString(", ") { "_mask$it" })
       append(", ")
       append(ctorFields.joinToString(", ") { "${it.name} = ${it.name}" })

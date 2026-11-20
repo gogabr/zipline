@@ -80,6 +80,27 @@ class BridgeEndToEndTest {
   }
 
   @Test
+  fun bridgedSizedEnumHolder() {
+    // PINS TODAY'S BEHAVIOUR. CLV-180 is expected to change what this asserts, because equality of the
+    // holder is a weaker guarantee than it looks: the host resolves `values()[ordinal]`, so the entry it
+    // returns is the host's own, built by the host's own class initialization.
+    //
+    // Two things this therefore does not establish, and a fix has to:
+    //  * the payload. The guest's `label` and `size` are never transferred and never compared. Host and
+    //    guest agree only because they were compiled from the same source -- under the version skew this
+    //    project exists to handle, a reordered declaration or a changed entry argument maps the guest's
+    //    entry onto a different host entry, by ordinal, silently.
+    //  * the constructor. Nothing re-runs or consults it, which is fine while an entry's arguments are
+    //    literals and wrong as soon as a constructor is non-trivial: computed or validated fields, or a
+    //    field derived from another entry, mean the host's entry is not the same value as the guest's
+    //    even when the ordinal matches.
+    //
+    // Once CLV-180 fixes the crossing, assert the payload too (label and size on the decoded holder)
+    // rather than only which entry came back.
+    assertEquals(BridgedTestValues.sizedHolder, evalOne("provideBridgedSizedEnumHolder"))
+  }
+
+  @Test
   fun bridgedListHolder() {
     assertEquals(BridgedTestValues.listHolder, evalOne("provideBridgedListHolder"))
   }

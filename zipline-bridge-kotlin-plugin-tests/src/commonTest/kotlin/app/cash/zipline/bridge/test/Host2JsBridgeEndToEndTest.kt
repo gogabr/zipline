@@ -152,6 +152,23 @@ class Host2JsBridgeEndToEndTest {
   }
 
   @Test
+  fun parameterisedEnumCannotCrossToGuestEither() {
+    // The refusal is on the class kind, not on whether the entries happen to carry data: an enum
+    // with fields is exactly as much a singleton problem as one without, and its fields are what a
+    // host-built lookalike would appear to carry convincingly. Asserted rather than assumed, because
+    // `BridgedEnum` -- the only enum fixture until now -- cannot tell the two cases apart.
+    // CLV-180 is expected to INVERT this test: it exists to record that the host->guest refusal in
+    // `Host2JsGenerator` is keyed on class kind, so it covers parameterised enums as well as plain ones,
+    // and not to argue that refusing is right. When enums can cross that way, this becomes a positive
+    // crossing assertion next to `enumCannotCrossToGuest`'s replacement.
+    val failure = assertFails { roundTrip(BridgedTestValues.sizedHolder) }
+    assertTrue(
+      failure.message.orEmpty().contains("is an enum"),
+      "expected the refusal to name the enum, got: ${failure.message}",
+    )
+  }
+
+  @Test
   fun listHolder() {
     assertEquals(BridgedTestValues.listHolder, roundTrip(BridgedTestValues.listHolder))
   }

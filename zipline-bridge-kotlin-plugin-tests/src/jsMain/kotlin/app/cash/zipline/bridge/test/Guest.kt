@@ -32,6 +32,12 @@ fun provideBridgedEnum(): BridgedEnum = BridgedTestValues.enumSecond
 @JsExport
 fun provideBridgedEnumHolder(): BridgedEnumHolder = BridgedTestValues.enumHolder
 
+// An enum with entry fields is reached through a holder, like BridgedEnum is: `@JsExport` on a
+// function whose *result* is such an enum makes the module lose its own bridge exports, which is a
+// Kotlin/JS export restriction rather than anything the bridge does.
+@JsExport
+fun provideBridgedSizedEnumHolder(): BridgedSizedEnumHolder = BridgedTestValues.sizedHolder
+
 @JsExport
 fun provideBridgedListHolder(): BridgedListHolder = BridgedTestValues.listHolder
 

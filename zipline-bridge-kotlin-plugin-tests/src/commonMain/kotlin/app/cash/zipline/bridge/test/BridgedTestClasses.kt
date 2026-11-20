@@ -53,6 +53,30 @@ enum class BridgedEnum { FIRST, SECOND, THIRD }
 data class BridgedEnumHolder(val value: BridgedEnum)
 
 /**
+ * An enum whose entries carry data, which is what an enum looks like in real designs (a label and a
+ * size the widgets read). `BridgedEnum` above has no parameters, so without this fixture nothing in the
+ * suite distinguishes the two shapes.
+ *
+ * What the bridge does with it today: the guest's value crosses as an ordinal and the host resolves
+ * `values()[ordinal]`. So the entry's fields are never read, and no constructor runs on the host's
+ * behalf at all. That is *not* a proof that the crossing is correct -- see the two notes on
+ * `BridgeEndToEndTest.bridgedSizedEnumHolder`. The entry arguments here are deliberately distinct from
+ * each other so that a test can compare payloads across the crossing once there is something to compare.
+ *
+ * CLV-180 owns the behaviour; these fixtures are expected to change with it.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+enum class BridgedSizedEnum(val label: String, val size: Int) {
+  SMALL("small", 12),
+  LARGE("large", 24),
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedSizedEnumHolder(val value: BridgedSizedEnum)
+
+/**
  * Inline classes can only be bridged as fields (or list elements): Kotlin/JS inlines a
  * standalone value-class return value to the underlying primitive, which carries no
  * bridge_dispatch property.
@@ -459,6 +483,8 @@ object BridgedTestValues {
   val nestedInlineHolderNull = BridgedNestedInlineHolder(nested = null)
   val enumSecond = BridgedEnum.SECOND
   val enumHolder = BridgedEnumHolder(value = enumSecond)
+  val sizedLarge = BridgedSizedEnum.LARGE
+  val sizedHolder = BridgedSizedEnumHolder(value = sizedLarge)
   val listHolder = BridgedListHolder(items = listOf(1, 2, 3))
   val callbackHolder = BridgedCallbackHolder(name = "done", onDone = null)
   val floatList = BridgedFloatListHolder(items = listOf(0, 1).map { it.toFloat() } + listOf(0.5f))

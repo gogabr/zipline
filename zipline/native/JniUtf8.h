@@ -34,8 +34,14 @@ inline void appendUtf8(std::string& out, uint32_t cp) {
 
 // Converts a Java string to standard UTF-8. Unpaired surrogates are
 // replaced with U+FFFD.
+// JNI forbids almost every call while a Java exception is pending: ART's checked JNI aborts the
+// process -- "JNI DETECTED ERROR IN APPLICATION: JNI NewObjectV called with pending exception" --
+// and the trace it prints names this conversion, not the code that threw. Both helpers here are
+// reached straight after JavaScript has called back into Java, which is exactly when an exception
+// can be pending, so each one refuses and lets the pending exception reach Kotlin on its own.
 inline std::string jniStringToUtf8(JNIEnv* env, jstring javaString) {
   if (!javaString) return std::string();
+  if (env->ExceptionCheck()) return std::string();
   const jchar* chars = env->GetStringChars(javaString, nullptr);
   if (!chars) return std::string();
   const jsize length = env->GetStringLength(javaString);
@@ -64,6 +70,7 @@ inline std::string jniStringToUtf8(JNIEnv* env, jstring javaString) {
 // Converts standard UTF-8 to a Java string. Invalid byte sequences are
 // replaced with U+FFFD.
 inline jstring utf8ToJniString(JNIEnv* env, const std::string& utf8) {
+  if (env->ExceptionCheck()) return nullptr;
   std::basic_string<jchar> utf16;
   utf16.reserve(utf8.size());
   size_t i = 0;

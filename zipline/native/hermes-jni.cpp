@@ -296,6 +296,10 @@ Java_app_cash_zipline_JniCallChannel_call(JNIEnv* env, jobject /*thiz*/,
   // on the JS thread here.
   zipline_cdp::drainTasks(ctx);
   std::string result = channel->call(ctx, jstringToCppString(env, callJson));
+  // The call ran JavaScript, which may have called a host service that threw. That exception is now
+  // pending, and building the answer String on top of it is what made the app abort instead of
+  // throwing ZiplineApiMismatchException in Kotlin.
+  if (env->ExceptionCheck()) return nullptr;
   return zipline::utf8ToJniString(env, result);
 }
 

@@ -341,8 +341,17 @@ static inline jobject jsiBridgeTryUnwrapLong(JNIEnv *env, jsi::Runtime &rt, cons
   jsi::Value high = jsiCallValueOp(rt, ops, "longHigh", v);
   jlong value = (static_cast<jlong>(static_cast<int32_t>(high.asNumber())) << 32) |
                 (static_cast<jlong>(static_cast<uint32_t>(static_cast<int32_t>(low.asNumber()))));
+  // Asking the guest for the two halves runs JavaScript, which may have called back into Java and
+  // thrown; the check belongs before FindClass rather than after NewObject, because a JNI call made
+  // with an exception pending aborts the process rather than returning the error to Kotlin.
+  if (env->ExceptionCheck()) return nullptr;
   jclass c = env->FindClass("java/lang/Long");
+  if (c == nullptr) return nullptr;
   jmethodID m = env->GetMethodID(c, "<init>", "(J)V");
+  if (m == nullptr) {
+    env->DeleteLocalRef(c);
+    return nullptr;
+  }
   jobject boxed = env->NewObject(c, m, value);
   env->DeleteLocalRef(c);
   if (env->ExceptionCheck()) return nullptr;

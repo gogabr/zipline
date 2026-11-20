@@ -274,6 +274,44 @@ bool tryAsInt64(double d, int64_t& out) {
  * caller is dropping the work item anyway. The message goes to logcat (Android) or stderr (JVM)
  * so the real cause stays visible.
  */
+/**
+ * Reports a pending Java exception and puts the *same* throwable back.
+ *
+ * The sink paths bail rather than make another JNI call, which is right, but bailing quietly is not:
+ * the exception reaches Kotlin inside a frame-clock coroutine, which dies without a log, so "every
+ * module downloaded and then nothing but loading placeholders" had no author. Naming it is free, and
+ * re-throwing keeps the propagation that makes it somebody's problem. toString() is itself a JNI call,
+ * so the exception must be cleared first and re-thrown after.
+ */
+void reportAndKeepPendingException(JNIEnv* env, const char* what) {
+  if (!env->ExceptionCheck()) return;
+  jthrowable pending = env->ExceptionOccurred();
+  env->ExceptionClear();
+  std::string description = "<unreadable>";
+  if (pending != nullptr) {
+    jclass throwableClass = env->FindClass("java/lang/Throwable");
+    if (throwableClass != nullptr) {
+      jmethodID toString = env->GetMethodID(throwableClass, "toString", "()Ljava/lang/String;");
+      if (toString != nullptr) {
+        jstring text = static_cast<jstring>(env->CallObjectMethod(pending, toString));
+        if (!env->ExceptionCheck() && text != nullptr) {
+          description = zipline::jniStringToUtf8(env, text);
+        }
+      }
+      env->ExceptionClear();
+      env->DeleteLocalRef(throwableClass);
+    }
+    env->ExceptionClear();
+    if (env->Throw(pending) != JNI_OK) description += " (re-throwing it failed too)";
+    env->DeleteLocalRef(pending);
+  }
+#ifdef __ANDROID__
+  __android_log_print(ANDROID_LOG_ERROR, "BRIDGE", "%s: %s", what, description.c_str());
+#else
+  fprintf(stderr, "BRIDGE: %s: %s\n", what, description.c_str());
+#endif
+}
+
 void reportAndClearPendingException(JNIEnv* env, const char* what) {
   if (!env->ExceptionCheck()) return;
   jthrowable pending = env->ExceptionOccurred();
@@ -1020,6 +1058,9 @@ void ContextJni::cacheDirectChangeSink(jobject sink) {
 }
 
 jobject ContextJni::jsValueToJsonElement(JNIEnv* env, const jsi::Value& val) {
+  // Every caller below crosses into Java, so a decode that begins with an exception already pending
+  // would make the next JNI call illegal. Bail and let that exception propagate.
+  if (env->ExceptionCheck()) return nullptr;
   if (val.isNumber()) {
     double v = val.asNumber();
     int64_t lv;
@@ -1067,13 +1108,18 @@ jobject ContextJni::jsArrayToJsonElement(JNIEnv* env, const jsi::Value& val) {
   size_t length = arr.length(*runtime);
 
   jobject arrayList = env->NewObject(arrayListClass, arrayListInitWithCapacity, (int)length);
-  for (size_t i = 0; i < length; i++) {
+  if (env->ExceptionCheck()) return nullptr;
+  for (size_t i = 0; i < length && !env->ExceptionCheck(); i++) {
     jsi::Value element = arr.getValueAtIndex(*runtime, i);
     jobject jsonElement = jsValueToJsonElement(env, element);
     if (jsonElement != nullptr) {
       env->CallBooleanMethod(arrayList, arrayListAdd, jsonElement);
       env->DeleteLocalRef(jsonElement);
     }
+  }
+  if (env->ExceptionCheck()) {
+    env->DeleteLocalRef(arrayList);
+    return nullptr;
   }
   jobject result = env->CallStaticObjectMethod(
           directBridgeClass, directBridgeCreateJsonArray, arrayList);
@@ -1088,22 +1134,28 @@ jobject ContextJni::jsObjectToJsonElement(JNIEnv* env, const jsi::Value& val) {
 
   jobject keysList = env->NewObject(arrayListClass, arrayListInitWithCapacity, (int)numProps);
   jobject valuesList = env->NewObject(arrayListClass, arrayListInitWithCapacity, (int)numProps);
+  if (env->ExceptionCheck()) return nullptr;
 
-  for (size_t i = 0; i < numProps; i++) {
+  for (size_t i = 0; i < numProps && !env->ExceptionCheck(); i++) {
     jsi::Value propName = propertyNames.getValueAtIndex(*runtime, i);
     if (!propName.isString()) continue;
     std::string key = propName.asString(*runtime).utf8(*runtime);
     jsi::Value propVal = obj.getProperty(*runtime, key.c_str());
     jstring keyJava = zipline::utf8ToJniString(env, key);
     jobject jsonElement = jsValueToJsonElement(env, propVal);
+    if (keyJava != nullptr) env->DeleteLocalRef(keyJava);
     if (jsonElement != nullptr) {
       env->CallBooleanMethod(keysList, arrayListAdd, keyJava);
       env->CallBooleanMethod(valuesList, arrayListAdd, jsonElement);
       env->DeleteLocalRef(jsonElement);
     }
-    env->DeleteLocalRef(keyJava);
   }
 
+  if (env->ExceptionCheck()) {
+    env->DeleteLocalRef(keysList);
+    env->DeleteLocalRef(valuesList);
+    return nullptr;
+  }
   jobject result = env->CallStaticObjectMethod(
           directBridgeClass, directBridgeCreateJsonObject, keysList, valuesList);
   env->DeleteLocalRef(keysList);
@@ -1118,17 +1170,26 @@ void ContextJni::dispatchChangeToSink(JNIEnv* env, const DirectChange& ch) {
       break;
     case DirectChangeType::PropertyChange: {
       jobject jsonElement = jsValueToJsonElement(env, *ch.jsValue);
+      if (env->ExceptionCheck()) {
+        reportAndKeepPendingException(env, "host bridge: dropping a property change");
+        return;
+      }  // see the comment at the ModifierChange case below
       env->CallVoidMethod(directChangeSink, directSinkCreatePropertyChange,
                           ch.id, ch.field1, ch.field2, jsonElement);
       if (jsonElement) env->DeleteLocalRef(jsonElement);
       break;
     }
     case DirectChangeType::ModifierChange: {
+      // This is the site that killed the app: decoding a modifier element runs a host converter, a
+      // host converter is Java, Java threw ZiplineApiMismatchException for a class with no converter,
+      // and the pair() beneath it was then constructed on top of the pending exception. ART aborts
+      // on that and prints the abort, not the cause; the cause was already named correctly.
       jobject elementsList = env->NewObject(arrayListClass, arrayListInit);
+      if (env->ExceptionCheck()) return;
       if (ch.jsValue && ch.jsValue->isObject() && ch.jsValue->asObject(*runtime).isArray(*runtime)) {
         jsi::Array arr = ch.jsValue->asObject(*runtime).asArray(*runtime);
         size_t numElements = arr.length(*runtime);
-        for (size_t j = 0; j < numElements; j++) {
+        for (size_t j = 0; j < numElements && !env->ExceptionCheck(); j++) {
           jsi::Value elem = arr.getValueAtIndex(*runtime, j);
           jsi::Value modTagVal = elem.asObject(*runtime).getProperty(*runtime, "0");
           int mTag = static_cast<int>(modTagVal.asNumber());
@@ -1136,13 +1197,20 @@ void ContextJni::dispatchChangeToSink(JNIEnv* env, const DirectChange& ch) {
           jobject jModVal = modVal.isUndefined()
               ? env->CallStaticObjectMethod(directBridgeClass, directBridgeJsonNull)
               : jsValueToJsonElement(env, modVal);
+          if (env->ExceptionCheck()) break;
           jobject jTag = env->CallStaticObjectMethod(integerClass, integerValueOf, (jint)mTag);
+          if (env->ExceptionCheck()) break;
           jobject pair = env->NewObject(pairClass, pairInit, jTag, jModVal);
           env->CallBooleanMethod(elementsList, arrayListAdd, pair);
           if (jTag) env->DeleteLocalRef(jTag);
           if (jModVal) env->DeleteLocalRef(jModVal);
           env->DeleteLocalRef(pair);
         }
+      }
+      if (env->ExceptionCheck()) {
+        env->DeleteLocalRef(elementsList);
+        reportAndKeepPendingException(env, "host bridge: dropping a modifier change");
+        return;
       }
       env->CallVoidMethod(directChangeSink, directSinkCreateModifierChange, ch.id, elementsList);
       env->DeleteLocalRef(elementsList);
@@ -1195,8 +1263,19 @@ void ContextJni::flushPendingBatch(JNIEnv* env, int toFlush) {
 
   for (int i = 0; i < toFlush; i++) {
     dispatchChangeToSink(env, pendingChanges[i]);
+    if (env->ExceptionCheck()) {
+      // Half a batch reached the sink and the rest never will. Say so, and keep the exception: a host
+      // that stopped painting looks from outside exactly like one still waiting for data.
+      reportAndKeepPendingException(env, "host bridge: change batch truncated");
+      break;
+    }
   }
-  env->CallVoidMethod(directChangeSink, directSinkSendBatch);
+  // Only the dispatch is guarded. `sendBatch` is what makes the sink apply what it was given, so
+  // skipping it on any path -- as a previous revision of these two functions did, which is how this
+  // comment came to exist -- means the host receives changes and never paints them.
+  if (!env->ExceptionCheck()) {
+    env->CallVoidMethod(directChangeSink, directSinkSendBatch);
+  }
   pendingChanges.erase(pendingChanges.begin(), pendingChanges.begin() + toFlush);
 }
 
@@ -1211,8 +1290,13 @@ void ContextJni::finishFlushPending(JNIEnv* env) {
 
   for (int i = 0; i < remaining; i++) {
     dispatchChangeToSink(env, pendingChanges[i]);
+    if (env->ExceptionCheck()) break;
   }
-  env->CallVoidMethod(directChangeSink, directSinkSendChanges);
+  if (env->ExceptionCheck()) {
+    reportAndKeepPendingException(env, "host bridge: changes dropped before send");
+  } else {
+    env->CallVoidMethod(directChangeSink, directSinkSendChanges);
+  }
   pendingChanges.clear();
 }
 

@@ -448,6 +448,34 @@ class Host2JsBridgeEndToEndTest {
     }
   }
 
+  /**
+   * A host-side bridge refusal must not poison the host that suffered it. The JNI decoders carried on
+   * constructing Java objects after a Java-side converter had thrown, which HotSpot tolerates and ART
+   * aborts on -- `JNI DETECTED ERROR IN APPLICATION: JNI NewObjectV called with pending exception` --
+   * so the abort was the last word and the cause, which had been named correctly, scrolled past it.
+   * What this pins is the contract the guards preserve: the refusal arrives in Kotlin as itself, and
+   * the next call across the same engine still works.
+   */
+  @Test
+  fun hostBridgeRefusalDoesNotPoisonTheHost() {
+    host.evaluateForBridge(
+      "globalThis.__provideNotBridgedGuest = function () { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.provideNotBridgedGuest(); " +
+        "}; 0",
+    )
+    host.evaluateForBridge("globalThis.__hostStillWorks = function () { return 'alive'; }; 0")
+    try {
+      assertFailsWith<ZiplineApiMismatchException> {
+        host.callGuestFunction("__provideNotBridgedGuest", emptyList())
+      }
+      // The refusal arrived, and it arrived alone: the same engine still answers the next call.
+      assertEquals("alive", host.callGuestFunction("__hostStillWorks", emptyList()))
+    } finally {
+      host.evaluateForBridge("delete globalThis.__provideNotBridgedGuest")
+      host.evaluateForBridge("delete globalThis.__hostStillWorks")
+    }
+  }
+
   @Test
   fun missingGuestRegistrationFailsLoudly() {
     // A host that never loaded the guest module has no retained class prototypes. Creating a

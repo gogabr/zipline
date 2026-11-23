@@ -306,26 +306,25 @@ class CrossVersionTest {
   }
 
   /**
-   * Host -> guest with an enum payload: refused by design, in both directions and with or without
-   * skew. The JVM host's C generator and the Kotlin/Native host both throw rather than hand the
-   * guest a lookalike object, so no enum ordinal ever crosses host -> guest and enum entry skew is
-   * unreachable in this direction.
+   * Host -> guest with enum payloads. The host sends only the ordinal; the guest resolves its own
+   * singleton entry. Entries present in both trees cross, and the entry the guest resolves is the
+   * guest's own (with the guest's own properties), by ordinal.
    */
-  @Test fun hostToGuest_enumRefused() = withNewGuest { host, _ ->
-    assertObserved(
-      "host2js-enum/GrowthEnum.B",
-      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; " +
-        "the guest would only see a lookalike, not an enum instance",
-    ) {
-      host.read("readBackGrowthEnum", GrowthEnumHolder(value = GrowthEnum.B))
-    }
-    assertObserved(
-      "host2js-enum/ShiftedEnum.X",
-      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.ShiftedEnum is an enum; " +
-        "the guest would only see a lookalike, not an enum instance",
-    ) {
+  @Test fun hostToGuest_enumInRange() = withNewGuest { host, _ ->
+    // B is ordinal 1 in both trees; the new guest resolves its own B.
+    assertEquals("B", host.read("readBackGrowthEnum", GrowthEnumHolder(value = GrowthEnum.B)))
+  }
+
+  @Test fun hostToGuest_enumShifted() = withNewGuest { host, _ ->
+    // X is ordinal 0 here; the new guest (with W inserted at 0) resolves ordinal 0 to its W.
+    assertObserved("host2js-enum/ShiftedEnum.X", "W") {
       host.read("readBackShiftedEnum", ShiftedEnumHolder(value = ShiftedEnum.X))
     }
+  }
+
+  @Test fun hostToGuest_parameterisedEnumUsesOwnAddedParameter() = withNewGuest { host, _ ->
+    // The new guest resolves its own B, which carries the label its own revision declares.
+    assertEquals("B:b", host.read("readBackParamEnum", ParamEnumHolder(value = ParamEnum.B)))
   }
 
   // Value-class underlying-type retyping is not expressible: the C generator's `_fromValue` casts

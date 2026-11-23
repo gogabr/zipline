@@ -1,5 +1,6 @@
 package app.cash.zipline.bridge.kotlin
 
+import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
@@ -92,6 +93,14 @@ internal fun importForType(fqName: String): String {
  * preventing the linker from dead-code eliminating them.
  */
 internal fun extractFields(annotatedClass: IrClass, includeValBodyFields: Boolean = false): List<FieldInfo> {
+  // Enums cross as singleton instances resolved by ordinal, never as a field bag: the host does not
+  // read (guest -> host) or send (host -> guest) any of the entry's properties, because the receiver
+  // resolves its own entry and that entry already holds the values its own revision initialized.
+  // Extracting fields for an enum would only emit dead property reads, tag checks, and collection
+  // helper functions — and, on a parameterised enum with a function-typed `val`, would make the
+  // generator skip the converter altogether.
+  if (annotatedClass.kind == ClassKind.ENUM_CLASS) return emptyList()
+
   val primaryConstructor = annotatedClass.declarations
     .filterIsInstance<IrConstructor>()
     .firstOrNull { it.isPrimary }

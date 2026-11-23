@@ -1292,6 +1292,195 @@ class ZiplineBridgeKotlinPluginTest {
       outputDir.toFile().deleteRecursively()
     }
   }
+
+  @Test
+  fun `mutable constructor property on a host2js enum fails compilation`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "MutableEnum.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          enum class MutableEnum(var count: Int) { A(1) }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+      assertTrue(result.messages.contains("MutableEnum"), result.messages)
+      assertTrue(result.messages.contains("count"), result.messages)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `mutable body property on a js2host enum fails compilation`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "BodyVarEnum.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          enum class BodyVarEnum { A; var label: String = "" }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+      assertTrue(result.messages.contains("BodyVarEnum"), result.messages)
+      assertTrue(result.messages.contains("label"), result.messages)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `abstract-member enum generates a native bridge`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Op.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          enum class Op {
+            PLUS { override fun apply(a: Int, b: Int) = a + b },
+            MINUS { override fun apply(a: Int, b: Int) = a - b };
+            abstract fun apply(a: Int, b: Int): Int
+          }
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+      val bridgeFile = outputDir.resolve("com_example_Op_bridge_native.kt").toFile()
+      assertTrue(bridgeFile.exists(), "Expected native bridge file at ${bridgeFile.absolutePath}")
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `abstract-member host2js enum generates a C bridge`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Op.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          enum class Op {
+            PLUS { override fun apply(a: Int, b: Int) = a + b },
+            MINUS { override fun apply(a: Int, b: Int) = a - b };
+            abstract fun apply(a: Int, b: Int): Int
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+      val cFile = outputDir.resolve("com_example_Op.cpp").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `parameterised enum generates no field reads in C`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "ParamEnum.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          enum class ParamEnum(
+            private val secret: String,
+            val tags: List<String>,
+            val action: () -> Unit,
+          ) {
+            A("s", listOf("x"), {}),
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+      val cFile = outputDir.resolve("com_example_ParamEnum.cpp").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+      val content = cFile.readText()
+      // An enum crosses as an ordinal, never as a field bag: none of the entry's properties are read.
+      assertFalse(content.contains("getProperty(rt, \"secret\")"), content)
+      assertFalse(content.contains("getProperty(rt, \"tags\")"), content)
+      assertFalse(content.contains("getProperty(rt, \"action\")"), content)
+      assertFalse(content.contains("secret_1"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `host2js enum generates ordinal-based convertToJs`() {
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Color.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithHost2JSBridge
+
+          @WithHost2JSBridge
+          enum class Color { RED, GREEN, BLUE }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+      val cFile = outputDir.resolve("com_example_Color.cpp").toFile()
+      assertTrue(cFile.exists(), "Expected C file at ${cFile.absolutePath}")
+      val content = cFile.readText()
+      // The ordinal method is cached, called on the entry, and handed to the guest's create_<fqn>
+      // factory — never a field-stamped lookalike.
+      assertTrue(content.contains("_ordinalMethod = jsiGetMethodIdQuiet(env, _cls, \"ordinal\", \"()I\")"), content)
+      assertTrue(content.contains("env->CallIntMethod(self, _ordinalMethod)"), content)
+      assertTrue(
+        content.contains(
+          "jsiHost2JsCallCreateFactory(env, rt, \"com.example.Color\", " +
+            "\"create_com_example_Color\", jsi::Value(static_cast<int>(ordinal)))",
+        ),
+        content,
+      )
+      assertFalse(content.contains("is an enum"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
 }
 
 @ExperimentalCompilerApi
@@ -1870,6 +2059,47 @@ class ZiplineBridgeNativePluginTest {
      } finally {
        outputDir.toFile().deleteRecursively()
      }
+  }
+
+  @Test
+  fun `parameterised enum generates no field reads in native bridge`() {
+    val outputDir = createTempDirectory("zipline-bridge-native-test")
+    try {
+      val result = compileWithNativeOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "ParamEnum.kt",
+          """
+          package com.example
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+          @WithJS2HostBridge
+          enum class ParamEnum(
+            private val secret: String,
+            val tags: List<String>,
+            val action: () -> Unit,
+          ) {
+            A("s", listOf("x"), {}),
+          }
+          """,
+        ),
+        nativeOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val ktFile = outputDir.resolve("com_example_ParamEnum_bridge_native.kt").toFile()
+      assertTrue(ktFile.exists())
+
+      val content = ktFile.readText()
+
+      // Enum ordinal extraction, and none of the entry's properties are read: the receiver resolves
+      // its own singleton, which already holds the values its own revision initialized.
+      assertTrue(content.contains("jsEnumOrdinal(ctx, jsValHandle)"))
+      assertTrue(content.contains("ParamEnum.entries.getOrNull(ordinal)"))
+      assertFalse(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"secret_1\")"), content)
+      assertFalse(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"tags\")"), content)
+      assertFalse(content.contains("HermesBridge_createHandle(ctx, jsValHandle, \"action\")"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
   }
 
   @Test

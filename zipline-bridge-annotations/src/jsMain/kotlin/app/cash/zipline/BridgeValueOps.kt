@@ -154,3 +154,23 @@ public fun bridgeGet(target: Any?, key: String): Any? = js("target[key]")
  * would only obscure which of the three types needs building.
  */
 public fun bridgeChar(value: Any?): Char = value!!.unsafeCast<Double>().toInt().toChar()
+
+/**
+ * The ordinal a host sent to a `create_<fqn>` enum factory, as an `Int`.
+ *
+ * The host crosses the ordinal as a JS number, which Kotlin/JS hands the factory as a `Double` (the
+ * engine's number type) or as an `Int` (when a caller passed a Kotlin `Int` straight through). Both
+ * are accepted; anything else is a broken host and fails here, loudly, rather than resolving a
+ * nonsense entry. The out-of-range check is the factory's job — it owns the entry list — but the
+ * tag check and its message live here in plain Kotlin so the generated factory does not hand-roll IR.
+ */
+public fun bridgeEnumOrdinalArg(raw: Any?, fqName: String): Int = when (raw) {
+  is Int -> raw
+
+  is Double -> raw.toInt()
+
+  else -> throw IllegalStateException(
+    "host2js: $fqName expects the enum ordinal as a number, got " +
+      (raw?.let { it::class.simpleName } ?: "null"),
+  )
+}

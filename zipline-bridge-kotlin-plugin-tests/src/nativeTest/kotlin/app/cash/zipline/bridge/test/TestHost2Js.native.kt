@@ -39,7 +39,25 @@ actual class TestHost2Js actual constructor() {
         "globalThis.describeEncodingProbe = function (v) { " +
         "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEncodingProbe(v); }; " +
         "globalThis.provideEncodingProbe = function () { " +
-        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.provideEncodingProbe(); }; 0",
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.provideEncodingProbe(); }; " +
+        "globalThis.enumIsGuestSecond = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.enumIsGuestSecond(v); }; " +
+        "globalThis.enumWhenName = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.enumWhenName(v); }; " +
+        "globalThis.describeEnum = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEnum(v); }; " +
+        "globalThis.describeEnumList = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEnumList(v); }; " +
+        "globalThis.describeEnumNullable = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEnumNullable(v); }; " +
+        "globalThis.describeSizedEnum = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeSizedEnum(v); }; " +
+        "globalThis.describeRichEnum = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeRichEnum(v); }; " +
+        "globalThis.describeOp = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeOp(v); }; " +
+        "globalThis.describeEnumDefaults = function (v) { " +
+        "return require('$GUEST_MODULE').app.cash.zipline.bridge.test.describeEnumDefaults(v); }; 0",
       "host2js_test_globals.js",
     )
   }

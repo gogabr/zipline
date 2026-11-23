@@ -456,4 +456,54 @@ class Host2JsRuntimeTest {
       HermesBridge_freeHandle(context, instance)
     }
   }
+
+  @Test
+  fun `host2JsCallEnumFactory returns the guest's entry at the sent ordinal`() {
+    publishGuestRuntime()
+    eval(
+      """
+      globalThis.__zipline_bridgeFactories.create_com_example_Color = function (ordinal) {
+        var entries = ['RED', 'GREEN', 'BLUE'];
+        return { name: entries[ordinal], ordinal: ordinal };
+      };
+      """.trimIndent(),
+    )
+
+    val instance = host2JsCallEnumFactory(context, "com.example.Color", "create_com_example_Color", 1)
+    try {
+      assertEquals("GREEN", stringPropertyOf(instance, "name"))
+      val ordinal = propertyOf(instance, "ordinal")
+      try {
+        assertEquals(1.0, HermesBridge_getValueDouble(context, ordinal))
+      } finally {
+        HermesBridge_freeHandle(context, ordinal)
+      }
+    } finally {
+      HermesBridge_freeHandle(context, instance)
+    }
+  }
+
+  @Test
+  fun `host2JsCallEnumFactory reports an out-of-range ordinal from the guest`() {
+    publishGuestRuntime()
+    eval(
+      """
+      globalThis.__zipline_bridgeFactories.create_com_example_Color = function (ordinal) {
+        var entries = ['RED', 'GREEN', 'BLUE'];
+        if (ordinal < 0 || ordinal >= entries.length) {
+          throw new Error('host2js: ordinal ' + ordinal + ' is out of range for com.example.Color');
+        }
+        return { name: entries[ordinal], ordinal: ordinal };
+      };
+      """.trimIndent(),
+    )
+
+    // The temporary ordinal handle is freed in the helper's finally, so the throwing path does not
+    // leak it; the success path frees it on the way out as well.
+    val e = assertFailsWith<IllegalStateException> {
+      host2JsCallEnumFactory(context, "com.example.Color", "create_com_example_Color", 5)
+    }
+    assertTrue(e.message!!.contains("ordinal 5 is out of range"), "was: " + e.message)
+    assertTrue(e.message!!.contains("com.example.Color"), "was: " + e.message)
+  }
 }

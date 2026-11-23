@@ -3,12 +3,15 @@ package app.cash.zipline.bridge.kotlin
 import org.jetbrains.kotlin.backend.common.extensions.DeclarationFinder
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.extensions.IrPluginContext
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
+import org.jetbrains.kotlin.cli.common.messages.MessageCollector
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.classId
+import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.hasAnnotation
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.name.ClassId
@@ -42,21 +45,26 @@ class ZiplineBridgeIrGenerationExtension(
     finder.findClass(WITH_JS2HOST_BRIDGE_CLASS_ID) ?: return
 
     val annotatedClasses = findAnnotatedClasses(moduleFragment)
+    val host2JsAnnotatedClasses = findHost2JsAnnotatedClasses(moduleFragment)
 
-    // Host2JS classes (both-annotated included): same abstract/sealed/interface filter.
-    val host2JsClasses = findHost2JsAnnotatedClasses(moduleFragment).filter {
-      it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
-      it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
-      it.kind != ClassKind.INTERFACE
-    }
-    if (annotatedClasses.isEmpty() && host2JsClasses.isEmpty()) return
+    if (annotatedClasses.isEmpty() && host2JsAnnotatedClasses.isEmpty()) return
 
-    // Include all annotated classes except abstract/sealed (no JS constructor to export)
-    val dispatchClasses = annotatedClasses.filter {
-      it.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
-      it.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
-      it.kind != ClassKind.INTERFACE
-    }
+    // Enum entries cross as singleton instances resolved by ordinal, so a mutable (var) property
+    // cannot be carried and reading one from the shared singleton would silently corrupt global
+    // state. Reject the shape up front, before any bridge is generated.
+    reportMutableEnumProperties(
+      (annotatedClasses + host2JsAnnotatedClasses).distinct(),
+      pluginContext.messageCollector,
+    )
+
+    // Host2JS classes (both-annotated included). An enum class can be ABSTRACT or OPEN when its
+    // entries override members, but it still has a fixed, closed set of singleton instances, so it
+    // stays bridgeable regardless of modality.
+    val host2JsClasses = host2JsAnnotatedClasses.filter { isBridgeableClass(it) }
+
+    // Include all annotated classes except abstract/sealed (no JS constructor to export) — and
+    // enums, which are bridgeable regardless of modality for the same reason as above.
+    val dispatchClasses = annotatedClasses.filter { isBridgeableClass(it) }
 
     // -- @JsName annotations (stable JS property names for all bridge backends) --
     annotateJsNames(finder, dispatchClasses, pluginContext)
@@ -105,6 +113,35 @@ class ZiplineBridgeIrGenerationExtension(
   }
 
   // -- shared helpers --
+
+  /** True when [clazz] gets bridge support: enums regardless of modality, other classes only when
+   * concrete and not an interface. */
+  private fun isBridgeableClass(clazz: IrClass): Boolean {
+    return clazz.kind == ClassKind.ENUM_CLASS ||
+      (
+        clazz.modality != org.jetbrains.kotlin.descriptors.Modality.ABSTRACT &&
+       clazz.modality != org.jetbrains.kotlin.descriptors.Modality.SEALED &&
+       clazz.kind != ClassKind.INTERFACE
+      )
+  }
+
+  /** Reject mutable (var) properties on annotated enum classes with a clear compile-time error. */
+  private fun reportMutableEnumProperties(classes: List<IrClass>, messageCollector: MessageCollector) {
+    for (clazz in classes) {
+      if (clazz.kind != ClassKind.ENUM_CLASS) continue
+      val fqn = clazz.fqNameWhenAvailable?.asString() ?: clazz.name.asString()
+      for (property in clazz.properties) {
+        if (!property.isVar || property.isFakeOverride) continue
+        messageCollector.report(
+          CompilerMessageSeverity.ERROR,
+          "enum class $fqn declares mutable property '${property.name.asString()}'; bridged enum " +
+            "entries cross as singleton instances resolved by ordinal, so a mutable property cannot " +
+            "be carried and reading one from the shared singleton would corrupt global state. " +
+            "Make the property read-only, or remove the bridge annotation.",
+        )
+      }
+    }
+  }
 
   /** Add @JsName to properties of non-inline @WithJS2HostBridge classes for stable JS field names. */
   private fun annotateJsNames(

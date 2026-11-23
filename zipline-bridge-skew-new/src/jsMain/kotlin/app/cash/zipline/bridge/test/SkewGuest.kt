@@ -96,6 +96,9 @@ fun readBackGrowthEnum(p: GrowthEnumHolder): String = "${p.value}"
 fun readBackShiftedEnum(p: ShiftedEnumHolder): String = "${p.value}"
 
 @JsExport
+fun readBackParamEnum(p: ParamEnumHolder): String = "${p.value.name}:${p.value.label}"
+
+@JsExport
 fun readBackWrapped(p: WrappedHolder): String = "${p.w}"
 
 @JsExport

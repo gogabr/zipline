@@ -118,7 +118,10 @@ internal fun injectNativeConvertToJsMembers(
   val setJsPropertySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "setJsProperty")
   val newJsObjectSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "newJsObject")
   val callCreateFactorySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsCallCreateFactory")
-  val refuseEnumSymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsRefuseEnum")
+  val callEnumFactorySymbol = resolveTopLevelFun(finder, "app.cash.zipline", "host2JsCallEnumFactory")
+  val enumOrdinalGetter = finder.findProperties(
+    CallableId(FqName("kotlin"), FqName("Enum"), Name.identifier("ordinal")),
+  ).firstOrNull()?.owner?.getter ?: error("kotlin.Enum.ordinal getter not found")
   val host2JsConvertible = finder.findClass(
     ClassId(FqName("app.cash.zipline"), Name.identifier("Host2JsConvertible")),
   )?.owner ?: error("Host2JsConvertible class not found")
@@ -174,13 +177,17 @@ internal fun injectNativeConvertToJsMembers(
         )
       }
       if (clazz.kind == ClassKind.ENUM_CLASS) {
-        // An enum has no host->JS representation: the guest's instances are the singletons from its
-        // own values(), so an object built here would only *look* like one - its ordinal would be a
-        // property the guest never reads, and identity/`when` comparisons would fail. Refuse instead
-        // of shipping a lookalike (see host2JsRefuseEnum).
+        // Enum: the host sends only the entry's ordinal; the guest's create_<fqn> factory resolves
+        // its own singleton entry. No fields cross, because the receiver's entry already holds the
+        // values its own revision initialized.
         +irReturn(
-          irCall(refuseEnumSymbol).apply {
-            arguments[0] = irString(protoFqn)
+          irCall(callEnumFactorySymbol).apply {
+            arguments[0] = irGet(member.parameters[1])
+            arguments[1] = irString(protoFqn)
+            arguments[2] = irString(factoryName)
+            arguments[3] = irCall(enumOrdinalGetter.symbol).apply {
+              dispatchReceiver = irGet(member.dispatchReceiverParameter!!)
+            }
           },
         )
       } else if (isInlineClass(clazz)) {

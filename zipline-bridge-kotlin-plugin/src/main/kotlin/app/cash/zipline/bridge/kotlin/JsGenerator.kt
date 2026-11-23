@@ -20,6 +20,7 @@ import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irEquals
+import org.jetbrains.kotlin.ir.builders.irEqualsNull
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irIfThen
@@ -50,6 +51,7 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrGetObjectValueImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrStringConcatenationImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrVariableSymbolImpl
@@ -673,10 +675,10 @@ private fun buildRuntimeFactories(
     val ownFqn = clazz.fqNameWhenAvailable?.asString() ?: continue
     if (!host2JsNeedsCreateFactory(clazz)) continue
     val targetFqn = resolveTargetFqn(clazz) ?: ownFqn
-    if (clazz.kind == ClassKind.OBJECT) {
-      buildSingletonFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
-    } else {
-      buildCreateFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
+    when {
+      clazz.kind == ClassKind.OBJECT -> buildSingletonFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
+      clazz.kind == ClassKind.ENUM_CLASS -> buildEnumFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
+      else -> buildCreateFactory(finder, pluginContext, factoriesClass, clazz, targetFqn)
     }
   }
 
@@ -694,7 +696,10 @@ internal fun createFactoryJsName(fq: String): String = "create_" + fq.replace('.
  * contain. Enums cross as ordinals and singletons have no construction to run, so neither needs one.
  */
 internal fun host2JsNeedsCreateFactory(clazz: IrClass): Boolean {
-  if (clazz.kind == ClassKind.ENUM_CLASS || clazz.isCompanion) return false
+  // Enums cross as ordinals and the factory resolves the guest's own singleton entry, so they get a
+  // factory like any other payload. A companion has no construction to run and no payload shape.
+  if (clazz.kind == ClassKind.ENUM_CLASS) return true
+  if (clazz.isCompanion) return false
   // An `object` has no constructor at all, which is why the check below comes after it: its factory
   // hands over the singleton rather than calling anything. See [buildSingletonFactory].
   if (clazz.kind == ClassKind.OBJECT) return true
@@ -735,6 +740,99 @@ private fun buildSingletonFactory(
     listOf(pluginContext.irBuiltIns.anyNType),
   ) { builder, _ ->
     builder.irGetObject(clazz.symbol)
+  }
+}
+
+/**
+ * Build [clazz]'s host->guest enum factory: a `create_<fqn>` taking the ordinal the host sent and
+ * returning the guest's own singleton entry at that ordinal. The host sends only an ordinal — never
+ * a field bag — because enum entries are pre-built singletons on both sides; reading
+ * `<EnumClass>.entries[ordinal]` triggers the guest's own entry initialization, so the returned
+ * entry already holds every `val` and entry-specific override the guest's revision defines. An
+ * ordinal the guest's entry list does not hold is reported loudly, naming the class and the ordinal.
+ */
+private fun buildEnumFactory(
+  finder: DeclarationFinder,
+  pluginContext: IrPluginContext,
+  factoriesClass: IrClass,
+  clazz: IrClass,
+  targetFqn: String,
+) {
+  val bridgeEnumOrdinalArg = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("bridgeEnumOrdinalArg")),
+  ).firstOrNull() ?: error("bridgeEnumOrdinalArg not found on the compile classpath ($targetFqn)")
+
+  // `entries` is a synthetic static property (no dispatch receiver) on the enum class, returning
+  // EnumEntries<E>. A static `values()` function is the pre-1.9 fallback.
+  val entriesGetter = clazz.declarations.filterIsInstance<IrProperty>()
+    .firstOrNull {
+      it.name.asString() == "entries" && it.getter?.dispatchReceiverParameter == null
+    }?.getter
+  val valuesFunction = clazz.declarations.filterIsInstance<IrSimpleFunction>()
+    .firstOrNull {
+      it.name.asString() == "values" && it.dispatchReceiverParameter == null
+    }
+  if (entriesGetter == null && valuesFunction == null) return
+
+  // The entry list this factory resolves from, and its element type. `entries` is a List, so the
+  // List overload of getOrNull answers; `values()` is an Array, so the Array overload answers.
+  val isArray = entriesGetter == null
+  val entriesType = entriesGetter?.returnType ?: valuesFunction!!.returnType
+  val elementType = typeArgument(entriesType, 0) ?: pluginContext.irBuiltIns.anyNType
+  val getOrNull = resolveExtensionFun(finder, "kotlin.collections", "getOrNull") {
+    it.parameters.size == 2 &&
+      it.parameters[0].type.classOrNull?.owner?.fqNameWhenAvailable?.asString() ==
+      if (isArray) "kotlin.Array" else "kotlin.collections.List"
+  }
+
+  val errorSymbol = finder.findFunctions(
+    CallableId(FqName("kotlin"), Name.identifier("error")),
+  ).firstOrNull { fn -> fn.owner.parameters.count { it.kind == IrParameterKind.Regular } == 1 }
+    ?: error("kotlin.error not found on the compile classpath ($targetFqn)")
+
+  buildObjectMethod(
+    finder,
+    pluginContext,
+    factoriesClass,
+    createFactoryJsName(targetFqn),
+    pluginContext.irBuiltIns.anyNType,
+    listOf(pluginContext.irBuiltIns.anyNType),
+  ) { builder, params ->
+    val ordinal = builder.irCall(bridgeEnumOrdinalArg).apply {
+      arguments[0] = builder.irGet(params[0])
+      arguments[1] = builder.irString(targetFqn)
+    }
+    val entries = if (entriesGetter != null) {
+      builder.irCall(entriesGetter)
+    } else {
+      builder.irCall(valuesFunction!!)
+    }
+
+    // Read twice rather than binding a temporary: this body builds a single expression, and
+    // `getOrNull` is pure. The null branch throws, so the returned value is the non-null element.
+    fun entry(): IrExpression = builder.irCall(getOrNull).apply {
+      typeArguments[0] = elementType
+      arguments[0] = entries
+      arguments[1] = ordinal
+    }
+
+    val message = IrStringConcatenationImpl(
+      UNDEFINED_OFFSET,
+      UNDEFINED_OFFSET,
+      pluginContext.irBuiltIns.stringType,
+    )
+    message.arguments.add(builder.irString("host2js: ordinal "))
+    message.arguments.add(ordinal)
+    message.arguments.add(builder.irString(" is out of range for $targetFqn"))
+
+    builder.irIfThenElse(
+      type = elementType.makeNullable(),
+      condition = builder.irEqualsNull(entry()),
+      thenPart = builder.irCall(errorSymbol).apply {
+        arguments[errorSymbol.owner.parameters.last()] = message
+      },
+      elsePart = entry(),
+    )
   }
 }
 

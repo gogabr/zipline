@@ -183,6 +183,7 @@ internal fun generateBridgeFile(
     if (host2JsImpl) {
       // Host2JS: cache a field ID for every field (constructor params included), unbox-impl for
       // nullable inline fields, and the enum ordinal method.
+      if (isEnum) appendLine("static jmethodID _ordinalMethod = NULL;")
       for (f in host2JsFields) {
         appendLine("static jfieldID _h2j_fld_${f.name} = NULL;")
       }
@@ -267,6 +268,9 @@ internal fun generateBridgeFile(
       }
     }
     if (host2JsImpl) {
+      if (isEnum) {
+        appendLine("    _ordinalMethod = jsiGetMethodIdQuiet(env, _cls, \"ordinal\", \"()I\");")
+      }
       for (f in host2JsFields) {
         appendLine("    _h2j_fld_${f.name} = jsiGetFieldIdQuiet(env, _cls, \"${f.name}\", \"${f.jniFieldType}\");")
       }
@@ -1026,13 +1030,18 @@ private fun emitHost2JsConvertToJs(
   sb.appendLine("    // guarded and reported as a Java exception.")
   sb.appendLine("    try {")
   if (isEnum) {
-    // An enum has no host->JS representation: the guest's instances are the singletons from its
-    // own values(), so an object built here would only *look* like one - its ordinal would be a
-    // property the guest never reads, and identity/`when` comparisons against the real constants
-    // would fail. Refuse instead of shipping a lookalike (see host2JsRefuseEnum on Kotlin/Native).
-    sb.appendLine("    env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"),")
-    sb.appendLine("        \"host2js: $protoFqn is an enum; the guest would only see a lookalike, not an enum instance\");")
-    sb.appendLine("    return 0;")
+    // Enum: the host reads the entry's ordinal and hands it to the guest's create_<fqn> factory,
+    // which resolves the guest's own singleton entry. No fields cross: the guest's entry already
+    // holds every `val` and entry-specific override its own revision initialized.
+    sb.appendLine("    if (_ordinalMethod == NULL) {")
+    sb.appendLine("        env->ThrowNew(env->FindClass(\"java/lang/IllegalStateException\"), \"host2js: no cached ordinal method for $protoFqn\");")
+    sb.appendLine("        return 0;")
+    sb.appendLine("    }")
+    sb.appendLine("    jint ordinal = env->CallIntMethod(self, _ordinalMethod);")
+    sb.appendLine("    if (env->ExceptionCheck()) return 0;")
+    sb.appendLine("    jsi::Value result = jsiHost2JsCallCreateFactory(env, rt, \"$protoFqn\", \"$factoryName\", jsi::Value(static_cast<int>(ordinal)));")
+    sb.appendLine("    if (env->ExceptionCheck()) return 0;")
+    sb.appendLine("    return static_cast<jlong>(reinterpret_cast<intptr_t>(new jsi::Value(std::move(result))));")
   } else {
     sb.appendLine("    // New instance whose prototype is the EXISTING retained guest prototype for \"$protoFqn\".")
     sb.appendLine("    // It doubles as the fields object when the guest publishes a create-factory below.")

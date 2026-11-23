@@ -104,6 +104,26 @@ public fun host2JsCallCreateFactory(
   return instance
 }
 
+/**
+ * Hand the ordinal of an `@WithHost2JSBridge` enum entry to the guest's `create_<fqn>` factory and
+ * return the guest's own singleton entry at that ordinal. The ordinal crosses as a JS number; the
+ * temporary handle is freed in a `finally` so an out-of-range ordinal — reported by the guest —
+ * never leaks it.
+ */
+public fun host2JsCallEnumFactory(
+  ctx: COpaquePointer?,
+  fqName: String,
+  factoryName: String,
+  ordinal: Int,
+): Int {
+  val ordinalHandle = newJsInt(ctx, ordinal)
+  try {
+    return host2JsCallCreateFactory(ctx, fqName, factoryName, ordinalHandle)
+  } finally {
+    HermesBridge_freeHandle(ctx, ordinalHandle)
+  }
+}
+
 /** Build a JS number from [value] as a handle; the caller owns it. */
 public fun newJsInt(ctx: COpaquePointer?, value: Int): Int {
   val handle = HermesBridge_createInt(ctx, value)
@@ -395,14 +415,3 @@ public fun anyToJs(ctx: COpaquePointer?, value: Any?): Int {
       ?: error("HOST2JS: no bridge for '${value::class.qualifiedName}'")
   }
 }
-
-/**
- * Refuse to convert an enum host -> JS.
- *
- * The guest's enum instances are the singletons from its own `values()`; an object built here from
- * the retained prototype would only *look* like one. Its ordinal would be a property the guest
- * never reads, and `when`/identity comparisons against the real constants would fail, so the guest
- * could not use the value as an enum at all. Sending such a lookalike hides that, so nothing is
- * sent: the conversion fails where the mistake is.
- */
-public fun host2JsRefuseEnum(fqName: String): Nothing = error("HOST2JS: '$fqName' is an enum; the guest would only see a lookalike, not an enum instance")

@@ -77,6 +77,54 @@ enum class BridgedSizedEnum(val label: String, val size: Int) {
 data class BridgedSizedEnumHolder(val value: BridgedSizedEnum)
 
 /**
+ * A parameterised enum whose entries carry a `private val`, a collection `val` and a function-typed
+ * `val`. None of these cross the wire: the bridge sends only the ordinal, and the receiver resolves
+ * its own singleton — whose own revision initialized every property, including the lambda. The
+ * shapes exist to pin that the generator no longer tries to read (or skip on) them.
+ */
+@WithJS2HostBridge
+@WithHost2JSBridge
+enum class BridgedRichEnum(
+  private val secret: String,
+  val tags: List<String>,
+  val action: () -> Unit,
+) {
+  ALPHA("alpha-secret", listOf("a", "b"), { }),
+  BETA("beta-secret", listOf("c"), { }),
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedRichEnumHolder(val value: BridgedRichEnum)
+
+/** An enum whose entries override an abstract member, making the enum class itself ABSTRACT. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+enum class BridgedOp {
+  PLUS {
+    override fun apply(a: Int, b: Int): Int = a + b
+  },
+  MINUS {
+    override fun apply(a: Int, b: Int): Int = a - b
+  }, ;
+
+  abstract fun apply(a: Int, b: Int): Int
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedOpHolder(val value: BridgedOp)
+
+/** A bridged class with a defaulted enum constructor parameter and a nullable enum field. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class BridgedEnumDefaults(
+  val mode: BridgedEnum = BridgedEnum.SECOND,
+  val other: Int,
+  val maybe: BridgedEnum? = null,
+)
+
+/**
  * Inline classes can only be bridged as fields (or list elements): Kotlin/JS inlines a
  * standalone value-class return value to the underlying primitive, which carries no
  * bridge_dispatch property.
@@ -485,6 +533,12 @@ object BridgedTestValues {
   val enumHolder = BridgedEnumHolder(value = enumSecond)
   val sizedLarge = BridgedSizedEnum.LARGE
   val sizedHolder = BridgedSizedEnumHolder(value = sizedLarge)
+  val richEnumAlpha = BridgedRichEnum.ALPHA
+  val richEnumHolder = BridgedRichEnumHolder(value = richEnumAlpha)
+  val opPlus = BridgedOp.PLUS
+  val opHolder = BridgedOpHolder(value = opPlus)
+  val enumDefaults = BridgedEnumDefaults(other = 42)
+  val enumDefaultsExplicit = BridgedEnumDefaults(mode = BridgedEnum.FIRST, other = 43, maybe = BridgedEnum.THIRD)
   val listHolder = BridgedListHolder(items = listOf(1, 2, 3))
   val callbackHolder = BridgedCallbackHolder(name = "done", onDone = null)
   val floatList = BridgedFloatListHolder(items = listOf(0, 1).map { it.toFloat() } + listOf(0.5f))
@@ -559,10 +613,10 @@ object BridgedTestValues {
   val lottieLoading = BridgedLottieState.Loading
   val lottieError = BridgedLottieState.Error(message = "nope")
 
-  // `align` stays null: a non-null enum cannot cross host -> JS (see
-  // Host2JsBridgeEndToEndTest.enumCannotCrossToGuest), and this payload exists to pin the
-  // Long/inline/nullable-structured field shapes.
+  // `align` is nullable so the same payload can pin both null and a real entry; the two values
+  // below cover both. See Host2JsBridgeEndToEndTest.nullableEnumCrossesToGuest.
   val textStyle = BridgedTextStyle(bold = true, fontSize = BridgedFloat(raw = 16f), raw = 0x0F00L, align = null)
+  val textStyleWithAlign = BridgedTextStyle(bold = false, fontSize = BridgedFloat(raw = 8f), raw = 0x01L, align = BridgedEnum.THIRD)
   val annotationLink = BridgedStringAnnotation.Link(url = "https://example.com", style = textStyle)
   val annotationLinkNullStyle = BridgedStringAnnotation.Link(url = "https://example.com", style = null)
   val annotationStyle = BridgedStringAnnotation.Style(style = textStyle)

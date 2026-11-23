@@ -2,7 +2,9 @@ package app.cash.zipline.bridge.test
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * Bridge version-skew matrix for the **new host**.
@@ -286,26 +288,47 @@ class CrossVersionTest {
   }
 
   /**
-   * Host -> guest with an enum payload: refused by design, in both directions and with or without
-   * skew. The JVM host's C generator and the Kotlin/Native host both throw rather than hand the
-   * guest a lookalike object, so no enum ordinal ever crosses host -> guest and enum entry skew is
-   * unreachable in this direction.
+   * Host -> guest with enum payloads. The host sends only the ordinal; the guest resolves its own
+   * singleton entry. An entry the old guest still has crosses; an appended entry past the old
+   * guest's list fails loudly naming the ordinal; a class the old guest never registered fails
+   * naming the missing factory.
    */
-  @Test fun hostToGuest_enumRefused() = withOldGuest { host, _ ->
+  @Test fun hostToGuest_enumInRange() = withOldGuest { host, _ ->
+    // B is ordinal 1 in both trees; the old guest resolves its own B.
+    assertEquals("B", host.read("readBackGrowthEnum", GrowthEnumHolder(value = GrowthEnum.B)))
+  }
+
+  @Test fun hostToGuest_enumOutOfRange() = withOldGuest { host, _ ->
+    // C is ordinal 2 here; the old guest has only A and B, so its factory fails naming the ordinal.
     assertObserved(
       "host2js-enum/GrowthEnum.C",
-      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; " +
-        "the guest would only see a lookalike, not an enum instance",
+      "throws IllegalStateException: host2js: ordinal 2 is out of range for " +
+        "app.cash.zipline.bridge.test.GrowthEnum",
     ) {
       host.read("readBackGrowthEnum", GrowthEnumHolder(value = GrowthEnum.C))
     }
-    assertObserved(
-      "host2js-enum/ShiftedEnum.X",
-      "throws IllegalStateException: host2js: app.cash.zipline.bridge.test.ShiftedEnum is an enum; " +
-        "the guest would only see a lookalike, not an enum instance",
-    ) {
+  }
+
+  @Test fun hostToGuest_enumMissingOnGuest() = withOldGuest { host, id ->
+    host.installReader(id, "readBackOnlyInNew")
+    val failure = assertFails { host.read("readBackOnlyInNew", OnlyInNewEnum.ONE) }
+    assertTrue(
+      failure.message.orEmpty().contains("create_app_cash_zipline_bridge_test_OnlyInNewEnum"),
+      "expected the failure to name the missing enum factory, got: ${failure.message}",
+    )
+  }
+
+  @Test fun hostToGuest_enumShifted() = withOldGuest { host, _ ->
+    // X is ordinal 1 here (W was inserted at 0); the old guest resolves ordinal 1 to its Y.
+    assertObserved("host2js-enum/ShiftedEnum.X", "Y") {
       host.read("readBackShiftedEnum", ShiftedEnumHolder(value = ShiftedEnum.X))
     }
+  }
+
+  @Test fun hostToGuest_parameterisedEnumIgnoresAddedParameter() = withOldGuest { host, _ ->
+    // The old guest resolves its own B (which has no label) by ordinal; the host's label is never
+    // transferred, and the entry still matches.
+    assertEquals("B", host.read("readBackParamEnum", ParamEnumHolder(value = ParamEnum.B)))
   }
 
   // Value-class underlying-type retyping is not expressible: the C generator's `_fromValue` casts

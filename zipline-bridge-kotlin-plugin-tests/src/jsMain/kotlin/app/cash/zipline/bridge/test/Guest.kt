@@ -190,3 +190,36 @@ fun describeNarrowHolder(value: BridgedNarrowHolder): String = "${value.b}|${val
 
 @JsExport
 fun describeMutableBody(value: BridgedMutableBody): String = "${value.a}|${value.extra}|${value.tags.joinToString("+")}|${value.w.raw}|${value.count}"
+
+/** Whether the received enum entry is the guest's own [BridgedEnum.SECOND] singleton (===). */
+@JsExport
+fun enumIsGuestSecond(value: BridgedEnum): Boolean = value === BridgedEnum.SECOND
+
+/** `when` dispatch on the received entry, which only behaves for the guest's own constant. */
+@JsExport
+fun enumWhenName(value: BridgedEnum): String = when (value) {
+  BridgedEnum.FIRST -> "first"
+  BridgedEnum.SECOND -> "second"
+  BridgedEnum.THIRD -> "third"
+}
+
+@JsExport
+fun describeEnum(value: BridgedEnum): String = value.name
+
+@JsExport
+fun describeEnumList(values: List<BridgedEnum>): String = values.joinToString("|") { it.name }
+
+@JsExport
+fun describeEnumNullable(value: BridgedEnum?): String = value?.name ?: "null"
+
+@JsExport
+fun describeSizedEnum(value: BridgedSizedEnum): String = "${value.label}|${value.size}"
+
+@JsExport
+fun describeRichEnum(value: BridgedRichEnum): String = value.tags.joinToString("+")
+
+@JsExport
+fun describeOp(value: BridgedOp): String = "${value.name}:${value.apply(2, 3)}"
+
+@JsExport
+fun describeEnumDefaults(value: BridgedEnumDefaults): String = "${value.mode}|${value.other}|${value.maybe ?: "null"}"

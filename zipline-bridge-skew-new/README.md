@@ -263,14 +263,18 @@ the guest has to produce `WrappedValue(7)` out of its own default — `3|7` repo
 | Field renamed, no alias | both | ❌ caught | `IllegalStateException: host2js: app.cash.zipline.bridge.test.RenamedFieldPayload.oldName was not sent by the host` | same message (wrapped, folded) | T3; was `null` — raw `undefined` crossing back — before the guest built its own payloads |
 | Property retyped Int→String | old host → new guest | ⚠️ divergent | `99` | `99.0` — native renders the JS double with its fractional part | — |
 | `null` into guest non-null | new host → old guest | ✅ | `null` | same | — |
-| Enum payload | both | ❌ refused by design | `IllegalStateException: host2js: app.cash.zipline.bridge.test.GrowthEnum is an enum; the guest would only see a lookalike, not an enum instance` | same (wrapped, folded) | — |
+| Enum payload, entry in range | new host → old guest | ✅ | `B` — the host sends only the ordinal, the guest resolves its own entry | same | — |
+| Enum payload, appended past the guest's list | new host → old guest | ❌ caught | `IllegalStateException: host2js: ordinal 2 is out of range for app.cash.zipline.bridge.test.GrowthEnum` | same (wrapped, folded) | — |
+| Enum class missing on guest | new host → old guest | ❌ caught | `IllegalStateException: host2js: the guest provides no create_…OnlyInNewEnum …` | same (wrapped, folded) | — |
+| Enum entry shifted | both | ❌ silent wrong | new host's `X` resolves to the old guest's `Y`; old host's `X` to the new guest's `W` | same | — |
+| Enum constructor parameter added | both | ✅ | the receiver's own entry, with its own properties (`B` on the old guest, `B:b` on the new) | same | — |
 | Value-class field (`WrappedHolder.w`) | both | ✅ | `WrappedValue(v=42)` — the same text the stamped path produced; the guest's factory rebuilds the wrapper from the value that crossed | same | — |
 | Hierarchy / interface change | both | ✅ | values cross unchanged | same | — |
 
-The host→guest refusals (`no registered prototype`, `is an enum`) stay `IllegalStateException`, not
-`ZiplineApiMismatchException`: they are programmer/setup errors (the guest never registered the class,
-or the host tried to send a type the bridge refuses by design), not version skew. The guest→host
-reads above are the skew path and use the mismatch type.
+The host→guest refusals (`no registered prototype`, an out-of-range enum ordinal, a missing enum
+factory) stay `IllegalStateException`, not `ZiplineApiMismatchException`: they are programmer/setup
+errors (the guest never registered the class, or the host sent an ordinal the guest's revision does
+not have), not version skew. The guest→host reads above are the skew path and use the mismatch type.
 
 ## JVM vs Kotlin/Native divergence
 

@@ -113,6 +113,18 @@ data class GrowthEnumHolder(val value: GrowthEnum)
 @WithHost2JSBridge
 data class ShiftedEnumHolder(val value: ShiftedEnum)
 
+/** Parameterised enum: the old revision declares no `label`; the new tree adds one. */
+@WithJS2HostBridge
+@WithHost2JSBridge
+enum class ParamEnum {
+  A,
+  B,
+}
+
+@WithJS2HostBridge
+@WithHost2JSBridge
+data class ParamEnumHolder(val value: ParamEnum)
+
 /** Sealed hierarchy: the new tree adds a second leaf. */
 @WithJS2HostBridge
 @WithHost2JSBridge

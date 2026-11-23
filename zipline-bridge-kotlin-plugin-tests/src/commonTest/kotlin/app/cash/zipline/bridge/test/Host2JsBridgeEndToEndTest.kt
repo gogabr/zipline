@@ -134,37 +134,61 @@ class Host2JsBridgeEndToEndTest {
   }
 
   @Test
-  fun enumCannotCrossToGuest() {
-    // An enum has no host->JS representation: the guest's instances are the singletons from its
-    // own `values()`, so nothing the host builds can be used as that enum (identity and `when`
-    // comparisons would fail). The conversion refuses instead of shipping a lookalike. The
-    // direction that does work, guest -> host, is covered by BridgeEndToEndTest.bridgedEnum and
-    // .bridgedEnumHolder.
-    //
-    // JVM reports the refusal directly (IllegalStateException from the generated C); Kotlin/Native
-    // wraps a conversion failure in JsException, so assert the behaviour both surfaces: a failure
-    // that names the enum.
-    val failure = assertFails { roundTrip(BridgedTestValues.enumHolder) }
-    assertTrue(
-      failure.message.orEmpty().contains("is an enum"),
-      "expected the refusal to name the enum, got: ${failure.message}",
+  fun enumCrossesToGuest() {
+    // The host sends only the ordinal; the guest resolves its own singleton entry, so identity
+    // (`===`) and `when` behave like a guest-referenced constant, on both hosts.
+    assertEquals(BridgedTestValues.enumHolder, roundTrip(BridgedTestValues.enumHolder))
+    assertEquals(true, host.callGuestFunction("enumIsGuestSecond", listOf(BridgedTestValues.enumSecond)))
+    assertEquals("second", host.callGuestFunction("enumWhenName", listOf(BridgedTestValues.enumSecond)))
+  }
+
+  @Test
+  fun parameterisedEnumCrossesToGuest() {
+    // The entry's fields are never transferred: the guest resolves its own singleton, which holds
+    // the label and size its own revision initialized.
+    assertEquals(BridgedTestValues.sizedHolder, roundTrip(BridgedTestValues.sizedHolder))
+    assertEquals("large|24", host.callGuestFunction("describeSizedEnum", listOf(BridgedTestValues.sizedLarge)))
+  }
+
+  @Test
+  fun richParameterisedEnumCrossesToGuest() {
+    // private val, a collection val and a function-typed val: none of them cross, and none of them
+    // block the crossing. The receiver's own entry holds its own collection.
+    assertEquals(BridgedTestValues.richEnumHolder, roundTrip(BridgedTestValues.richEnumHolder))
+    assertEquals("a+b", host.callGuestFunction("describeRichEnum", listOf(BridgedTestValues.richEnumAlpha)))
+  }
+
+  @Test
+  fun entryOverridingEnumCrossesToGuest() {
+    // An enum whose entries override an abstract member is Modality.ABSTRACT, which used to filter
+    // it out of the bridge. The guest resolves its own entry, so its own override runs.
+    assertEquals(BridgedTestValues.opHolder, roundTrip(BridgedTestValues.opHolder))
+    assertEquals("PLUS:5", host.callGuestFunction("describeOp", listOf(BridgedTestValues.opPlus)))
+  }
+
+  @Test
+  fun enumCrossesDirectlyAndInCollections() {
+    assertEquals("SECOND", host.callGuestFunction("describeEnum", listOf(BridgedTestValues.enumSecond)))
+    assertEquals(
+      "SECOND|THIRD",
+      host.callGuestFunction("describeEnumList", listOf(listOf(BridgedTestValues.enumSecond, BridgedEnum.THIRD))),
     )
   }
 
   @Test
-  fun parameterisedEnumCannotCrossToGuestEither() {
-    // The refusal is on the class kind, not on whether the entries happen to carry data: an enum
-    // with fields is exactly as much a singleton problem as one without, and its fields are what a
-    // host-built lookalike would appear to carry convincingly. Asserted rather than assumed, because
-    // `BridgedEnum` -- the only enum fixture until now -- cannot tell the two cases apart.
-    // CLV-180 is expected to INVERT this test: it exists to record that the host->guest refusal in
-    // `Host2JsGenerator` is keyed on class kind, so it covers parameterised enums as well as plain ones,
-    // and not to argue that refusing is right. When enums can cross that way, this becomes a positive
-    // crossing assertion next to `enumCannotCrossToGuest`'s replacement.
-    val failure = assertFails { roundTrip(BridgedTestValues.sizedHolder) }
-    assertTrue(
-      failure.message.orEmpty().contains("is an enum"),
-      "expected the refusal to name the enum, got: ${failure.message}",
+  fun nullableEnumCrossesToGuest() {
+    assertEquals("null", host.callGuestFunction("describeEnumNullable", listOf<Any?>(null)))
+    assertEquals("SECOND", host.callGuestFunction("describeEnumNullable", listOf(BridgedTestValues.enumSecond)))
+    // A non-null enum inside a structured payload (the TextStyle shape) now crosses.
+    assertEquals(BridgedTestValues.textStyleWithAlign, roundTrip(BridgedTestValues.textStyleWithAlign))
+  }
+
+  @Test
+  fun defaultedEnumParameterCrossesToGuest() {
+    assertEquals("SECOND|42|null", host.callGuestFunction("describeEnumDefaults", listOf(BridgedTestValues.enumDefaults)))
+    assertEquals(
+      "FIRST|43|THIRD",
+      host.callGuestFunction("describeEnumDefaults", listOf(BridgedTestValues.enumDefaultsExplicit)),
     )
   }
 

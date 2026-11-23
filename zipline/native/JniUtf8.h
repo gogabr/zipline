@@ -71,7 +71,11 @@ inline std::string jniStringToUtf8(JNIEnv* env, jstring javaString) {
 // replaced with U+FFFD.
 inline jstring utf8ToJniString(JNIEnv* env, const std::string& utf8) {
   if (env->ExceptionCheck()) return nullptr;
-  std::basic_string<jchar> utf16;
+  // char16_t, not jchar: jchar is a typedef for uint16_t, and std::char_traits is only
+  // defined by the standard for char, wchar_t, char8_t, char16_t and char32_t. libc++ used
+  // to provide a non-standard base template for other types; NDK r28 (libc++ 19) removed it,
+  // which made this header uncompilable for any consumer using that NDK.
+  std::u16string utf16;
   utf16.reserve(utf8.size());
   size_t i = 0;
   while (i < utf8.size()) {
@@ -114,14 +118,15 @@ inline jstring utf8ToJniString(JNIEnv* env, const std::string& utf8) {
       cp = 0xFFFD;
     }
     if (cp < 0x10000) {
-      utf16 += static_cast<jchar>(cp);
+      utf16 += static_cast<char16_t>(cp);
     } else {
       cp -= 0x10000;
-      utf16 += static_cast<jchar>(0xD800 + (cp >> 10));
-      utf16 += static_cast<jchar>(0xDC00 + (cp & 0x3FF));
+      utf16 += static_cast<char16_t>(0xD800 + (cp >> 10));
+      utf16 += static_cast<char16_t>(0xDC00 + (cp & 0x3FF));
     }
   }
-  return env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
+  return env->NewString(
+      reinterpret_cast<const jchar*>(utf16.data()), static_cast<jsize>(utf16.size()));
 }
 
 } // namespace zipline

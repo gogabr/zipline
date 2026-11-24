@@ -201,6 +201,39 @@ class CdpDebugTest {
     }
   }
 
+  /**
+   * The CDP Profiler domain samples the runtime on the JS thread. The runtime here is created on
+   * the test thread and runs JS on [dispatcher], so the sampler must be bound to the JS thread
+   * when profiling starts; an unregistered runtime aborts the process on `Profiler.stop`.
+   */
+  @Test
+  fun cpuProfileOverCdp() = runBlocking<Unit> {
+    val zipline = Zipline.create(dispatcher)
+    this@CdpDebugTest.zipline = zipline
+    withContext(dispatcher) {
+      zipline.jsEngine.execute(testScriptBytecode, SCRIPT_URL)
+    }
+    val sessionId = discoverSessionId()
+
+    CdpTestClient.connect(PORT, sessionId).use { cdp ->
+      cdp.send(1, "Profiler.start")
+      cdp.awaitResponse(1)
+      withContext(dispatcher) {
+        repeat(1_000) { zipline.jsEngine.callGlobalFunctionWithStringArg("hitMe", "") }
+      }
+      cdp.send(2, "Profiler.stop")
+      val stopResponse = cdp.awaitResponse(2)
+      assertTrue(stopResponse.contains("\"profile\""), "Profiler.stop should return a profile: $stopResponse")
+      assertTrue(stopResponse.contains("\"samples\""), "the profile should hold samples: $stopResponse")
+
+      // Profiling again in the same session re-binds the sampler without failing.
+      cdp.send(3, "Profiler.start")
+      cdp.awaitResponse(3)
+      cdp.send(4, "Profiler.stop")
+      assertTrue(cdp.awaitResponse(4).contains("\"profile\""))
+    }
+  }
+
   /** A one-shot HTTP server answering GETs from [paths] (path -> body). */
   private class MiniHttpServer(port: Int, private val paths: Map<String, String>) {
     // servedScriptBytecode hardcodes :18080, so every process serves that port.

@@ -8,10 +8,13 @@
 #include <hermes/cdp/CDPAgent.h>
 #include <hermes/cdp/CDPDebugAPI.h>
 
+#include <hermes/hermes.h>
+
 #include <atomic>
 #include <deque>
 #include <mutex>
 #include <memory>
+#include <thread>
 
 namespace zipline_cdp {
 
@@ -32,6 +35,12 @@ struct Session {
 
   std::mutex queueMutex;
   std::deque<debugger::RuntimeTask> taskQueue;
+
+  // The thread the runtime is registered on with Hermes' sampling profiler. The CDP Profiler
+  // domain only gets samples from a registered runtime, and the sampler samples the thread that
+  // registered it; that must be the JS thread, which isn't always the one that created the runtime.
+  // Only touched on the JS thread, in drainTasks().
+  std::thread::id profilingThread;
 
   // Whether the debugger is currently paused (tracked from CDP events).
   // While paused the JS thread is blocked in the debugger loop, so integrator
@@ -159,6 +168,12 @@ void drainTasks(ContextBase* ctx) {
         if (session->taskQueue.empty()) return;
         task = std::move(session->taskQueue.front());
         session->taskQueue.pop_front();
+      }
+      // Profiler.start runs as one of these tasks; bind the sampler to this (JS) thread first.
+      // Registering again only re-binds the thread.
+      if (session->profilingThread != std::this_thread::get_id()) {
+        ctx->runtime->registerForProfiling();
+        session->profilingThread = std::this_thread::get_id();
       }
     }
     // RuntimeTaskRunner wraps tasks so a task already executed via the

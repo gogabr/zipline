@@ -1,9 +1,10 @@
 name: publish-fork-snapshot
 
 # Fork pull requests run `build` with a read-only token, so they can't publish their own snapshots.
-# This workflow picks up the `maven-repository` artifact of such a run and uploads it to GitHub
-# Packages after manual approval. It runs from the default branch and never executes anything from
-# the fork: the artifact is validated as data and uploaded with the default-branch script.
+# This workflow picks up the `maven-repository` (prod) and `maven-repository-debuggable` artifacts
+# of such a run and uploads each to GitHub Packages after manual approval. It runs from the default
+# branch and never executes anything from the fork: each artifact is validated as data and uploaded
+# with the default-branch script.
 #
 # The fork controls its `build` run entirely (pull_request runs use the PR's workflow files), so
 # the approval in the 'github-packages-snapshot' environment is the real gate: review the PR's
@@ -31,21 +32,30 @@ jobs:
     outputs:
       built: ${{ steps.build.outputs.built }}
     steps:
-      - name: Check the build job
+      - name: Check the build jobs
         id: build
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
-          conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate \
-            --jq '.jobs[] | select(.name == "build") | .conclusion')
-          echo "build job: ${conclusion:-missing}"
-          echo "built=$([ "$conclusion" = success ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          conclusions=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs" --paginate \
+            --jq '.jobs[] | select(.name | test("^build( \\(|$)")) | "\(.name): \(.conclusion)"')
+          echo "${conclusions:-build jobs: missing}"
+          built=false
+          if [ -n "$conclusions" ] && ! grep -qv ': success$' <<< "$conclusions"; then
+            built=true
+          fi
+          echo "built=$built" >> "$GITHUB_OUTPUT"
 
   publish-snapshot:
+    name: publish-snapshot (${{ matrix.artifact }})
     needs: check
     if: ${{ needs.check.outputs.built == 'true' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        artifact: [maven-repository, maven-repository-debuggable]
     environment: github-packages-snapshot
     permissions:
       contents: read
@@ -59,7 +69,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: maven-repository
+          name: ${{ matrix.artifact }}
           path: maven-repository
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}

@@ -35,6 +35,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpressionBody
 import org.jetbrains.kotlin.ir.expressions.impl.IrClassReferenceImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
@@ -359,10 +360,27 @@ private fun buildRuntimeFactories(
   // A plain class (not an object): a synthetic object's singleton accessor proved unreliable
   // in the JS backend, so the registration constructs an instance via the constructor instead.
   factoriesClass.createThisReceiverParameter()
-  factoriesClass.addConstructor {
+  val ctor = factoriesClass.addConstructor {
     visibility = DescriptorVisibilities.PRIVATE
     isPrimary = true
   }
+  // The constructor needs a real body. A primary constructor left without a delegating and
+  // instance-initializer call is lowered by Kotlin/JS 2.3.26 to a factory that returns nothing,
+  // so the registration received `undefined` instead of the factories object; 2.3.21 happened to
+  // construct the instance anyway.
+  val anyCtor = pluginContext.irBuiltIns.anyClass.owner.declarations
+    .filterIsInstance<IrConstructor>()
+    .first()
+  ctor.body = pluginContext.irBuiltIns.createIrBuilder(ctor.symbol)
+    .irBlockBody {
+      +irDelegatingConstructorCall(anyCtor)
+      +IrInstanceInitializerCallImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        factoriesClass.symbol,
+        factoriesClass.defaultType,
+      )
+    }
 
   val longClass = finder.findClass(ClassId(FqName("kotlin"), Name.identifier("Long")))?.owner
     ?: error("kotlin.Long class not found")

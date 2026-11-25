@@ -284,6 +284,46 @@ class ZiplineBridgeKotlinPluginTest {
   }
 
   @Test
+  fun `delegated property is not treated as a JVM field`() {
+    // A `by lazy` property has no field of its own on the JVM: the delegate lives in
+    // `<name>$delegate`, typed `Lkotlin/Lazy;`. Emitting a field lookup for the property name
+    // makes the JNI converter fail with NoSuchFieldError when its init runs.
+    val outputDir = createTempDirectory("zipline-bridge-test")
+    try {
+      val result = compileWithCOutputDir(
+        sourceFile = SourceFile.kotlin(
+          "Mask.kt",
+          """
+          package com.example
+
+          import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+          @WithJS2HostBridge
+          class Mask {
+            val segments: String = ""
+            val capacity: Int by lazy { segments.length }
+          }
+          """,
+        ),
+        cOutputDir = outputDir.toString(),
+      )
+      assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+
+      val content = outputDir.resolve("com_example_Mask.cpp").toFile().readText()
+
+      // The plain field still crosses.
+      assertTrue(content.contains("jsObj.asObject(rt).getProperty(rt, \"segments\")"), content)
+      assertTrue(content.contains("SetObjectField(result, _fld_segments, java_segments)"), content)
+
+      // The derived property carries no state of its own.
+      assertFalse(content.contains("_fld_capacity"), content)
+      assertFalse(content.contains("getProperty(rt, \"capacity\")"), content)
+    } finally {
+      outputDir.toFile().deleteRecursively()
+    }
+  }
+
+  @Test
   fun `object fields use bridge_dispatch pattern`() {
     val outputDir = createTempDirectory("zipline-bridge-test")
     try {

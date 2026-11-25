@@ -2,6 +2,7 @@ package app.cash.zipline.bridge.kotlin
 
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrProperty
@@ -105,6 +106,12 @@ internal fun extractFields(annotatedClass: IrClass, includeValBodyFields: Boolea
 }
 
 private fun extractField(property: IrProperty, primaryConstructorParamNames: Set<String>, includeValBodyFields: Boolean): FieldInfo? {
+  // Declarations made by the compiler or a compiler plugin are plumbing, never authored payload
+  // state: a `@Serializable object` keeps its serializer in a generated `$cachedSerializer`
+  // property, whose Kotlin/Native origin is synthetic. Converters must not carry it, and the
+  // safety checks must not report it.
+  if (property.origin.isSynthetic || property.origin is IrDeclarationOrigin.GeneratedByPlugin) return null
+
   val type = property.getter?.returnType ?: return null
   val name = property.name.asString()
   val isConstructorParam = name in primaryConstructorParamNames

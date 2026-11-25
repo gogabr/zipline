@@ -58,6 +58,11 @@ import org.jetbrains.kotlin.name.Name
 // site that is safe by argument but opaque to the static type (e.g. a decode boundary typed
 // `Any?`) opts out with `@Suppress("BRIDGE_UNSAFE")` on the source variable or an enclosing
 // declaration.
+//
+// State crosses as constructor parameters and plain properties. A delegated property stores its
+// value in the delegate, which has no field the converters can address, so a delegated `var` is
+// rejected: its value would be silently replaced by the delegate's initial value on the
+// receiving side. A delegated `val` is a derived value and is allowed.
 
 /** Severity for a violation. Single constant: downgrade here for a softer rollout. */
 private val BRIDGE_TYPE_SEVERITY = CompilerMessageSeverity.ERROR
@@ -274,6 +279,31 @@ private class BridgeSafetyChecker(
           break
         }
       }
+      checkDelegatedVars(clazz)
+    }
+  }
+
+  /**
+   * A delegated property's value lives in its delegate, not in a field named after the property,
+   * so the converters do not carry it: the receiving side runs the delegate's initializer and
+   * starts from its default. That is correct for a derived `val` -- both sides compute it from
+   * state that does cross -- and silent data loss for a `var`, whose delegate owns state of its
+   * own. Payload state must therefore be a constructor parameter or a plain property.
+   */
+  private fun checkDelegatedVars(clazz: IrClass) {
+    for (property in clazz.properties) {
+      if (!property.isDelegated || !property.isVar) continue
+      val name = property.name.asString()
+      if (isSuppressedField(clazz, name)) continue
+      report(
+        BRIDGE_TYPE_SEVERITY,
+        "bridge: '${clazz.name.asString()}.$name' is a delegated `var`, so its value lives in " +
+          "its delegate and does not cross the bridge; the receiving side would start from the " +
+          "delegate's initial value. Keep payload state in constructor parameters or plain " +
+          "properties, or opt out with @Suppress(\"BRIDGE_UNSAFE\") if the delegate recomputes " +
+          "the same value on both sides",
+        locate(clazz, name),
+      )
     }
   }
 

@@ -1027,6 +1027,78 @@ class ZiplineBridgeKotlinPluginTest {
   }
 
   @Test
+  fun `delegated var in bridge payload is rejected`() {
+    // Its value lives in the delegate, so the receiving side would start from the delegate's
+    // initial value instead of the sender's.
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "DelegatedVar.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+        import kotlin.properties.Delegates
+
+        @WithJS2HostBridge
+        class Counter(val label: String) {
+          var count: Int by Delegates.observable(0) { _, _, _ -> }
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.COMPILATION_ERROR, result.exitCode, result.messages)
+    assertTrue(
+      result.messages.contains("'Counter.count' is a delegated `var`, so its value lives in its delegate"),
+      result.messages,
+    )
+  }
+
+  @Test
+  fun `derived delegated val in bridge payload is allowed`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "DelegatedVal.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+
+        @WithJS2HostBridge
+        class Mask(val segments: String) {
+          val capacity: Int by lazy { segments.length }
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
+  fun `suppress bridge unsafe allows delegated var`() {
+    val result = compileWithCOutputDir(
+      SourceFile.kotlin(
+        "DelegatedVarSuppressed.kt",
+        """
+        package com.example
+
+        import app.cash.zipline.bridge.support.WithJS2HostBridge
+        import kotlin.properties.Delegates
+
+        @WithJS2HostBridge
+        class Counter(val label: String) {
+          @Suppress("BRIDGE_UNSAFE")
+          var count: Int by Delegates.observable(0) { _, _, _ -> }
+        }
+        """,
+      ),
+      cOutputDir = createTempDirectory("zipline-bridge-safety").toString(),
+    )
+    assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+  }
+
+  @Test
   fun `suppress bridge unsafe does not silence field type checks`() {
     val result = compileWithCOutputDir(
       SourceFile.kotlin(

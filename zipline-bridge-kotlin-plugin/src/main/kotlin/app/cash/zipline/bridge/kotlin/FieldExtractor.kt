@@ -104,6 +104,11 @@ internal fun extractFields(annotatedClass: IrClass, includeValBodyFields: Boolea
 }
 
 private fun extractField(property: IrProperty, primaryConstructorParamNames: Set<String>, includeValBodyFields: Boolean): FieldInfo? {
+  // A delegated property keeps its value in a `<name>$delegate` field typed by the delegate, not
+  // in a field named after the property. The JVM converters address state by field name, so a
+  // delegate cannot cross as a field; the guest computes or reads the value through its accessor.
+  if (property.isDelegated) return null
+
   val type = property.getter?.returnType ?: return null
   val name = property.name.asString()
   val isConstructorParam = name in primaryConstructorParamNames

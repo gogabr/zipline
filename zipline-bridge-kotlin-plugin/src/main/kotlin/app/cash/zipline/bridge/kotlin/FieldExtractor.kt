@@ -109,6 +109,13 @@ private fun extractField(property: IrProperty, primaryConstructorParamNames: Set
   // delegate cannot cross as a field; the guest computes or reads the value through its accessor.
   if (property.isDelegated) return null
 
+  // Properties that the compiler or another plugin generates are not part of the declared payload.
+  // Kotlin/Native puts kotlinx.serialization's serializer cache on a @Serializable object as the
+  // `$cachedSerializer` property, whose backing field holds a Lazy; the JVM keeps the same cache in
+  // the companion object, so only the native converters saw it and failed to convert a Lazy.
+  // Kotlin reserves `$` for generated names, so declared properties never match this filter.
+  if ('$' in property.name.asString()) return null
+
   val type = property.getter?.returnType ?: return null
   val name = property.name.asString()
   val isConstructorParam = name in primaryConstructorParamNames

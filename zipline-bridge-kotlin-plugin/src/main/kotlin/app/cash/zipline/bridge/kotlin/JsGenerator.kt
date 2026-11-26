@@ -400,12 +400,28 @@ private fun buildRuntimeFactories(
     origin = IrDeclarationOrigin.DEFINED
   }
   factoriesClass.parent = fileForModule
+  // Declared explicitly: the constructor below has to delegate to a superclass, and the only thing
+  // this stateless helper class inherits is Any.
+  factoriesClass.superTypes = listOf(pluginContext.irBuiltIns.anyType)
   // A plain class (not an object): a synthetic object's singleton accessor proved unreliable
   // in the JS backend, so the registration constructs an instance via the constructor instead.
   factoriesClass.createThisReceiverParameter()
-  factoriesClass.addConstructor {
+  val factoriesCtor = factoriesClass.addConstructor {
     visibility = DescriptorVisibilities.PRIVATE
     isPrimary = true
+  }
+  // A constructor must have a super call: the JS backend rejects one without it ("Expect to have
+  // either super call or partial linkage stub inside constructor"), and a stub is not an option
+  // because this class has to be constructible. The class inherits only Any, whose primary
+  // constructor takes no arguments, so the call needs none.
+  val superCtor = factoriesClass.superTypes.single().classOrNull!!.owner.declarations
+    .filterIsInstance<IrConstructor>()
+    .first { it.isPrimary }
+  check(superCtor.parameters.isEmpty()) {
+    "__BridgeRuntimeFactories: $superCtor takes arguments, so the delegation needs updating"
+  }
+  factoriesCtor.body = pluginContext.irBuiltIns.createIrBuilder(factoriesCtor.symbol).irBlockBody {
+    +irDelegatingConstructorCall(superCtor)
   }
 
   val longClass = finder.findClass(ClassId(FqName("kotlin"), Name.identifier("Long")))?.owner

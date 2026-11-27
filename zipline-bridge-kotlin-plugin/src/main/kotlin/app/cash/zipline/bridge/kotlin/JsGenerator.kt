@@ -293,6 +293,9 @@ internal fun injectModuleLoadBridgeRegistration(
   // Null when the annotations artifact on the compile classpath predates registerFieldAlias; alias
   // emission is then skipped (see findFieldAliasRegister).
   val fieldAliasSymbol = findFieldAliasRegister(finder)
+  // Null when the annotations artifact predates registerFieldFallback; the reverse skew then keeps
+  // reading undefined from a host that still writes the pre-rename name (see its KDoc).
+  val fieldFallbackSymbol = findFieldFallbackRegister(finder)
   val bridgeRegisterRuntimeSymbol =
     findOrCreateBridgeRegisterRuntime(finder, pluginContext, fileForModule)
   val factoriesClass = buildRuntimeFactories(finder, pluginContext, fileForModule)
@@ -365,6 +368,19 @@ internal fun injectModuleLoadBridgeRegistration(
             arguments[0] = jsCtor(clazz)
             arguments[1] = irString(alias)
             arguments[2] = irString(aliasTarget)
+          }
+        }
+      }
+      // The host builds this object itself, so a host binary shipped before a rename writes the
+      // value under the pre-rename name and the guest reading the current name sees undefined. The
+      // accessor reads the old name when the current one is not an own property: the mirror image
+      // of the alias above, which serves a host reading a guest object.
+      if (fieldFallbackSymbol != null) {
+        for ((alias, aliasTarget) in hostNameAliases(clazz)) {
+          +irCall(fieldFallbackSymbol).apply {
+            arguments[0] = jsCtor(clazz)
+            arguments[1] = irString(aliasTarget)
+            arguments[2] = irString(alias)
           }
         }
       }
@@ -629,6 +645,15 @@ private fun resolveExtensionFun(
  */
 private fun findFieldAliasRegister(finder: DeclarationFinder): IrSimpleFunctionSymbol? = finder.findFunctions(
     CallableId(FqName("app.cash.zipline"), Name.identifier("registerFieldAlias")),
+  ).firstOrNull()
+
+/**
+ * The zipline `registerFieldFallback` helper (jsMain of the annotations artifact), or null when the
+ * annotations artifact on the compile classpath predates it. Null skips fallback emission, which
+ * only costs compatibility with hosts older than a `@HostName` rename.
+ */
+private fun findFieldFallbackRegister(finder: DeclarationFinder): IrSimpleFunctionSymbol? = finder.findFunctions(
+    CallableId(FqName("app.cash.zipline"), Name.identifier("registerFieldFallback")),
   ).firstOrNull()
 
 /** The KClass.js property getter (kotlin.js.KClass.js → JsClass<T>). */
